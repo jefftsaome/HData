@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools", "wheel", "cython>=3.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hdt"
+version = "0.1.0"
+description = "Harvester data team — data source implementations"
+requires-python = "==3.13.5"
+dependencies = [
+    "htools",
+]
+
+[tool.uv.sources]
+htools = { path = "../hsys/htools" }
+
+[project.entry-points."data_sources"]
+stream_source = "hdt.sources.leyu_stream:StreamSource"
+packet_source = "hdt.sources.leyu_packet:PacketSource"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
