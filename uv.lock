@@ -81,6 +81,7 @@ name = "hdt"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "htools" },
 ]
 
@@ -90,7 +91,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "htools", directory = "../hsys/htools" }]
+requires-dist = [
+    { name = "cryptography", specifier = ">=49.0.0" },
+    { name = "htools", directory = "../hsys/htools" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]

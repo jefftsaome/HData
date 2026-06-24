@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Harvester data team — data source implementations"
 requires-python = "==3.13.5"
 dependencies = [
+    "cryptography>=49.0.0",
     "htools",
 ]
 
