@@ -2,7 +2,7 @@
 """hdt 内部类型定义 — 百家乐专有数据模型，不对外暴露"""
 
 from enum import IntEnum
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class SourceType(IntEnum):
@@ -103,6 +103,48 @@ class LatestState(TypedDict, total=False):
     raw_result: str | None
 
 
+class DynamicExtractResult(TypedDict, total=False):
+    """CDP JS 全量提取的原始返回结构"""
+    ts: int
+    roundId: str
+    status: str
+    countdownText: str
+    timeDisplay: str
+    tableName: str
+    playerRaw: str
+    bankerRaw: str
+    betRaw: str
+    bootItems: list[dict]
+    streaks: list[str]
+    canvasRoad: dict
+    urlTableId: int
+    urlGameType: int
+
+
+class FixedGameInfo(TypedDict, total=False):
+    """桌台固定信息（CDP 一次提取，反复复用）"""
+    game_name: str
+    table_id: str
+    gameplay: str
+    bet_limit: str
+    dealer: str
+    odds: dict
+
+
+class AdapterInput(TypedDict):
+    """Adapter 输入 — 统一格式，同时兼容 CDP 和 WS 来源"""
+    source_type: str          # "cdp" | "ws"
+    result: str               # "L" | "S" | "F"  （LONG/SHORT/FLAT 简写）
+    score: float              # 点数 0-9
+    table_id: int             # 数字 tableId
+    counter_id: str           # CDP tableName 后缀 "U11"
+    trade_seq: str            # CDP roundNo "GB..."
+    round_id: int             # WS roundId 数字
+    game_type: int            # gameTypeId 2001
+    boot_no: int              # 靴次
+    road_sequence: list[str]  # 路纸序列 ["B","P","B",...]
+
+
 __all__ = [
     "SourceType",
     "RoadResult", "RoadCell",
@@ -110,4 +152,10 @@ __all__ = [
     "FixedData", "DynamicCards", "DynamicBets",
     "DynamicBootStats", "DynamicData",
     "RoadPapers", "LatestState",
+]
+
+__all__ += [
+    "DynamicExtractResult",
+    "FixedGameInfo",
+    "AdapterInput",
 ]
