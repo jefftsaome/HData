@@ -202,6 +202,32 @@ class ChromeManager:
         """检查 Chrome 子进程是否仍在运行。"""
         return self._process is not None and self._process.returncode is None
 
+    async def health_check(self) -> str:
+        """主动健康检查。
+
+        Returns:
+            状态字符串:
+              - "healthy":  进程存活 + 端口可连
+              - "dead":     进程已退出（auto 模式），或端口不可达
+              - "attached": attach 模式，只检查端口
+              - "unknown":  未启动
+        """
+        if self.is_attached:
+            ok = await self._can_connect(self._cdp_port)
+            return "healthy" if ok else "dead"
+
+        if self._process is None:
+            return "unknown"
+
+        if not self._is_alive():
+            logger.warning("Chrome process died (returncode={})", self._process.returncode)
+            self._process = None
+            return "dead"
+
+        # 进程存活，检查端口响应
+        ok = await self._can_connect(self._cdp_port)
+        return "healthy" if ok else "dead"
+
     async def stop(self):
         """关闭 Chrome 进程。attach 模式下无操作。"""
         if self.is_attached:

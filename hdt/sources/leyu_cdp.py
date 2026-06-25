@@ -63,6 +63,7 @@ class CDPSource(DataSource):
         self._last_fingerprint: str = ""
         self._prev_round_id: str | None = None
         self._fixed_gameinfo_init = False
+        self._poll_count = 0  # 轮询计数，用于定期健康检查
 
     # ── DataSource 接口 ──────────────────────────────────
 
@@ -105,6 +106,17 @@ class CDPSource(DataSource):
                     yield await self._ensure_connected(reconnect_delay)
                     reconnect_delay = 1.0
                     continue  # 连上后进入采集循环
+
+                # ── 定期健康检查（每 30 轮）──
+                self._poll_count += 1
+                if self._poll_count % 30 == 0 and self._chrome:
+                    hc = await self._chrome.health_check()
+                    if hc == "dead":
+                        logger.warning("Chrome health check: dead, reconnecting...")
+                        self._cdp = None
+                        self._extractor = None
+                        self._fixed_gameinfo_init = False
+                        continue  # 主循环会调用 _ensure_connected 重连
 
                 # ── 采集阶段 ──
                 async for tick in self._poll_loop():
