@@ -2,3 +2,13 @@ __pycache__/
 *.pyc
 *.egg-info/
 .DS_Store
+.pytest_cache/
+.vscode/
+*.log
+.venv/
+dist/
+
+# cython
+*.c
+*.so
+*.pyd

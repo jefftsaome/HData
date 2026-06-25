@@ -3,13 +3,12 @@
 import asyncio
 import json
 import gzip
-import struct
-import logging
 from typing import Any, Callable
 
 from hdt.protocol.decoder import decode_frame
+from htools.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class WSClient:
@@ -34,10 +33,10 @@ class WSClient:
             import websockets
             self._ws = await websockets.connect(self._ws_url)
             self._running = True
-            logger.info("WS connected: %s", self._ws_url[:80])
+            logger.info("WS connected: {}", self._ws_url[:80])
             return True
         except Exception as e:
-            logger.error("WS connect failed: %s", e)
+            logger.error("WS connect failed: {}", e)
             return False
 
     async def listen(self):
@@ -50,7 +49,7 @@ class WSClient:
                 await self._send_heartbeat()
             except Exception as e:
                 if self._running:
-                    logger.error("WS recv error: %s", e)
+                    logger.error("WS recv error: {}", e)
                     await asyncio.sleep(1)
 
     def _process_raw(self, raw: bytes):
@@ -81,7 +80,7 @@ class WSClient:
             await self._ws.send(frame)
             return True
         except Exception as e:
-            logger.error("WS send error: %s", e)
+            logger.error("WS send error: {}", e)
             return False
 
     async def _send_heartbeat(self):

@@ -1,12 +1,12 @@
 """StreamSource — 通过 CDP DOM 轮询采集实时行情"""
 
 from typing import AsyncIterator
-import logging
 from htools.interfaces import DataSource
 from htools.types import MarketTick
+from htools.utils.logger import get_logger, setup_logging
 from hdt.adapters.leyu_adapter import LeyuAdapter
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class StreamSource(DataSource):
@@ -30,6 +30,7 @@ class StreamSource(DataSource):
         return "running" if self._running else "stopped"
 
     async def start(self) -> AsyncIterator[MarketTick]:
+        setup_logging()
         self._running = True
         logger.info("StreamSource started (CDP mode)")
 

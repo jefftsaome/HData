@@ -1,12 +1,13 @@
 """Headless Chrome 进程管理"""
 
 import asyncio
-import logging
 import os
 import tempfile
 import shutil
 
-logger = logging.getLogger(__name__)
+from htools.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ChromeManager:
@@ -69,7 +70,7 @@ class ChromeManager:
         )
 
         self._cdp_port = int(os.environ.get("CDP_PORT", "0")) or 9222
-        logger.info("Chrome started (PID=%s, CDP port=%s)", self._process.pid, self._cdp_port)
+        logger.info("Chrome started (PID={}, CDP port={})", self._process.pid, self._cdp_port)
         return self._cdp_port
 
     async def stop(self):

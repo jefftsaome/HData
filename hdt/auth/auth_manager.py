@@ -2,11 +2,12 @@
 
 import json
 import time
-import logging
 from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from htools.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -32,7 +33,7 @@ class AuthManager:
             domain=domain,
             expires_at=time.time() + 3600,
         )
-        logger.info("Auth set: player_id=%s, domain=%s", player_id, domain)
+        logger.info("Auth set: player_id={}, domain={}", player_id, domain)
 
     def get_ws_url(self, game_type: int, table_id: int) -> str:
         """构造 WebSocket 连接 URL。

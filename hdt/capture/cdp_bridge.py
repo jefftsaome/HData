@@ -1,11 +1,11 @@
 """CDP 桥接 — 通过 Chrome DevTools Protocol 与游戏页面交互"""
 
-import asyncio
 import json
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from htools.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class CDPSession:
@@ -38,7 +38,7 @@ class CDPSession:
             self._session_id = attached.get("sessionId")
             return True
         except Exception as e:
-            logger.error("CDP connect failed: %s", e)
+            logger.error("CDP connect failed: {}", e)
             return False
 
     async def evaluate(self, js: str) -> dict[str, Any] | None:
@@ -52,7 +52,7 @@ class CDPSession:
             }, session_id=self._session_id)
             return result
         except Exception as e:
-            logger.warning("CDP evaluate failed: %s", e)
+            logger.warning("CDP evaluate failed: {}", e)
             return None
 
     async def _send(self, method: str, params: dict | None = None,
