@@ -2,7 +2,7 @@
 """hdt 内部类型定义 — 不对外暴露"""
 
 from enum import IntEnum
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
 
 
 class SourceType(IntEnum):

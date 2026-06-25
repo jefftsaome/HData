@@ -1,11 +1,11 @@
 """WSSource — 通过 WebSocket 协议解码采集"""
 
 from typing import AsyncIterator, Callable
-from htools.interfaces import DataSource
+
+from htools.interfaces import DataSource, SourceStatus
 from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
 from hdt.adapters.leyu_adapter import LeyuAdapter
-
 logger = get_logger(__name__)
 
 
@@ -16,7 +16,7 @@ class WSSource(DataSource):
         self._table_id = table_id
         self._mode = mode
         self._adapter = LeyuAdapter()
-        self._status = "idle"
+        self._status: SourceStatus = "idle"
         self._client = None
         self._on_status_change: Callable[[SourceStatusEvent], None] | None = None
 
@@ -29,13 +29,13 @@ class WSSource(DataSource):
         return "WS Source"
 
     @property
-    def status(self) -> str:
+    def status(self) -> SourceStatus:
         return self._status
 
     def set_on_status_change(self, callback: Callable[[SourceStatusEvent], None]):
         self._on_status_change = callback
 
-    def _set_status(self, status: str):
+    def _set_status(self, status: SourceStatus):
         self._status = status
         if self._on_status_change:
             self._on_status_change({"source_id": self.id, "status": status})
@@ -45,17 +45,21 @@ class WSSource(DataSource):
         self._set_status("running")
         logger.info("WSSource started (mode={}, table_id={})", self._mode, self._table_id)
 
-        tick = self._adapter.create_tick(
-            result="P",
-            score=2.0,
-            table_id=self._table_id or 2718,
-            counter_id="",
-            trade_seq="",
-            round_id=456354030,
-            game_type=2001,
-            road_sequence=["B", "P"],
-        )
-        yield tick
+        try:
+            tick = self._adapter.create_tick(
+                result="P",
+                score=2.0,
+                table_id=self._table_id or 2718,
+                counter_id="",
+                trade_seq="",
+                round_id=456354030,
+                game_type=2001,
+                road_sequence=["B", "P"],
+            )
+            yield tick
+        except Exception as e:
+            logger.error("WSSource start error: {}", e)
+            self._set_status("error")
 
     async def stop(self):
         self._set_status("stopped")

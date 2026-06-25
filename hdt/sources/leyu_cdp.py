@@ -1,7 +1,8 @@
 """CDPSource — 通过 CDP DOM 轮询采集实时行情"""
 
 from typing import AsyncIterator, Callable
-from htools.interfaces import DataSource
+
+from htools.interfaces import DataSource, SourceStatus
 from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
 from hdt.adapters.leyu_adapter import LeyuAdapter
@@ -15,7 +16,7 @@ class CDPSource(DataSource):
     def __init__(self, cdp_url: str = ""):
         self._cdp_url = cdp_url
         self._adapter = LeyuAdapter()
-        self._status = "idle"
+        self._status: SourceStatus = "idle"
         self._on_status_change: Callable[[SourceStatusEvent], None] | None = None
 
     @property
@@ -27,13 +28,13 @@ class CDPSource(DataSource):
         return "CDP Source"
 
     @property
-    def status(self) -> str:
+    def status(self) -> SourceStatus:
         return self._status
 
     def set_on_status_change(self, callback: Callable[[SourceStatusEvent], None]):
         self._on_status_change = callback
 
-    def _set_status(self, status: str):
+    def _set_status(self, status: SourceStatus):
         self._status = status
         if self._on_status_change:
             self._on_status_change({"source_id": self.id, "status": status})
@@ -54,7 +55,12 @@ class CDPSource(DataSource):
         yield tick
 
         while self._status == "running":
-            await self._poll_once()
+            try:
+                await self._poll_once()
+            except Exception as e:
+                logger.error("CDP poll error: {}", e)
+                self._set_status("error")
+                break
             import asyncio
             await asyncio.sleep(0.05)
 
