@@ -19,12 +19,25 @@ logger = get_logger(__name__)
 class CDPSource(DataSource):
     """通过 Chrome CDP 连接游戏页面，从 DOM 实时采集行情。
 
+    两种使用模式:
+      1. 自动模式 (默认) — 自动启动 Headless Chrome 并管理生命周期
+      2. 附加模式 — 传入 cdp_url 连接到用户已启动的 Chrome
+
     采集流程:
-      1. 启动 Headless Chrome（ChromeManager）
+      1. 启动/连接 Chrome（ChromeManager）
       2. 连接 CDP（CDPSession）
       3. 周期注入 JS 提取 DOM 数据（每 50ms）
       4. 解析为结构化数据 → 检测结果 → MarketTick
       5. 断线自动重连（指数退避 1s→2s→4s→...→30s）
+
+    Usage:
+        # 自动模式
+        src = CDPSource()
+        async for tick in src.start(): ...
+
+        # 附加模式（用户已启动 Chrome）
+        src = CDPSource(cdp_url="ws://127.0.0.1:9222/devtools/browser")
+        async for tick in src.start(): ...
     """
 
     def __init__(
@@ -34,12 +47,13 @@ class CDPSource(DataSource):
         poll_interval_ms: int = 50,
     ):
         self._chrome_path = chrome_path
-        self._cdp_url = cdp_url
         self._interval = max(0.02, poll_interval_ms / 1000)
         self._adapter = LeyuAdapter()
 
-        # 组件（start 时初始化）
+        # attach 模式：用户提供了 CDP URL
         self._chrome: ChromeManager | None = None
+        if cdp_url:
+            self._chrome = ChromeManager.from_url(cdp_url)
         self._cdp: CDPSession | None = None
         self._extractor: DOMExtractor | None = None
 
@@ -126,21 +140,22 @@ class CDPSource(DataSource):
 
     async def _ensure_connected(self, delay: float) -> MarketTick:
         """确保已连接到 Chrome CDP，未连则尝试建立连接。"""
-        # 启动 Chrome（如果未启动且未指定外部 CDP URL）
-        if not self._cdp_url and self._chrome is None:
+        # auto 模式：启动 Chrome（如果还未启动）
+        if self._chrome is None:
             self._chrome = ChromeManager(chrome_path=self._chrome_path)
+
+        if not self._chrome.is_attached:
             await self._chrome.start()
-            self._cdp_url = self._chrome.cdp_url
 
         # 连接 CDP
         try:
-            self._cdp = CDPSession(self._cdp_url)
+            self._cdp = CDPSession(self._chrome.cdp_url)
             ok = await self._cdp.connect()
             if ok:
                 self._extractor = DOMExtractor(self._cdp)
                 self._fixed_gameinfo_init = False
                 self._last_fingerprint = ""
-                logger.info("CDP connected: {}", self._cdp_url)
+                logger.info("CDP connected: {}", self._chrome.cdp_url)
             else:
                 logger.warning("CDP connect failed, retrying in {:.0f}s", delay)
                 self._cdp = None

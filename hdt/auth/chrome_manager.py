@@ -1,96 +1,160 @@
-"""Headless Chrome 进程管理"""
+"""Headless Chrome 进程管理
+
+两种使用模式:
+  1. 自动模式 (auto-start) — ChromManager() 自动查找并启动 Chrome
+  2. 附加模式 (attach) — ChromeManager.from_url(url) 连接用户已启动的 Chrome
+"""
 
 import asyncio
 import os
-import socket
-import tempfile
+import platform
 import shutil
+import sys
+import tempfile
 
 from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 默认 CDP 调试端口
 DEFAULT_CDP_PORT = 9222
 
 
-class ChromeManager:
-    """管理 Chrome 进程的生命周期：启动、保活、崩溃重启、关闭。
+def _find_chrome() -> str:
+    """跨平台查找 Chrome/Chromium 可执行路径。"""
+    system = platform.system()
+    candidates: list[str] = []
 
-    通过 CDP (Chrome DevTools Protocol) 与 Chrome 实例通信。
+    if system == "Darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    elif system == "Windows":
+        # 常见安装路径 + PATH 中的 chrome
+        candidates = [
+            os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            "chrome.exe",
+        ]
+    elif system == "Linux":
+        candidates = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ]
+
+    for c in candidates:
+        # 相对路径/PATH中的可执行文件用 shutil.which
+        if not os.path.isabs(c):
+            found = shutil.which(c)
+            if found:
+                return found
+        elif os.path.isfile(c):
+            return c
+
+    raise RuntimeError(
+        f"Chrome not found on {system}. "
+        "Install Google Chrome or pass chrome_path explicitly."
+    )
+
+
+class ChromeManager:
+    """Chrome 进程生命周期管理。
+
+    支持两种模式:
+      - auto: ChromeManager() 自动启动/管理 Chrome
+      - attach: ChromeManager.from_url(url) 连接已运行的 Chrome
     """
 
-    CHROME_ARGS = [
+    # 跨平台通用参数
+    BASE_ARGS = [
         "--headless=new",
-        "--no-sandbox",
         "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-dev-shm-usage",
         "--disable-extensions",
         "--mute-audio",
-        "--remote-debugging-port=9222",
+        "--disable-blink-features=AutomationControlled",
+    ]
+
+    # Linux 专用参数
+    LINUX_ARGS = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
     ]
 
     def __init__(self, chrome_path: str | None = None, data_dir: str | None = None):
-        self._chrome_path = chrome_path or self._find_chrome()
+        self._chrome_path = chrome_path
         self._data_dir = data_dir
         self._process: asyncio.subprocess.Process | None = None
         self._cdp_port: int = 0
         self._temp_dir: str | None = None
 
-    @staticmethod
-    def _find_chrome() -> str:
-        """自动查找系统 Chrome/Chromium 路径"""
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-        raise RuntimeError("Chrome not found. Install Google Chrome or set chrome_path.")
+        # attach 模式：用户提供了 URL，不管理 Chrome 进程
+        self._attached_url: str | None = None
 
-    async def start(self, port: int = 0) -> int:
-        """启动 Chrome，返回 CDP 端口号。
+    @classmethod
+    def from_url(cls, url: str) -> "ChromeManager":
+        """附加到用户已启动的 Chrome（不管理进程生命周期）。
 
         Args:
-            port: CDP 调试端口，0 表示使用默认 9222。
+            url: CDP WebSocket URL，如 ws://127.0.0.1:9222/devtools/browser
+
+        Usage:
+            cm = ChromeManager.from_url("ws://127.0.0.1:9222/...")
+            cm.cdp_url  # → ws://127.0.0.1:9222/...
+            # 不需要调用 start/stop
+        """
+        cm = cls()
+        cm._attached_url = url
+        return cm
+
+    @property
+    def is_attached(self) -> bool:
+        """是否附加到外部 Chrome（非本类启动）。"""
+        return self._attached_url is not None
+
+    async def start(self, port: int = 0) -> int:
+        """启动 Chrome（仅 auto 模式可用）。
+
+        Args:
+            port: CDP 端口，0=默认 9222。
 
         Returns:
-            实际使用的 CDP 端口号。
+            CDP 端口号。
         """
+        if self.is_attached:
+            raise RuntimeError("Cannot start() in attach mode. Use from_url() instead.")
+
         if self._process:
             if self._is_alive():
                 logger.warning("Chrome already running (PID={})", self._process.pid)
                 return self._cdp_port
-            else:
-                logger.warning("Chrome process dead, restarting")
-                self._process = None
+            logger.warning("Chrome process dead, restarting")
+            self._process = None
 
         self._cdp_port = port or DEFAULT_CDP_PORT
 
-        # 如果端口已被占用，尝试端口 +1 递增
+        # 端口冲突自增
         while await self._port_in_use(self._cdp_port):
             logger.warning("Port {} in use, trying {}", self._cdp_port, self._cdp_port + 1)
             self._cdp_port += 1
+
+        # 延迟查找 Chrome 路径（避免 attach 模式无谓查找）
+        if not self._chrome_path:
+            self._chrome_path = _find_chrome()
 
         if not self._data_dir:
             self._temp_dir = tempfile.mkdtemp(prefix="chrome_")
             self._data_dir = self._temp_dir
 
-        args = [
-            self._chrome_path,
-            f"--remote-debugging-port={self._cdp_port}",
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-            "--disable-dev-shm-usage",
-            "--disable-extensions",
-            "--mute-audio",
-            f"--user-data-dir={self._data_dir}",
-        ]
+        # 组装启动参数
+        system = platform.system()
+        args = [self._chrome_path, f"--remote-debugging-port={self._cdp_port}",
+                f"--user-data-dir={self._data_dir}"]
+        args += self.BASE_ARGS
+        if system == "Linux":
+            args += self.LINUX_ARGS
 
         self._process = await asyncio.create_subprocess_exec(
             *args,
@@ -101,42 +165,27 @@ class ChromeManager:
         logger.info("Chrome started (PID={}), waiting for port {}...",
                     self._process.pid, self._cdp_port)
 
-        # 等待端口就绪（超时 15 秒）
-        await self._wait_for_port(self._cdp_port, timeout=15)
+        await self._wait_for_port(timeout=15)
         logger.info("Chrome ready on port {}", self._cdp_port)
         return self._cdp_port
 
-    async def _wait_for_port(self, port: int, timeout: float = 15) -> None:
-        """等待指定端口可连接。
-
-        Raises:
-            TimeoutError: 超时后端口仍未就绪
-        """
+    async def _wait_for_port(self, timeout: float = 15) -> None:
+        """轮询等待 CDP 端口可连接。"""
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
-            if await self._port_in_use(port):
-                # 再快速确认一下 CDP 端口是否真的可通信
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection("127.0.0.1", port),
-                        timeout=2,
-                    )
-                    writer.close()
-                    await writer.wait_closed()
-                    return
-                except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
-                    pass
+            if await self._can_connect(self._cdp_port):
+                return
             await asyncio.sleep(0.3)
-
-        raise TimeoutError(f"Chrome port {port} not ready within {timeout}s")
+        raise TimeoutError(
+            f"Chrome port {self._cdp_port} not ready within {timeout}s"
+        )
 
     @staticmethod
-    async def _port_in_use(port: int) -> bool:
-        """检查端口是否已被占用。"""
+    async def _can_connect(port: int) -> bool:
+        """尝试 TCP 连接指定端口。"""
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", port),
-                timeout=1,
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", port), timeout=1,
             )
             writer.close()
             await writer.wait_closed()
@@ -144,37 +193,49 @@ class ChromeManager:
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
             return False
 
+    @staticmethod
+    async def _port_in_use(port: int) -> bool:
+        """检查端口是否已被占用。"""
+        return await ChromeManager._can_connect(port)
+
     def _is_alive(self) -> bool:
         """检查 Chrome 子进程是否仍在运行。"""
-        if self._process is None:
-            return False
-        return self._process.returncode is None
+        return self._process is not None and self._process.returncode is None
 
     async def stop(self):
-        """关闭 Chrome 进程并清理临时目录。"""
+        """关闭 Chrome 进程。attach 模式下无操作。"""
+        if self.is_attached:
+            return
+
         if self._process and self._is_alive():
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5)
             except asyncio.TimeoutError:
                 self._process.kill()
-                await asyncio.wait_for(self._process.wait(), timeout=3)
+                await self._process.wait()
             self._process = None
             logger.info("Chrome stopped")
 
         # 清理临时用户数据目录
         if self._temp_dir:
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            if platform.system() == "Windows":
+                # Windows 下文件可能被锁，多次重试
+                for attempt in range(3):
+                    shutil.rmtree(self._temp_dir, ignore_errors=True)
+                    if not os.path.exists(self._temp_dir):
+                        break
+                    await asyncio.sleep(0.5)
+            else:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
             self._temp_dir = None
             self._data_dir = None
 
     @property
     def cdp_url(self) -> str:
-        """获取 CDP WebSocket URL。
-
-        Returns:
-            ws://127.0.0.1:{port}/devtools/browser
-        """
+        """获取 CDP WebSocket URL。"""
+        if self.is_attached:
+            return self._attached_url
         if not self._cdp_port:
             raise RuntimeError("Chrome not started")
         return f"ws://127.0.0.1:{self._cdp_port}/devtools/browser"
