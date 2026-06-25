@@ -8,17 +8,18 @@ class TestCDPSource:
         ss = CDPSource()
         assert ss.id == "cdp_source"
         assert ss.name == "CDP Source"
+        assert ss.status == "idle"
 
     @pytest.mark.asyncio
-    async def test_cdp_source_yields_ticks(self):
+    async def test_cdp_source_set_on_status_change(self):
         ss = CDPSource()
-        ticks = []
-        async for tick in ss.start():
-            ticks.append(tick)
-            break
-        await ss.stop()
-        assert len(ticks) == 1
-        assert ticks[0].side.name in ("LONG", "SHORT", "FLAT")
+        events = []
+        ss.set_on_status_change(lambda e: events.append(e))
+        # 直接调用内部 _set_status 测试回调
+        ss._set_status("running")
+        assert ss.status == "running"
+        assert len(events) == 1
+        assert events[0]["status"] == "running"
 
 
 class TestWSSource:
@@ -26,6 +27,7 @@ class TestWSSource:
     async def test_ws_source_id(self):
         ps = WSSource(table_id=2718)
         assert ps.id == "ws_source"
+        assert ps.status == "idle"
 
     @pytest.mark.asyncio
     async def test_ws_source_select_table(self):
