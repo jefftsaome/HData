@@ -22,6 +22,7 @@ packet_source = "hdt.sources.leyu_packet:PacketSource"
 
 [tool.setuptools.packages.find]
 where = ["."]
+exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -29,6 +30,7 @@ asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
+    "cython>=3.2.6",
     "pytest>=9.1.1",
     "pytest-asyncio>=0.23.0,!=1.4.0",
 ]
