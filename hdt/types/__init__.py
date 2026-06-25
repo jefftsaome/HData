@@ -1,5 +1,5 @@
 # hdt/types/__init__.py
-"""hdt 内部类型定义 — 百家乐专有数据模型，不对外暴露"""
+"""hdt 内部类型定义 — 不对外暴露"""
 
 from enum import IntEnum
 from typing import Literal, NotRequired, TypedDict
@@ -19,13 +19,13 @@ RoadCell = Literal["B", "P", "T", "."]
 
 
 class CardInfo(TypedDict, total=False):
-    """单张卡牌的信息"""
+    """单张牌的信息"""
     display: str
     baccarat_value: int
 
 
 class BetEntry(TypedDict, total=False):
-    """投注金额/人数条目"""
+    """金额/人数条目"""
     amount_raw: str
     amount: int
     count: int
@@ -38,7 +38,7 @@ class OddsEntry(TypedDict, total=False):
 
 
 class FixedData(TypedDict, total=False):
-    """桌台固定信息"""
+    """固定信息"""
     game_name: str
     table_id: str
     gameplay: str
@@ -56,13 +56,13 @@ class DynamicCards(TypedDict, total=False):
 
 
 class DynamicBets(TypedDict, total=False):
-    """投注信息"""
+    """交易信息"""
     total: BetEntry
     areas: dict[str, BetEntry]
 
 
 class DynamicBootStats(TypedDict, total=False):
-    """靴盘统计"""
+    """统计"""
     total_rounds: int
     banker_wins: int
     player_wins: int
@@ -73,7 +73,7 @@ class DynamicBootStats(TypedDict, total=False):
 
 
 class DynamicData(TypedDict, total=False):
-    """牌局动态数据"""
+    """动态数据"""
     ts: int
     round_id: str
     status: str
@@ -122,7 +122,7 @@ class DynamicExtractResult(TypedDict, total=False):
 
 
 class FixedGameInfo(TypedDict, total=False):
-    """桌台固定信息（CDP 一次提取，反复复用）"""
+    """固定信息（CDP 一次提取，反复复用）"""
     game_name: str
     table_id: str
     gameplay: str
