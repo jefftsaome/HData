@@ -2,10 +2,9 @@
 
 import json
 import re
-import logging
-from typing import Any
+from htools.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════

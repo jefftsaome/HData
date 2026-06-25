@@ -2,11 +2,10 @@
 
 import hashlib
 import json
-import logging
 import re
-from typing import Any
+from htools.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 投注区域名称（按页面显示顺序）
 AREA_NAMES = ["庄", "闲", "和", "庄对", "闲对"]
