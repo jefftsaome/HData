@@ -1,4 +1,4 @@
-"""StreamSource — 通过 CDP DOM 轮询采集实时行情"""
+"""CDPSource — 通过 CDP DOM 轮询采集实时行情"""
 
 from typing import AsyncIterator
 from htools.interfaces import DataSource
@@ -9,8 +9,8 @@ from hdt.adapters.leyu_adapter import LeyuAdapter
 logger = get_logger(__name__)
 
 
-class StreamSource(DataSource):
-    """CDP DOM 轮询数据源。"""
+class CDPSource(DataSource):
+    """CDP DOM 轮询数据源。通过 Chrome CDP 读取游戏页面 DOM。"""
 
     def __init__(self, cdp_url: str = ""):
         self._cdp_url = cdp_url
@@ -19,11 +19,11 @@ class StreamSource(DataSource):
 
     @property
     def id(self) -> str:
-        return "stream_source"
+        return "cdp_source"
 
     @property
     def name(self) -> str:
-        return "Stream Source"
+        return "CDP Source"
 
     @property
     def status(self) -> str:
@@ -32,7 +32,7 @@ class StreamSource(DataSource):
     async def start(self) -> AsyncIterator[MarketTick]:
         setup_logging()
         self._running = True
-        logger.info("StreamSource started (CDP mode)")
+        logger.info("CDPSource started (CDP mode)")
 
         tick = self._adapter.create_tick(
             result="B",
@@ -55,4 +55,4 @@ class StreamSource(DataSource):
 
     async def stop(self):
         self._running = False
-        logger.info("StreamSource stopped")
+        logger.info("CDPSource stopped")

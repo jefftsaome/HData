@@ -17,8 +17,8 @@ dependencies = [
 htools = { path = "../hsys/htools" }
 
 [project.entry-points."data_sources"]
-stream_source = "hdt.sources.leyu_stream:StreamSource"
-packet_source = "hdt.sources.leyu_packet:PacketSource"
+cdp_source = "hdt.sources.leyu_cdp:CDPSource"
+ws_source = "hdt.sources.leyu_ws:WSSource"
 
 [tool.setuptools.packages.find]
 where = ["."]
