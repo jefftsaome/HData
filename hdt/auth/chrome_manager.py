@@ -92,10 +92,13 @@ class ChromeManager:
 
         # attach 模式：用户提供了 URL，不管理 Chrome 进程
         self._attached_url: str | None = None
+        self._attached_host: str = "127.0.0.1"
 
     @classmethod
     def from_url(cls, url: str) -> "ChromeManager":
         """附加到用户已启动的 Chrome（不管理进程生命周期）。
+
+        自动从 URL 解析 host 和 port，供 health check 使用。
 
         Args:
             url: CDP WebSocket URL，如 ws://127.0.0.1:9222/devtools/browser
@@ -103,10 +106,19 @@ class ChromeManager:
         Usage:
             cm = ChromeManager.from_url("ws://127.0.0.1:9222/...")
             cm.cdp_url  # → ws://127.0.0.1:9222/...
-            # 不需要调用 start/stop
+            cm.is_attached  # → True
         """
         cm = cls()
         cm._attached_url = url
+        # 解析 host 和 port 供 health check 使用
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            cm._attached_host = parsed.hostname or "127.0.0.1"
+            cm._cdp_port = parsed.port or DEFAULT_CDP_PORT
+        except Exception:
+            cm._attached_host = "127.0.0.1"
+            cm._cdp_port = DEFAULT_CDP_PORT
         return cm
 
     @property
@@ -173,7 +185,7 @@ class ChromeManager:
         """轮询等待 CDP 端口可连接。"""
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
-            if await self._can_connect(self._cdp_port):
+            if await self._can_connect_host("127.0.0.1", self._cdp_port):
                 return
             await asyncio.sleep(0.3)
         raise TimeoutError(
@@ -182,10 +194,15 @@ class ChromeManager:
 
     @staticmethod
     async def _can_connect(port: int) -> bool:
-        """尝试 TCP 连接指定端口。"""
+        """检查 127.0.0.1 的指定端口是否可连接。"""
+        return await ChromeManager._can_connect_host("127.0.0.1", port)
+
+    @staticmethod
+    async def _can_connect_host(host: str, port: int) -> bool:
+        """检查指定 host:port 是否可连接。"""
         try:
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", port), timeout=1,
+                asyncio.open_connection(host, port), timeout=1,
             )
             writer.close()
             await writer.wait_closed()
@@ -213,7 +230,7 @@ class ChromeManager:
               - "unknown":  未启动
         """
         if self.is_attached:
-            ok = await self._can_connect(self._cdp_port)
+            ok = await self._can_connect_host(self._attached_host, self._cdp_port)
             return "healthy" if ok else "dead"
 
         if self._process is None:
@@ -225,7 +242,7 @@ class ChromeManager:
             return "dead"
 
         # 进程存活，检查端口响应
-        ok = await self._can_connect(self._cdp_port)
+        ok = await self._can_connect_host("127.0.0.1", self._cdp_port)
         return "healthy" if ok else "dead"
 
     async def stop(self):
