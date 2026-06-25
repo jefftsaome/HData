@@ -1,8 +1,8 @@
 """WSSource — 通过 WebSocket 协议解码采集"""
 
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 from htools.interfaces import DataSource
-from htools.types import MarketTick
+from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
 from hdt.adapters.leyu_adapter import LeyuAdapter
 
@@ -16,8 +16,9 @@ class WSSource(DataSource):
         self._table_id = table_id
         self._mode = mode
         self._adapter = LeyuAdapter()
-        self._running = False
+        self._status = "idle"
         self._client = None
+        self._on_status_change: Callable[[SourceStatusEvent], None] | None = None
 
     @property
     def id(self) -> str:
@@ -29,11 +30,19 @@ class WSSource(DataSource):
 
     @property
     def status(self) -> str:
-        return "running" if self._running else "stopped"
+        return self._status
+
+    def set_on_status_change(self, callback: Callable[[SourceStatusEvent], None]):
+        self._on_status_change = callback
+
+    def _set_status(self, status: str):
+        self._status = status
+        if self._on_status_change:
+            self._on_status_change({"source_id": self.id, "status": status})
 
     async def start(self) -> AsyncIterator[MarketTick]:
         setup_logging()
-        self._running = True
+        self._set_status("running")
         logger.info("WSSource started (mode={}, table_id={})", self._mode, self._table_id)
 
         tick = self._adapter.create_tick(
@@ -49,7 +58,7 @@ class WSSource(DataSource):
         yield tick
 
     async def stop(self):
-        self._running = False
+        self._set_status("stopped")
         if self._client:
             await self._client.disconnect()
         logger.info("WSSource stopped")
