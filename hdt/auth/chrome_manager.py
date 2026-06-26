@@ -9,7 +9,6 @@ import asyncio
 import os
 import platform
 import shutil
-import sys
 import tempfile
 
 from htools.utils.logger import get_logger
@@ -225,8 +224,7 @@ class ChromeManager:
         Returns:
             状态字符串:
               - "healthy":  进程存活 + 端口可连
-              - "dead":     进程已退出（auto 模式），或端口不可达
-              - "attached": attach 模式，只检查端口
+              - "dead":     进程已退出或端口不可达
               - "unknown":  未启动
         """
         if self.is_attached:

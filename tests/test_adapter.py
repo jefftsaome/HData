@@ -45,3 +45,18 @@ class TestLeyuAdapter:
         """无路纸时不写入 metadata"""
         tick = self.adapter.create_tick("banker", 1.0, table_id=2718)
         assert "road_seq" not in tick.metadata
+
+    def test_extra_metadata_merged(self):
+        """extra_metadata 被合并到 metadata 中"""
+        tick = self.adapter.create_tick(
+            "banker", 8.0, table_id=2718,
+            extra_metadata={
+                "table_name": "百家乐A01",
+                "player_cards": "8 9",
+                "status": "结算中",
+            },
+        )
+        assert tick.metadata["table_name"] == "百家乐A01"
+        assert tick.metadata["player_cards"] == "8 9"
+        assert tick.metadata["status"] == "结算中"
+        assert "road_seq" not in tick.metadata

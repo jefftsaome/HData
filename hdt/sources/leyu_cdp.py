@@ -48,7 +48,7 @@ class CDPSource(DataSource):
     ):
         self._chrome_path = chrome_path
         self._interval = max(0.02, poll_interval_ms / 1000)
-        self._adapter = LeyuAdapter()
+        self._adapter: LeyuAdapter = LeyuAdapter()
 
         # attach 模式：用户提供了 CDP URL
         self._chrome: ChromeManager | None = None
@@ -62,8 +62,8 @@ class CDPSource(DataSource):
         self._on_status_change: Callable[[SourceStatusEvent], None] | None = None
         self._last_fingerprint: str = ""
         self._prev_round_id: str | None = None
-        self._fixed_gameinfo_init = False
-        self._poll_count = 0  # 轮询计数，用于定期健康检查
+        self._fixed_gameinfo_init: bool = False
+        self._poll_count: int = 0  # 轮询计数，用于定期健康检查
 
     # ── DataSource 接口 ──────────────────────────────────
 
@@ -248,17 +248,30 @@ class CDPSource(DataSource):
             # 提取路纸序列（从 raw 中取，暂时留空）
             road_seq = []
 
+            # 构建 CDP 原始数据 metadata
+            fixed = self._extractor.fixed_info or {}
+            cdp_meta = {
+                "table_name": raw.get("tableName", ""),
+                "table_type": fixed.get("gameplay", ""),
+                "table_series": fixed.get("table_id", ""),
+                "player_cards": raw.get("playerCards", ""),
+                "banker_cards": raw.get("bankerCards", ""),
+                "status": raw.get("status", ""),
+                "countdown": raw.get("countdownText", ""),
+            }
+
             # 通过 Adapter 产出 MarketTick
             tick = self._adapter.create_tick(
                 result=result or "N",
                 score=score,
                 table_id=raw.get("urlTableId", 0),
-                counter_id=self._extractor.fixed_info.get("table_id", "") if self._extractor.fixed_info else "",
+                counter_id=fixed.get("table_id", ""),
                 trade_seq=rid,
                 round_id=0,
                 game_type=raw.get("urlGameType", 0),
                 road_sequence=road_seq,
                 confidence=0.99 if result else 0.0,
+                extra_metadata=cdp_meta,
             )
             yield tick
 

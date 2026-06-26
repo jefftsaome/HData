@@ -36,6 +36,7 @@ class LeyuAdapter:
         boot_no: int = 0,
         road_sequence: list[str] | None = None,
         confidence: float = 1.0,
+        extra_metadata: dict | None = None,
     ) -> MarketTick:
         """将百家乐牌局结果转为 MarketTick。
 
@@ -50,6 +51,7 @@ class LeyuAdapter:
             boot_no: 靴次
             road_sequence: 路纸序列
             confidence: 置信度
+            extra_metadata: 额外的 metadata 字段（如 CDP 原始数据），会合并到 metadata
         """
         side = self.RESULT_MAP.get(result, TickSide.FLAT)
 
@@ -69,6 +71,8 @@ class LeyuAdapter:
             metadata["round_id"] = round_id
         if boot_no:
             metadata["boot_no"] = boot_no
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         return MarketTick(
             instrument_id=str(table_id),
