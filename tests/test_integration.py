@@ -264,3 +264,9 @@ class TestFullPipeline:
         assert tick.metadata.get("table_type_id") == raw.get("urlGameType", 0)
         assert tick.metadata.get("player_cards") == raw.get("playerCards", "")
         assert tick.metadata.get("banker_cards") == raw.get("bankerCards", "")
+
+        # 运行时加 -s 查看 MarketTick 摘要
+        print(f"\n  counter={tick.counter_id}  seq={tick.trade_seq}  side={tick.side.name}")
+        print(f"  long={tick.long_score}  short={tick.short_score}  status={tick.status}")
+        print(f"  table_no={tick.metadata['table_no']}  type_id={tick.metadata['table_type_id']}")
+        print(f"  total_amt={tick.total_amt}  long_amt={tick.long_amt}  short_amt={tick.short_amt}")

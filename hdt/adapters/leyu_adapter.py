@@ -8,8 +8,6 @@ BET_AREA_MAP = {
     "庄": "long",
     "闲": "short",
     "和": "flat",
-    "庄对": "long_pair",
-    "闲对": "short_pair",
 }
 
 
