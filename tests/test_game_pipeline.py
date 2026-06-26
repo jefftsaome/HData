@@ -96,17 +96,12 @@ class TestDOMExtraction:
         rid = raw.get("roundId", "")
         assert rid, "roundId 不应为空"
         assert len(rid) > 5, f"roundId 格式异常: {rid}"
-        print(f"\n  牌局号: {rid}")
 
     @pytest.mark.asyncio
     async def test_table_name_is_present(self, game_data):
-        raw, ext = game_data
-        # 固定信息中的 tableName
-        fixed = ext.extract_fixed_info() if hasattr(ext, '_fixed_info') and ext._fixed_info is None else ext.fixed_info
-        # 动态数据中的 tableName
+        raw, _ = game_data
         name = raw.get("tableName", "")
         assert name, "tableName 不应为空"
-        print(f"\n  桌台: {name}")
 
     @pytest.mark.asyncio
     async def test_player_banker_cards(self, game_data):
@@ -116,7 +111,6 @@ class TestDOMExtraction:
         # 下注中时可能是占位符，但不应为空
         assert player != "", "playerCards 不应为空"
         assert banker != "", "bankerCards 不应为空"
-        print(f"\n  闲牌: {player!r}  庄牌: {banker!r}")
 
     @pytest.mark.asyncio
     async def test_status_and_countdown(self, game_data):
@@ -124,7 +118,6 @@ class TestDOMExtraction:
         status = raw.get("status", "")
         ct = raw.get("countdownText", "")
         assert status != "", "status 不应为空"
-        print(f"\n  状态: {status}  倒计时: {ct}")
 
 
 class TestParseAndDetect:
@@ -147,7 +140,6 @@ class TestParseAndDetect:
             assert 0 <= pt <= 9, f"闲点数应在 0-9: {pt}"
         if bt is not None:
             assert 0 <= bt <= 9, f"庄点数应在 0-9: {bt}"
-        print(f"\n  闲点数: {pt}  庄点数: {bt}")
 
     @pytest.mark.asyncio
     async def test_detect_result(self, game_data):
@@ -156,8 +148,6 @@ class TestParseAndDetect:
         dyn = parse_dynamic(raw)
         result = detect_result(dyn)
         assert result in ("B", "P", "T", None), f"结果异常: {result}"
-        if result:
-            print(f"\n  结果: {result}")
 
     @pytest.mark.asyncio
     async def test_bet_data(self, game_data):
@@ -168,7 +158,6 @@ class TestParseAndDetect:
         total = bets.get("total", {})
         if total.get("amount"):
             assert total["amount"] > 0, "投注总额应大于 0"
-            print(f"\n  总投注: {total['amount']} ({total.get('count', 0)} 笔)")
 
 
 class TestFullPipeline:
@@ -228,9 +217,3 @@ class TestFullPipeline:
         assert tick.metadata.get("table_type_id") == raw.get("urlGameType", 0), "table_type_id 应等于 urlGameType"
         assert tick.metadata.get("player_cards") == raw.get("playerCards", ""), "player_cards 应传递"
         assert tick.metadata.get("banker_cards") == raw.get("bankerCards", ""), "banker_cards 应传递"
-
-        print(f"\n  ✅ counter_id={tick.counter_id}  trade_seq={tick.trade_seq}")
-        print(f"  ✅ side={tick.side.name}  long={tick.long_score}  short={tick.short_score}")
-        print(f"  ✅ status={tick.status}  countdown={tick.countdown}")
-        print(f"  ✅ table_no={tick.metadata['table_no']}  type_id={tick.metadata['table_type_id']}")
-        print(f"  ✅ 投注: total={tick.total_amt}  long={tick.long_amt}  short={tick.short_amt}")

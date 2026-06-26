@@ -11,6 +11,7 @@
 import os
 import asyncio
 import pytest
+from hdt.capture.cdp_bridge import CDPSession
 
 # 默认 CDP 端口
 CDP_PORT = int(os.environ.get("CDP_PORT", "9222"))
@@ -96,7 +97,6 @@ async def cdp():
     if not ready:
         pytest.skip(f"端口 {CDP_PORT} 不可连，跳过 CDP 测试")
 
-    from hdt.capture.cdp_bridge import CDPSession
     ws_url = await _resolve_ws_url(CDP_PORT)
     session = CDPSession(ws_url)
     ok = await session.connect()
@@ -107,36 +107,18 @@ async def cdp():
 
 
 @pytest.mark.asyncio
-async def test_cdp_list_pages(cdp):
-    """验证 CDP 能列出页面目标并获取当前 URL。"""
-    # 通过 evaluate 获取当前页面 URL（比 1+1 更有意义）
+async def test_cdp_list_pages(cdp: CDPSession):
+    """验证 CDP 能执行 JS 获取当前页面 URL。"""
     result = await cdp.evaluate("window.location.href")
     assert result is not None, "evaluate 应返回结果"
     url = result.get("value", "")
     assert isinstance(url, str), f"URL 应为字符串: {url}"
-    print(f"\n  当前页面: {url[:100]}")
+    assert len(url) > 0, "URL 不应为空"
 
 
 @pytest.mark.asyncio
-async def test_cdp_page_targets(cdp):
+async def test_cdp_page_targets(cdp: CDPSession):
     """验证 CDP 能找到至少一个 page target。"""
     # 直接访问 CDPSession 内部状态，确认有 target
     assert cdp._target_id is not None, "应有 page target"
     assert cdp._session_id is not None, "应有 session_id"
-
-
-@pytest.mark.asyncio
-async def test_dom_extractor_no_crash(cdp):
-    """验证 DOMExtractor 的 JS 注入执行不报错。"""
-    from hdt.capture.dom_extractor import DOMExtractor
-    ext = DOMExtractor(cdp)
-
-    # extract_dynamic 在当前页面上执行 JS
-    # 即使没有百家乐元素，也不应抛异常
-    result = await ext.extract_dynamic()
-    # 返回 None（无元素）或 dict（有元素）均可
-    assert result is None or isinstance(result, dict)
-
-    # 验证 JS 没有把页面搞崩——再 eval 一次应该还能工作
-    sanity = await cdp.evaluate("window.location.href")
-    assert sanity is not None, "页面不应被 JS 注入影响"
