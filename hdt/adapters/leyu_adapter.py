@@ -108,7 +108,9 @@ class LeyuAdapter:
             kw["total_amt"] = total["amount"]
             kw["total_cnt"] = total.get("count", 0)
         for raw_name, data in bets.get("areas", {}).items():
-            semantic = BET_AREA_MAP.get(raw_name, raw_name)
+            semantic = BET_AREA_MAP.get(raw_name)
+            if semantic is None:
+                continue  # 跳过未映射的区域（如"庄对""闲对"）
             if data.get("amount"):
                 kw[f"{semantic}_amt"] = data["amount"]
                 kw[f"{semantic}_cnt"] = data.get("count", 0)

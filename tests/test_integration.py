@@ -265,8 +265,15 @@ class TestFullPipeline:
         assert tick.metadata.get("player_cards") == raw.get("playerCards", "")
         assert tick.metadata.get("banker_cards") == raw.get("bankerCards", "")
 
-        # 运行时加 -s 查看 MarketTick 摘要
-        print(f"\n  counter={tick.counter_id}  seq={tick.trade_seq}  side={tick.side.name}")
-        print(f"  long={tick.long_score}  short={tick.short_score}  status={tick.status}")
-        print(f"  table_no={tick.metadata['table_no']}  type_id={tick.metadata['table_type_id']}")
-        print(f"  total_amt={tick.total_amt}  long_amt={tick.long_amt}  short_amt={tick.short_amt}")
+        # 运行时加 -s 查看 MarketTick 完整摘要
+        print(f"\n  counter={tick.counter_id}  trade_seq={tick.trade_seq}  side={tick.side.name}")
+        print(f"  long_score={tick.long_score}  short_score={tick.short_score}")
+        print(f"  status={tick.status}  countdown={tick.countdown}")
+        print(f"  table_no={tick.metadata['table_no']}  type_id={tick.metadata['table_type_id']}  table_type={tick.metadata.get('table_type','')}")
+        print(f"  total_amt={tick.total_amt}  total_cnt={tick.total_cnt}")
+        print(f"  long_amt={tick.long_amt}  long_cnt={tick.long_cnt}")
+        print(f"  short_amt={tick.short_amt}  short_cnt={tick.short_cnt}")
+        print(f"  flat_amt={tick.flat_amt}  flat_cnt={tick.flat_cnt}")
+        print(f"  player_cards={tick.metadata.get('player_cards','')}  banker_cards={tick.metadata.get('banker_cards','')}")
+        print(f"  server_time={tick.metadata.get('server_time','')}  dealer={tick.metadata.get('dealer','')}  limit={tick.metadata.get('bet_limit','')}")
+        print(f"  total_rounds={tick.metadata.get('total_rounds',0)}  streaks={tick.metadata.get('streaks',[])}")
