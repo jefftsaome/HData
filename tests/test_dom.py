@@ -2,7 +2,7 @@
 
 from hdt.capture.dom_parser import (
     baccarat_value, parse_number, parse_cards, parse_bets,
-    parse_boot_stats, parse_dynamic, detect_result, make_fingerprint,
+    parse_dynamic, detect_result, make_fingerprint,
 )
 
 

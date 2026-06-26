@@ -1,6 +1,5 @@
-import pytest
-from htools.types import TickSide, MarketTick
-from hdt.adapters.leyu_adapter import LeyuAdapter, BET_AREA_MAP
+from htools.types import TickSide
+from hdt.adapters.leyu_adapter import LeyuAdapter
 
 
 class TestLeyuAdapter:
@@ -11,13 +10,19 @@ class TestLeyuAdapter:
         tick = self.adapter.create_tick("banker", table_id=2718)
         assert tick.side == TickSide.LONG
         assert tick.metadata["table_no"] == 2718
+        tick = self.adapter.create_tick("B", table_id=2718)
+        assert tick.side == TickSide.LONG
 
     def test_player_maps_to_short(self):
         tick = self.adapter.create_tick("player", table_id=2718)
         assert tick.side == TickSide.SHORT
+        tick = self.adapter.create_tick("P", table_id=2718)
+        assert tick.side == TickSide.SHORT
 
     def test_tie_maps_to_flat(self):
         tick = self.adapter.create_tick("tie", table_id=2718)
+        assert tick.side == TickSide.FLAT
+        tick = self.adapter.create_tick("T", table_id=2718)
         assert tick.side == TickSide.FLAT
 
     def test_counter_id_and_trade_seq(self):
