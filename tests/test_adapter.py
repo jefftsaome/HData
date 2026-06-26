@@ -13,7 +13,6 @@ class TestLeyuAdapter:
         assert tick.side == TickSide.LONG
         assert tick.metadata["table_no"] == 2718
         assert tick.score == 8
-        assert tick.instrument_id == ""
 
     def test_player_maps_to_short(self):
         """闲 → SHORT"""

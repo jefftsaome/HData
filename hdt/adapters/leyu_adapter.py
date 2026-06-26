@@ -80,9 +80,8 @@ class LeyuAdapter:
         if extra_metadata:
             metadata.update(extra_metadata)
 
-        # instrument_id 对 UI/策略无意义，置空
+        # instrument_id 已从 MarketTick 中移除
         return MarketTick(
-            instrument_id="",
             counter_id=counter_id,
             trade_seq=trade_seq,
             status=status,
