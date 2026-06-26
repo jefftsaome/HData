@@ -212,11 +212,12 @@ class CDPSource(DataSource):
             # 检测结果
             result = detect_result(dyn)
             score = 0
-            if result and dyn.get("cards"):
-                # 取庄闲点数中的较大者作为 score
-                p = dyn["cards"].get("player_total", 0) or 0
-                b = dyn["cards"].get("banker_total", 0) or 0
-                score = max(p, b)
+            long_score = 0
+            short_score = 0
+            if dyn.get("cards"):
+                long_score = dyn["cards"].get("banker_total", 0) or 0
+                short_score = dyn["cards"].get("player_total", 0) or 0
+                score = max(long_score, short_score)
 
             # 倒计时转 int | None
             countdown_raw = raw.get("countdownText", "")
@@ -259,16 +260,21 @@ class CDPSource(DataSource):
 
             # 构建 CDP 原始数据 metadata
             fixed = self._extractor.fixed_info or {}
+            bet_meta = self._adapter.build_bet_metadata(dyn.get("bets", {}))
             cdp_meta = {
                 "table_type": fixed.get("gameplay", ""),
                 "player_cards": raw.get("playerCards", ""),
                 "banker_cards": raw.get("bankerCards", ""),
+                "server_time": raw.get("timeDisplay", ""),
             }
+            cdp_meta.update(bet_meta)
 
             # 通过 Adapter 产出 MarketTick
             tick = self._adapter.create_tick(
                 result=result or "N",
                 score=score,
+                long_score=long_score,
+                short_score=short_score,
                 table_id=raw.get("urlTableId", 0),
                 counter_id=fixed.get("table_id", ""),
                 trade_seq=rid,
