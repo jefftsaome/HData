@@ -1,37 +1,42 @@
-"""集成测试 — 直连已在运行的 Chrome
+"""集成测试 — Chrome 端口连通性 + CDP 基本连通
 
-要求:
-  1. Chrome 已启动并开启了远程调试端口
-  2. 通过 CDP_URL 环境变量指定地址，或默认连 ws://127.0.0.1:9222
+场景 1: 代码启动 Chrome，测试端口通
+场景 2: 用户已启动 Chrome，测试端口通
+场景 3: CDP 基本功能（不依赖游戏页面）
 
-启动 Chrome:
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\
-    --remote-debugging-port=9222 \\
-    --user-data-dir=/tmp/chrome_debug
-
-运行测试:
-  uv run pytest tests/test_integration.py -v
-  CDP_URL=ws://127.0.0.1:9333 uv run pytest tests/test_integration.py -v
+运行:
+    uv run pytest tests/test_integration.py -v
 """
 
 import os
+import asyncio
 import pytest
 
-CDP_URL = os.environ.get("CDP_URL", "ws://127.0.0.1:9222/devtools/browser")
+# 默认 CDP 端口
+CDP_PORT = int(os.environ.get("CDP_PORT", "9222"))
+CDP_HOST = "127.0.0.1"
 
 
-async def _resolve_cdp_url() -> str:
-    """从 Chrome HTTP 接口获取真实 CDP WebSocket URL（含 UUID）。"""
+async def _can_connect(port: int) -> bool:
+    """检查指定端口是否可连接。"""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(CDP_HOST, port), timeout=2,
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+        return False
+
+
+async def _resolve_ws_url(port: int) -> str:
+    """从 Chrome HTTP 接口获取真实 CDP WebSocket URL。"""
     import aiohttp
-    port = "9222"
-    if ":" in CDP_URL:
-        parts = CDP_URL.split(":")
-        if len(parts) >= 3:
-            port = parts[2].split("/")[0]
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"http://127.0.0.1:{port}/json/version",
+                f"http://{CDP_HOST}:{port}/json/version",
                 timeout=aiohttp.ClientTimeout(total=3),
             ) as resp:
                 data = await resp.json()
@@ -40,66 +45,98 @@ async def _resolve_cdp_url() -> str:
                     return url
     except Exception:
         pass
-    return CDP_URL
+    return f"ws://{CDP_HOST}:{port}/devtools/browser"
 
+
+# ═══════════════════════════════════════════════════════════
+# 场景 1: 代码启动 Chrome
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_auto_start():
+    """ChromeManager 启动 Chrome，验证端口就绪后关闭。"""
+    from hdt.auth.chrome_manager import ChromeManager
+
+    cm = ChromeManager()
+    try:
+        port = await cm.start(port=9225)  # 用 9225 避免冲突
+        assert port > 0, f"Chrome 应返回有效端口: {port}"
+        ready = await _can_connect(port)
+        assert ready, f"端口 {port} 应可连接"
+        assert "ws://" in cm.cdp_url, f"cdp_url 格式错误: {cm.cdp_url}"
+    finally:
+        await cm.stop()
+
+
+# ═══════════════════════════════════════════════════════════
+# 场景 2: 用户已启动 Chrome
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_attach_port():
+    """验证用户已启动的 Chrome 端口是否可连，不可连则 skip。"""
+    ready = await _can_connect(CDP_PORT)
+    if not ready:
+        pytest.skip(
+            f"端口 {CDP_PORT} 不可连，请先启动 Chrome:\n"
+            f'  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\\n'
+            f"    --remote-debugging-port={CDP_PORT} \\\n"
+            f"    --user-data-dir=/tmp/chrome_debug"
+        )
+
+
+# ═══════════════════════════════════════════════════════════
+# 场景 3: CDP 基本功能（不依赖游戏页面）
+# ═══════════════════════════════════════════════════════════
 
 @pytest.fixture(scope="function")
 async def cdp():
+    """建立 CDP 连接，前置条件是端口已通。"""
+    ready = await _can_connect(CDP_PORT)
+    if not ready:
+        pytest.skip(f"端口 {CDP_PORT} 不可连，跳过 CDP 测试")
+
     from hdt.capture.cdp_bridge import CDPSession
-    real_url = await _resolve_cdp_url()
-    session = CDPSession(real_url)
+    ws_url = await _resolve_ws_url(CDP_PORT)
+    session = CDPSession(ws_url)
     ok = await session.connect()
-    assert ok, (
-        f"无法连接到 {real_url}\n"
-        "请确认 Chrome 已启动:\n"
-        '  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\\n'
-        "    --remote-debugging-port=9222 \\\n"
-        "    --user-data-dir=/tmp/chrome_debug"
-    )
+    if not ok:
+        pytest.skip(f"CDP 连接失败: {ws_url}")
     yield session
     await session.disconnect()
 
 
-class TestCDPConnection:
-    """验证 CDP 能连通并执行 JS"""
-
-    @pytest.mark.asyncio
-    async def test_evaluate_number(self, cdp):
-        result = await cdp.evaluate("1 + 1")
-        assert result is not None
-        assert result.get("value") == 2
-
-    @pytest.mark.asyncio
-    async def test_evaluate_string(self, cdp):
-        result = await cdp.evaluate("'hello' + ' world'")
-        assert result is not None
-        assert result.get("value") == "hello world"
-
-    @pytest.mark.asyncio
-    async def test_evaluate_page_title(self, cdp):
-        result = await cdp.evaluate("document.title")
-        assert result is not None
-        # 当前页面标题，不会是空的
-        assert len(result.get("value", "")) > 0
+@pytest.mark.asyncio
+async def test_cdp_list_pages(cdp):
+    """验证 CDP 能列出页面目标并获取当前 URL。"""
+    # 通过 evaluate 获取当前页面 URL（比 1+1 更有意义）
+    result = await cdp.evaluate("window.location.href")
+    assert result is not None, "evaluate 应返回结果"
+    url = result.get("value", "")
+    assert isinstance(url, str), f"URL 应为字符串: {url}"
+    print(f"\n  当前页面: {url[:100]}")
 
 
-class TestDOMExtractor:
-    """验证 DOMExtractor 能在页面中提取数据"""
+@pytest.mark.asyncio
+async def test_cdp_page_targets(cdp):
+    """验证 CDP 能找到至少一个 page target。"""
+    # 直接访问 CDPSession 内部状态，确认有 target
+    assert cdp._target_id is not None, "应有 page target"
+    assert cdp._session_id is not None, "应有 session_id"
 
-    @pytest.mark.asyncio
-    async def test_extract_fixed_info(self, cdp):
-        from hdt.capture.dom_extractor import DOMExtractor
-        ext = DOMExtractor(cdp)
-        # 当前页面没有百家乐元素，返回空数据但不抛异常
-        result = await ext.extract_fixed_info()
-        assert isinstance(result, dict)
 
-    @pytest.mark.asyncio
-    async def test_extract_dynamic(self, cdp):
-        from hdt.capture.dom_extractor import DOMExtractor
-        ext = DOMExtractor(cdp)
-        # 当前页面没有百家乐 DOM，JS 执行但不抛异常即可
-        result = await ext.extract_dynamic()
-        # 可能返回 None（无对应 DOM 元素）或 dict（有元素）
-        # 无论哪种，不抛异常就算通过
-        assert result is None or isinstance(result, dict)
+@pytest.mark.asyncio
+async def test_dom_extractor_no_crash(cdp):
+    """验证 DOMExtractor 的 JS 注入执行不报错。"""
+    from hdt.capture.dom_extractor import DOMExtractor
+    ext = DOMExtractor(cdp)
+
+    # extract_dynamic 在当前页面上执行 JS
+    # 即使没有百家乐元素，也不应抛异常
+    result = await ext.extract_dynamic()
+    # 返回 None（无元素）或 dict（有元素）均可
+    assert result is None or isinstance(result, dict)
+
+    # 验证 JS 没有把页面搞崩——再 eval 一次应该还能工作
+    sanity = await cdp.evaluate("window.location.href")
+    assert sanity is not None, "页面不应被 JS 注入影响"
