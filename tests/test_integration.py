@@ -49,9 +49,11 @@ async def test_cdp_evaluate_js():
 
         result = await cdp.evaluate("1 + 1")
         assert result is not None, "CDP evaluate 应返回结果"
+        assert result.get("value") == 2, f"1+1 应等于 2, 实际: {result}"
 
         result2 = await cdp.evaluate("'hello' + ' world'")
         assert result2 is not None, "CDP evaluate 字符串应返回结果"
+        assert "hello" in str(result2.get("value", "")), f"字符串拼接失败: {result2}"
 
         await cdp.disconnect()
     finally:

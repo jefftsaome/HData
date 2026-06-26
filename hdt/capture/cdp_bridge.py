@@ -31,12 +31,20 @@ class CDPSession:
             if not self._target_id:
                 logger.warning("No page target found")
                 return False
-            attached = await self._send("Target.attachToTarget", {
+            # attachToTarget with flatten=True
+            # Chrome 150+ 先推一个 Target.attachedToTarget 事件（含 sessionId），
+            # 然后才是命令响应。需读两帧。
+            await self._send_cmd("Target.attachToTarget", {
                 "targetId": self._target_id,
                 "flatten": True,
             })
-            self._session_id = attached.get("sessionId")
-            return True
+            # 第一帧：事件
+            event = json.loads(await self._ws.recv())
+            if event.get("method") == "Target.attachedToTarget":
+                self._session_id = event.get("params", {}).get("sessionId")
+            # 第二帧：命令响应（可忽略）
+            await self._ws.recv()
+            return self._session_id is not None
         except Exception as e:
             logger.error("CDP connect failed: {}", e)
             return False
@@ -50,7 +58,8 @@ class CDPSession:
                 "expression": js,
                 "returnByValue": True,
             }, session_id=self._session_id)
-            return result
+            # CDP 返回结构: {result: {type: "number", value: 2, ...}}
+            return result.get("result") if result else None
         except Exception as e:
             logger.warning("CDP evaluate failed: {}", e)
             return None
@@ -71,6 +80,18 @@ class CDPSession:
         await self._ws.send(json.dumps(msg))
         resp = await self._ws.recv()
         return json.loads(resp).get("result", {})
+
+    async def _send_cmd(self, method: str, params: dict | None = None):
+        """发送 CDP 命令，不等待响应（用于需要先读事件的场景）。"""
+        if not self._ws:
+            raise RuntimeError("Not connected")
+        msg = {
+            "id": self._msg_id,
+            "method": method,
+            "params": params or {},
+        }
+        self._msg_id += 1
+        await self._ws.send(json.dumps(msg))
 
     async def disconnect(self):
         """断开 CDP 连接"""
