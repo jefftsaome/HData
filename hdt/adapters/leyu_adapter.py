@@ -33,11 +33,9 @@ class LeyuAdapter:
 
     # 状态文本映射：原始 → 量化行情术语
     STATUS_MAP = {
-        "下注中": "OPEN",
         "结算中": "CLOSED",
-        "等待中": "PENDING",
-        "已封盘": "FROZEN",
         "开牌中": "MATCHING",
+        "洗牌中": "SHUFFLING",
     }
 
     def create_tick(
