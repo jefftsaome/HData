@@ -47,6 +47,12 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
     const bankerRaw = g('.baccarat-card-area-banker');
     const betRaw = (g('.baccarat-bet-info') || '').replace(/\n/g, '').trim();
 
+    // ── 卡牌 data-value ──
+    const playerCards = document.querySelectorAll('.baccarat-card-area-player .turn-poker');
+    const bankerCards = document.querySelectorAll('.baccarat-card-area-banker .turn-poker');
+    const playerCardValues = Array.from(playerCards).map(e => e.getAttribute('data-value'));
+    const bankerCardValues = Array.from(bankerCards).map(e => e.getAttribute('data-value'));
+
     const bootEls = document.querySelectorAll('.baccarat-boot-total-item');
     const bootItems = [];
     for (const item of bootEls) {
@@ -79,6 +85,8 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
         tableName: tableName,
         playerCards: playerRaw,
         bankerCards: bankerRaw,
+        playerCardValues: playerCardValues,
+        bankerCardValues: bankerCardValues,
         betRaw: betRaw,
         bootItems: bootItems,
         streaks: streaks,

@@ -11,7 +11,7 @@ from hdt.adapters.leyu_adapter import LeyuAdapter
 from hdt.auth.chrome_manager import ChromeManager
 from hdt.capture.cdp_bridge import CDPSession
 from hdt.capture.dom_extractor import DOMExtractor
-from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint
+from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, decode_cards
 
 logger = get_logger(__name__)
 
@@ -256,13 +256,17 @@ class CDPSource(DataSource):
             # 提取路纸序列（从 raw 中取，暂时留空）
             road_seq = []
 
+            # 解码卡牌（从 data-value 转为牌面字符串）
+            raw_player_cards = decode_cards(raw.get("playerCardValues", []))
+            raw_banker_cards = decode_cards(raw.get("bankerCardValues", []))
+
             # 构建 CDP 原始数据 metadata（未显式展开的补充数据）
             fixed = self._extractor.fixed_info or {}
             boot = dyn.get("boot_stats", {})
             cdp_meta = {
                 "table_type": fixed.get("gameplay", ""),
-                "player_cards": raw.get("playerCards", ""),
-                "banker_cards": raw.get("bankerCards", ""),
+                "player_cards": ",".join(raw_player_cards) if raw_player_cards else raw.get("playerCards", ""),
+                "banker_cards": ",".join(raw_banker_cards) if raw_banker_cards else raw.get("bankerCards", ""),
                 "server_time": raw.get("timeDisplay", ""),
                 "dealer": fixed.get("dealer", ""),
                 "bet_limit": fixed.get("bet_limit", ""),

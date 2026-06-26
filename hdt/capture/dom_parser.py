@@ -228,6 +228,35 @@ def detect_result(dynamic: dict) -> str | None:
         return "T"
 
 
+def decode_card_value(dv: str) -> str | None:
+    """将 data-value 属性解码为牌面字符串。
+
+    编码规则:
+        rank = (data-value // 4) + 1    (1=A, 11=J, 12=Q, 13=K)
+        suit = data-value % 4           (0=D, 1=C, 2=H, 3=S)
+        -2 = 未翻牌
+
+    Returns:
+        "7S"、"10H"、"QH" 等，未翻牌返回 None
+    """
+    try:
+        v = int(dv)
+    except (ValueError, TypeError):
+        return None
+    if v < 0:
+        return None
+    rank_names = {1: "A", 11: "J", 12: "Q", 13: "K"}
+    suit_names = {0: "D", 1: "C", 2: "H", 3: "S"}
+    rank = (v // 4) + 1
+    suit = v % 4
+    return f"{rank_names.get(rank, rank)}{suit_names.get(suit, '?')}"
+
+
+def decode_cards(values: list[str]) -> list[str]:
+    """将 data-value 列表解码为牌面字符串列表。"""
+    return [c for v in values if (c := decode_card_value(v)) is not None]
+
+
 def make_fingerprint(dynamic: dict, raw_result: str | None) -> str:
     """计算动态数据的 MD5 指纹（用于去重）。
 

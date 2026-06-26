@@ -262,8 +262,21 @@ class TestFullPipeline:
         assert 0 <= tick.short_score <= 9, f"short_score 越界: {tick.short_score}"
         assert tick.metadata.get("table_no") == raw.get("urlTableId", 0)
         assert tick.metadata.get("table_type_id") == raw.get("urlGameType", 0)
-        assert tick.metadata.get("player_cards") == raw.get("playerCards", "")
-        assert tick.metadata.get("banker_cards") == raw.get("bankerCards", "")
+        # player_cards: 有 data-value 时是解码格式 "7S,10H"，否则是原始文本
+        pv = raw.get("playerCardValues", [])
+        if pv and pv[0] != "-2":
+            from hdt.capture.dom_parser import decode_cards
+            expected = ",".join(decode_cards(pv))
+            assert tick.metadata.get("player_cards") == expected, f"闲牌解码不一致: {tick.metadata.get('player_cards')} != {expected}"
+        else:
+            assert tick.metadata.get("player_cards") == raw.get("playerCards", "")
+        bv = raw.get("bankerCardValues", [])
+        if bv and bv[0] != "-2":
+            from hdt.capture.dom_parser import decode_cards
+            expected = ",".join(decode_cards(bv))
+            assert tick.metadata.get("banker_cards") == expected, f"庄牌解码不一致: {tick.metadata.get('banker_cards')} != {expected}"
+        else:
+            assert tick.metadata.get("banker_cards") == raw.get("bankerCards", "")
 
         # 运行时加 -s 查看 MarketTick 完整摘要
         print(f"\n  counter={tick.counter_id}  trade_seq={tick.trade_seq}  side={tick.side.name}")
