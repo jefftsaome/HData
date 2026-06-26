@@ -31,8 +31,7 @@ class TestLeyuAdapter:
 
     def test_status_and_countdown(self):
         tick = self.adapter.create_tick(
-            "banker", 8, table_id=2718,
-            status="结算中", countdown=9,
+            "banker", 8, table_id=2718, status="结算中", countdown=9,
         )
         assert tick.status == "结算中"
         assert tick.countdown == 9
@@ -43,22 +42,23 @@ class TestLeyuAdapter:
 
     def test_long_short_score(self):
         tick = self.adapter.create_tick(
-            "banker", 8, table_id=2718,
-            long_score=9, short_score=2,
+            "banker", 8, table_id=2718, long_score=9, short_score=2,
         )
         assert tick.long_score == 9
         assert tick.short_score == 2
 
-    def test_road_sequence_sanitized(self):
+    def test_side_sequence(self):
+        """side_sequence 为标准字段，非 metadata"""
         tick = self.adapter.create_tick(
             "banker", 1, table_id=2718,
             road_sequence=["B", "P", "B", "B", "T"],
         )
-        assert tick.metadata["road_seq"] == ["L", "S", "L", "L", "F"]
-
-    def test_empty_road_sequence_no_metadata(self):
-        tick = self.adapter.create_tick("banker", 1, table_id=2718)
+        assert tick.side_sequence == ["L", "S", "L", "L", "F"]
         assert "road_seq" not in tick.metadata
+
+    def test_empty_side_sequence(self):
+        tick = self.adapter.create_tick("banker", 1, table_id=2718)
+        assert tick.side_sequence == []
 
     def test_table_no_int(self):
         tick = self.adapter.create_tick("banker", 8, table_id=2718)
@@ -69,47 +69,37 @@ class TestLeyuAdapter:
         tick = self.adapter.create_tick("banker", 8, table_id=2718, table_type_id=2001)
         assert tick.metadata["table_type_id"] == 2001
 
-    def test_server_time_in_metadata(self):
-        tick = self.adapter.create_tick(
-            "banker", 8, table_id=2718,
-            extra_metadata={"server_time": "17:59 (UTC+08)"},
-        )
-        assert tick.metadata["server_time"] == "17:59 (UTC+08)"
-
-    def test_extra_metadata_merged(self):
-        tick = self.adapter.create_tick(
-            "banker", 8, table_id=2718,
-            extra_metadata={"player_cards": "8 9", "banker_cards": "A K"},
-        )
-        assert tick.metadata["player_cards"] == "8 9"
-        assert tick.metadata["banker_cards"] == "A K"
-
-
-class TestBuildBetMetadata:
-    def test_total_only(self):
-        result = LeyuAdapter.build_bet_metadata({
-            "total": {"amount_raw": "39.1K", "amount": 39100, "count": 196},
-            "areas": {},
-        })
-        assert result["bet_total_amount"] == 39100
-        assert result["bet_total_count"] == 196
-
-    def test_areas_semantic_mapped(self):
-        result = LeyuAdapter.build_bet_metadata({
+    def test_bet_fields_as_standard(self):
+        """投注字段为标准字段"""
+        bets = {
             "total": {"amount_raw": "39.1K", "amount": 39100, "count": 196},
             "areas": {
                 "庄": {"amount_raw": "16.2K", "amount": 16200, "count": 94},
                 "闲": {"amount_raw": "22.4K", "amount": 22400, "count": 95},
                 "和": {"amount_raw": "350", "amount": 350, "count": 3},
             },
-        })
-        assert result["bet_long_amount"] == 16200
-        assert result["bet_long_count"] == 94
-        assert result["bet_short_amount"] == 22400
-        assert result["bet_short_count"] == 95
-        assert result["bet_flat_amount"] == 350
-        assert result["bet_flat_count"] == 3
+        }
+        tick = self.adapter.create_tick("banker", 8, table_id=2718, bets=bets)
+        assert tick.bet_total_amount == 39100
+        assert tick.bet_total_count == 196
+        assert tick.bet_long_amount == 16200
+        assert tick.bet_long_count == 94
+        assert tick.bet_short_amount == 22400
+        assert tick.bet_short_count == 95
+        assert tick.bet_flat_amount == 350
+        assert tick.bet_flat_count == 3
+        assert "bet_total_amount" not in tick.metadata
+        assert "bet_long_amount" not in tick.metadata
 
-    def test_empty_bets(self):
-        result = LeyuAdapter.build_bet_metadata({})
-        assert result == {}
+    def test_extra_metadata_merged(self):
+        tick = self.adapter.create_tick(
+            "banker", 8, table_id=2718,
+            extra_metadata={
+                "player_cards": "8 9",
+                "server_time": "17:59 (UTC+08)",
+                "dealer": "荷官A",
+            },
+        )
+        assert tick.metadata["player_cards"] == "8 9"
+        assert tick.metadata["server_time"] == "17:59 (UTC+08)"
+        assert tick.metadata["dealer"] == "荷官A"

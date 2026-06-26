@@ -258,16 +258,19 @@ class CDPSource(DataSource):
             # 提取路纸序列（从 raw 中取，暂时留空）
             road_seq = []
 
-            # 构建 CDP 原始数据 metadata
+            # 构建 CDP 原始数据 metadata（未显式展开的补充数据）
             fixed = self._extractor.fixed_info or {}
-            bet_meta = self._adapter.build_bet_metadata(dyn.get("bets", {}))
+            boot = dyn.get("boot_stats", {})
             cdp_meta = {
                 "table_type": fixed.get("gameplay", ""),
                 "player_cards": raw.get("playerCards", ""),
                 "banker_cards": raw.get("bankerCards", ""),
                 "server_time": raw.get("timeDisplay", ""),
+                "dealer": fixed.get("dealer", ""),
+                "bet_limit": fixed.get("bet_limit", ""),
+                "total_rounds": boot.get("total_rounds", 0),
+                "streaks": raw.get("streaks", []),
             }
-            cdp_meta.update(bet_meta)
 
             # 通过 Adapter 产出 MarketTick
             tick = self._adapter.create_tick(
@@ -284,6 +287,7 @@ class CDPSource(DataSource):
                 table_type_id=raw.get("urlGameType", 0),
                 road_sequence=road_seq,
                 confidence=0.99 if result else 0.0,
+                bets=dyn.get("bets"),
                 extra_metadata=cdp_meta,
             )
             yield tick
