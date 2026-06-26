@@ -251,13 +251,9 @@ class CDPSource(DataSource):
             # 构建 CDP 原始数据 metadata
             fixed = self._extractor.fixed_info or {}
             cdp_meta = {
-                "table_name": raw.get("tableName", ""),
                 "table_type": fixed.get("gameplay", ""),
-                "table_series": fixed.get("table_id", ""),
                 "player_cards": raw.get("playerCards", ""),
                 "banker_cards": raw.get("bankerCards", ""),
-                "status": raw.get("status", ""),
-                "countdown": raw.get("countdownText", ""),
             }
 
             # 通过 Adapter 产出 MarketTick
@@ -267,6 +263,8 @@ class CDPSource(DataSource):
                 table_id=raw.get("urlTableId", 0),
                 counter_id=fixed.get("table_id", ""),
                 trade_seq=rid,
+                status=raw.get("status", ""),
+                countdown=raw.get("countdownText", ""),
                 round_id=0,
                 game_type=raw.get("urlGameType", 0),
                 road_sequence=road_seq,

@@ -11,7 +11,7 @@ class TestLeyuAdapter:
         """庄 → LONG"""
         tick = self.adapter.create_tick("banker", 8.0, table_id=2718)
         assert tick.side == TickSide.LONG
-        assert tick.instrument_id == "2718"
+        assert tick.metadata["table_no"] == "2718"
         assert tick.score == 8.0
 
     def test_player_maps_to_short(self):
@@ -33,6 +33,15 @@ class TestLeyuAdapter:
         assert tick.counter_id == "U11"
         assert tick.trade_seq == "GB05266066BD"
 
+    def test_status_and_countdown(self):
+        """status 和 countdown 为标准字段"""
+        tick = self.adapter.create_tick(
+            "banker", 8.0, table_id=2718,
+            status="结算中", countdown="9",
+        )
+        assert tick.status == "结算中"
+        assert tick.countdown == "9"
+
     def test_road_sequence_sanitized(self):
         """路纸序列语义化: B→L, P→S, T→F"""
         tick = self.adapter.create_tick(
@@ -46,17 +55,20 @@ class TestLeyuAdapter:
         tick = self.adapter.create_tick("banker", 1.0, table_id=2718)
         assert "road_seq" not in tick.metadata
 
+    def test_table_no_in_metadata(self):
+        """table_id 存入 metadata.table_no"""
+        tick = self.adapter.create_tick("banker", 8.0, table_id=2718)
+        assert tick.metadata["table_no"] == "2718"
+
     def test_extra_metadata_merged(self):
         """extra_metadata 被合并到 metadata 中"""
         tick = self.adapter.create_tick(
             "banker", 8.0, table_id=2718,
             extra_metadata={
-                "table_name": "百家乐A01",
                 "player_cards": "8 9",
-                "status": "结算中",
+                "banker_cards": "A K",
             },
         )
-        assert tick.metadata["table_name"] == "百家乐A01"
         assert tick.metadata["player_cards"] == "8 9"
-        assert tick.metadata["status"] == "结算中"
+        assert tick.metadata["banker_cards"] == "A K"
         assert "road_seq" not in tick.metadata
