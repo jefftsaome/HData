@@ -99,13 +99,10 @@ def parse_fixed_info(data: dict) -> dict:
         FixedData dict：{game_name, table_id, gameplay, bet_limit, dealer, odds}
     """
     name = data.get("tableName", "")
-    # 提取桌台 ID：末尾的大写字母+数字（如 "A01"、"U11"），
-    # 或纯数字（如 "龙争虎斗 01" → "01"）
+    # 提取桌台 ID：末尾的大写字母+数字，如 "A01"、"U11"
     tid = ""
     gameplay = name
     m_tid = re.search(r"([A-Z]+\d+)$", name)
-    if not m_tid:
-        m_tid = re.search(r"(\d+)$", name)
     if m_tid:
         tid = m_tid.group(1)
         gameplay = name[:m_tid.start()].strip()
