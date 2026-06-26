@@ -164,8 +164,8 @@ def parse_dynamic(raw: dict) -> dict:
          streaks}
     """
     # 卡牌解析
-    player_cards = parse_cards(raw.get("playerCards", ""))
-    banker_cards = parse_cards(raw.get("bankerCards", ""))
+    player_cards = parse_cards(raw.get("player_score_text", ""))
+    banker_cards = parse_cards(raw.get("banker_score_text", ""))
     player_total = sum(c["baccarat_value"] for c in player_cards) % 10
     banker_total = sum(c["baccarat_value"] for c in banker_cards) % 10
 

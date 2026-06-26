@@ -43,8 +43,8 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
     const ctext = g('.countdown-text');
     const timeRaw = (g('.time-display') || '').replace(/\s+/g, ' ');
     const tableName = g('.tableName');
-    const playerRaw = g('.baccarat-card-area-player');
-    const bankerRaw = g('.baccarat-card-area-banker');
+    const playerScoreRaw = g('.baccarat-card-area-player');
+    const bankerScoreRaw = g('.baccarat-card-area-banker');
     const betRaw = (g('.baccarat-bet-info') || '').replace(/\n/g, '').trim();
 
     // ── 卡牌 data-value ──
@@ -83,8 +83,8 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
         countdownText: ctext,
         timeDisplay: timeRaw || '',
         tableName: tableName,
-        playerCards: playerRaw,
-        bankerCards: bankerRaw,
+        player_score_text: playerScoreRaw,
+        banker_score_text: bankerScoreRaw,
         playerCardValues: playerCardValues,
         bankerCardValues: bankerCardValues,
         betRaw: betRaw,

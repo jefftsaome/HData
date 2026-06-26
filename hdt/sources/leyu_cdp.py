@@ -265,8 +265,8 @@ class CDPSource(DataSource):
             boot = dyn.get("boot_stats", {})
             cdp_meta = {
                 "table_type": fixed.get("gameplay", ""),
-                "player_cards": ",".join(raw_player_cards) if raw_player_cards else raw.get("playerCards", ""),
-                "banker_cards": ",".join(raw_banker_cards) if raw_banker_cards else raw.get("bankerCards", ""),
+                "player_cards": ",".join(raw_player_cards) if raw_player_cards else raw.get("player_score_text", ""),
+                "banker_cards": ",".join(raw_banker_cards) if raw_banker_cards else raw.get("banker_score_text", ""),
                 "server_time": raw.get("timeDisplay", ""),
                 "dealer": fixed.get("dealer", ""),
                 "bet_limit": fixed.get("bet_limit", ""),

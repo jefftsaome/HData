@@ -74,8 +74,8 @@ class TestParseDynamic:
             "countdownText": "9",
             "timeDisplay": "17:59 (UTC+08)",
             "tableName": "百家乐A01",
-            "playerCards": "8 9",
-            "bankerCards": "A K",
+            "player_score_text": "8 9",
+            "banker_score_text": "A K",
             "betRaw": "39.1K/196本局总投注庄16.2K/94闲22.4K/95",
             "bootItems": [
                 {"icon": "", "value": "57"},

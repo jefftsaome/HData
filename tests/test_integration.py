@@ -160,10 +160,10 @@ class TestDOMExtraction:
     @pytest.mark.asyncio
     async def test_player_banker_cards(self, game_data):
         raw, _ = game_data
-        player = raw.get("playerCards", "")
-        banker = raw.get("bankerCards", "")
-        assert player != "", "playerCards 不应为空"
-        assert banker != "", "bankerCards 不应为空"
+        player = raw.get("player_score_text", "")
+        banker = raw.get("banker_score_text", "")
+        assert player != "", "player_score_text 不应为空"
+        assert banker != "", "banker_score_text 不应为空"
 
     @pytest.mark.asyncio
     async def test_status_and_countdown(self, game_data):
@@ -240,8 +240,8 @@ class TestFullPipeline:
             bets=dyn.get("bets"),
             extra_metadata={
                 "table_type": fixed.get("gameplay", ""),
-                "player_cards": raw.get("playerCards", ""),
-                "banker_cards": raw.get("bankerCards", ""),
+                "player_cards": ",".join(decode_cards(raw.get("playerCardValues", []))) if any(v != "-2" for v in raw.get("playerCardValues", [])) else raw.get("player_score_text", ""),
+                "banker_cards": ",".join(decode_cards(raw.get("bankerCardValues", []))) if any(v != "-2" for v in raw.get("bankerCardValues", [])) else raw.get("banker_score_text", ""),
                 "server_time": raw.get("timeDisplay", ""),
                 "dealer": fixed.get("dealer", ""),
                 "bet_limit": fixed.get("bet_limit", ""),
@@ -269,14 +269,14 @@ class TestFullPipeline:
             expected = ",".join(decode_cards(pv))
             assert tick.metadata.get("player_cards") == expected, f"闲牌解码不一致: {tick.metadata.get('player_cards')} != {expected}"
         else:
-            assert tick.metadata.get("player_cards") == raw.get("playerCards", "")
+            assert tick.metadata.get("player_cards") == raw.get("player_score_text", "")
         bv = raw.get("bankerCardValues", [])
         if bv and bv[0] != "-2":
             from hdt.capture.dom_parser import decode_cards
             expected = ",".join(decode_cards(bv))
             assert tick.metadata.get("banker_cards") == expected, f"庄牌解码不一致: {tick.metadata.get('banker_cards')} != {expected}"
         else:
-            assert tick.metadata.get("banker_cards") == raw.get("bankerCards", "")
+            assert tick.metadata.get("banker_cards") == raw.get("banker_score_text", "")
 
         # 运行时加 -s 查看 MarketTick 完整摘要
         print(f"\n  counter={tick.counter_id}  trade_seq={tick.trade_seq}  side={tick.side.name}")
