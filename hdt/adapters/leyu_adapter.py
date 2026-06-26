@@ -60,7 +60,11 @@ class LeyuAdapter:
         side = self.RESULT_MAP.get(result, TickSide.FLAT)
 
         # 状态文本语义化
-        mapped_status = self.STATUS_MAP.get(status, status)
+        # countdown 存在时说明处于下注期，DOM status 可能延迟，强制 OPEN
+        if isinstance(countdown, int):
+            mapped_status = "OPEN"
+        else:
+            mapped_status = self.STATUS_MAP.get(status, status)
 
         # 方向历史序列
         side_seq: list[str] = []

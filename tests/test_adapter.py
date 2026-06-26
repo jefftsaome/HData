@@ -34,12 +34,17 @@ class TestLeyuAdapter:
         assert tick.trade_seq == "GB05266066BD"
 
     def test_status_and_countdown(self):
-        """status 语义化：结算中→CLOSED"""
+        """有 countdown 时说明下注期，强制 OPEN"""
         tick = self.adapter.create_tick(
             "banker", table_id=2718, status="结算中", countdown=9,
         )
-        assert tick.status == "CLOSED"
+        assert tick.status == "OPEN", "countdown 存在时应为 OPEN"
         assert tick.countdown == 9
+
+    def test_status_no_countdown_mapped(self):
+        """无 countdown 时使用 DOM status 映射"""
+        tick = self.adapter.create_tick("banker", table_id=2718, status="结算中")
+        assert tick.status == "CLOSED"
 
     def test_status_empty(self):
         """status 为空字符串时不映射"""
