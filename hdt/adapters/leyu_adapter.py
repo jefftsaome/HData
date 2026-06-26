@@ -31,6 +31,15 @@ class LeyuAdapter:
         "T": "F",
     }
 
+    # 状态文本映射：原始 → 量化行情术语
+    STATUS_MAP = {
+        "下注中": "OPEN",
+        "结算中": "CLOSED",
+        "等待中": "PENDING",
+        "已封盘": "FROZEN",
+        "开牌中": "MATCHING",
+    }
+
     def create_tick(
         self,
         result: str,
@@ -51,6 +60,9 @@ class LeyuAdapter:
     ) -> MarketTick:
         """将结果转为 MarketTick。"""
         side = self.RESULT_MAP.get(result, TickSide.FLAT)
+
+        # 状态文本语义化
+        mapped_status = self.STATUS_MAP.get(status, status)
 
         # 方向历史序列
         side_seq: list[str] = []
@@ -76,7 +88,7 @@ class LeyuAdapter:
             counter_id=counter_id,
             trade_seq=trade_seq,
             side_sequence=side_seq,
-            status=status,
+            status=mapped_status,
             countdown=countdown,
             side=side,
             long_score=long_score,

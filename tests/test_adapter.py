@@ -29,11 +29,19 @@ class TestLeyuAdapter:
         assert tick.trade_seq == "GB05266066BD"
 
     def test_status_and_countdown(self):
+        """status 语义化：下注中→OPEN，结算中→CLOSED"""
         tick = self.adapter.create_tick(
             "banker", table_id=2718, status="结算中", countdown=9,
         )
-        assert tick.status == "结算中"
+        assert tick.status == "CLOSED"
         assert tick.countdown == 9
+
+    def test_status_unmapped_passthrough(self):
+        """未映射的状态保持原样"""
+        tick = self.adapter.create_tick(
+            "banker", table_id=2718, status="UNKNOWN_STATE",
+        )
+        assert tick.status == "UNKNOWN_STATE"
 
     def test_countdown_none(self):
         tick = self.adapter.create_tick("banker", table_id=2718)
