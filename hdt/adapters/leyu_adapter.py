@@ -27,14 +27,14 @@ class LeyuAdapter:
     def create_tick(
         self,
         result: str,
-        score: float,
+        score: int,
         table_id: int,
         counter_id: str = "",
         trade_seq: str = "",
         status: str = "",
-        countdown: str = "",
+        countdown: int | None = None,
         round_id: int = 0,
-        game_type: int = 0,
+        table_type_id: int = 0,
         boot_no: int = 0,
         road_sequence: list[str] | None = None,
         confidence: float = 1.0,
@@ -49,9 +49,9 @@ class LeyuAdapter:
             counter_id: 柜台编号（CDP tableName 后缀如 "U11"）
             trade_seq: 交易序号（CDP roundNo 如 "GB..."）
             status: 牌局状态文本
-            countdown: 倒计时文本
+            countdown: 倒计时秒数
             round_id: WS 协议 roundId（数字）
-            game_type: 合约类型编号
+            table_type_id: 合约类型编号
             boot_no: 靴次
             road_sequence: 路纸序列
             confidence: 置信度
@@ -70,9 +70,9 @@ class LeyuAdapter:
         if road_seq_sanitized:
             metadata["road_seq"] = road_seq_sanitized
         # 数字 tableId 移入 metadata（UI/策略不需要）
-        metadata["table_no"] = str(table_id) if table_id else ""
-        if game_type:
-            metadata["game_type"] = game_type
+        metadata["table_no"] = table_id
+        if table_type_id:
+            metadata["table_type_id"] = table_type_id
         if round_id:
             metadata["round_id"] = round_id
         if boot_no:
@@ -80,14 +80,13 @@ class LeyuAdapter:
         if extra_metadata:
             metadata.update(extra_metadata)
 
-        # instrument_id 不再放 tableId（已移入 metadata.table_no）
-        # 用 counter_id 作为主体标识
+        # instrument_id 对 UI/策略无意义，置空
         return MarketTick(
-            instrument_id=counter_id or str(table_id),
+            instrument_id="",
             counter_id=counter_id,
             trade_seq=trade_seq,
             status=status,
-            countdown=countdown,
+            countdown=countdown if countdown is not None else None,
             side=side,
             score=score,
             volume=1,

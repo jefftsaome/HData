@@ -216,7 +216,16 @@ class CDPSource(DataSource):
                 # 取庄闲点数中的较大者作为 score
                 p = dyn["cards"].get("player_total", 0) or 0
                 b = dyn["cards"].get("banker_total", 0) or 0
-                score = float(max(p, b))
+                score = max(p, b)
+
+            # 倒计时转 int | None
+            countdown_raw = raw.get("countdownText", "")
+            countdown: int | None = None
+            if countdown_raw:
+                try:
+                    countdown = int(countdown_raw)
+                except (ValueError, TypeError):
+                    pass
 
             # 指纹去重
             fp = make_fingerprint(dyn, result)
@@ -264,9 +273,9 @@ class CDPSource(DataSource):
                 counter_id=fixed.get("table_id", ""),
                 trade_seq=rid,
                 status=raw.get("status", ""),
-                countdown=raw.get("countdownText", ""),
+                countdown=countdown,
                 round_id=0,
-                game_type=raw.get("urlGameType", 0),
+                table_type_id=raw.get("urlGameType", 0),
                 road_sequence=road_seq,
                 confidence=0.99 if result else 0.0,
                 extra_metadata=cdp_meta,
