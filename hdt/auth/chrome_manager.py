@@ -88,6 +88,7 @@ class ChromeManager:
         self._process: asyncio.subprocess.Process | None = None
         self._cdp_port: int = 0
         self._temp_dir: str | None = None
+        self._ws_url: str = ""  # 真实 CDP WebSocket URL
 
         # attach 模式：用户提供了 URL，不管理 Chrome 进程
         self._attached_url: str | None = None
@@ -177,7 +178,10 @@ class ChromeManager:
                     self._process.pid, self._cdp_port)
 
         await self._wait_for_port(timeout=15)
-        logger.info("Chrome ready on port {}", self._cdp_port)
+
+        # 从 Chrome HTTP 接口获取真实 CDP WebSocket URL
+        self._ws_url = await self._fetch_ws_url()
+        logger.info("Chrome ready on port {} (ws: {})", self._cdp_port, self._ws_url)
         return self._cdp_port
 
     async def _wait_for_port(self, timeout: float = 15) -> None:
@@ -208,6 +212,28 @@ class ChromeManager:
             return True
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
             return False
+
+    async def _fetch_ws_url(self) -> str:
+        """从 Chrome HTTP 接口获取真实 CDP WebSocket URL。
+
+        Chrome 启动后在 http://127.0.0.1:{port}/json/version 暴露
+        webSocketDebuggerUrl，这个才是可用的 CDP 连接地址。
+        """
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{self._cdp_port}/json/version",
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as resp:
+                    data = await resp.json()
+                    url = data.get("webSocketDebuggerUrl", "")
+                    if url:
+                        return url
+        except Exception as e:
+            logger.warning("Failed to fetch CDP WS URL: {}", e)
+        # 兜底：拼接标准路径（部分 Chrome 版本可用）
+        return f"ws://127.0.0.1:{self._cdp_port}/devtools/browser"
 
     @staticmethod
     async def _port_in_use(port: int) -> bool:
@@ -279,4 +305,4 @@ class ChromeManager:
             return self._attached_url
         if not self._cdp_port:
             raise RuntimeError("Chrome not started")
-        return f"ws://127.0.0.1:{self._cdp_port}/devtools/browser"
+        return self._ws_url or f"ws://127.0.0.1:{self._cdp_port}/devtools/browser"
