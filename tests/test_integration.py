@@ -122,3 +122,148 @@ async def test_cdp_page_targets(cdp: CDPSession):
     # 直接访问 CDPSession 内部状态，确认有 target
     assert cdp._target_id is not None, "应有 page target"
     assert cdp._session_id is not None, "应有 session_id"
+
+
+# ═══════════════════════════════════════════════════════════
+# 游戏页面测试（需要 Chrome 在乐鱼游戏页面）
+# ═══════════════════════════════════════════════════════════
+
+@pytest.fixture(scope="function")
+async def game_data(cdp):
+    """从游戏页面提取原始 DOM 数据。若不在游戏页面则 skip。"""
+    from hdt.capture.dom_extractor import DOMExtractor
+    ext = DOMExtractor(cdp)
+    raw = await ext.extract_dynamic()
+    if not raw or not raw.get("roundId"):
+        fixed = await ext.extract_fixed_info()
+        table = fixed.get("game_name", "") if fixed else ""
+        pytest.skip(
+            f"未检测到游戏数据 (tableName={table!r})。\n"
+            "请确认 Chrome 当前标签页在乐鱼游戏桌台页面。"
+        )
+    return raw, ext
+
+
+class TestDOMExtraction:
+    """验证从游戏页面能正确提取原始 DOM 数据"""
+
+    @pytest.mark.asyncio
+    async def test_round_id_is_present(self, game_data):
+        raw, _ = game_data
+        rid = raw.get("roundId", "")
+        assert rid, "roundId 不应为空"
+        assert len(rid) > 5, f"roundId 格式异常: {rid}"
+
+    @pytest.mark.asyncio
+    async def test_table_name_is_present(self, game_data):
+        raw, _ = game_data
+        name = raw.get("tableName", "")
+        assert name, "tableName 不应为空"
+
+    @pytest.mark.asyncio
+    async def test_player_banker_cards(self, game_data):
+        raw, _ = game_data
+        player = raw.get("playerCards", "")
+        banker = raw.get("bankerCards", "")
+        assert player != "", "playerCards 不应为空"
+        assert banker != "", "bankerCards 不应为空"
+
+    @pytest.mark.asyncio
+    async def test_status_and_countdown(self, game_data):
+        raw, _ = game_data
+        status = raw.get("status", "")
+        ct = raw.get("countdownText", "")
+        assert status != "", "status 不应为空"
+
+
+class TestParseAndDetect:
+    """验证 DOM 数据能被正确解析和判定结果"""
+
+    @pytest.mark.asyncio
+    async def test_parse_dynamic(self, game_data):
+        from hdt.capture.dom_parser import parse_dynamic
+        raw, _ = game_data
+        dyn = parse_dynamic(raw)
+        assert dyn["round_id"] == raw.get("roundId", "")
+        assert isinstance(dyn["ts"], int)
+        assert dyn["status"] != ""
+        cards = dyn.get("cards", {})
+        pt = cards.get("player_total")
+        bt = cards.get("banker_total")
+        if pt is not None:
+            assert 0 <= pt <= 9, f"闲点数应在 0-9: {pt}"
+        if bt is not None:
+            assert 0 <= bt <= 9, f"庄点数应在 0-9: {bt}"
+
+    @pytest.mark.asyncio
+    async def test_detect_result(self, game_data):
+        from hdt.capture.dom_parser import parse_dynamic, detect_result
+        raw, _ = game_data
+        dyn = parse_dynamic(raw)
+        result = detect_result(dyn)
+        assert result in ("B", "P", "T", None), f"结果异常: {result}"
+
+    @pytest.mark.asyncio
+    async def test_bet_data(self, game_data):
+        from hdt.capture.dom_parser import parse_dynamic
+        raw, _ = game_data
+        dyn = parse_dynamic(raw)
+        bets = dyn.get("bets", {})
+        total = bets.get("total", {})
+        if total.get("amount"):
+            assert total["amount"] > 0, "投注总额应大于 0"
+
+
+class TestFullPipeline:
+    """验证全链路能产出正确的 MarketTick"""
+
+    @pytest.mark.asyncio
+    async def test_adapter_produces_tick(self, game_data):
+        from hdt.capture.dom_parser import parse_dynamic, detect_result
+        from hdt.adapters.leyu_adapter import LeyuAdapter
+
+        raw, ext = game_data
+        dyn = parse_dynamic(raw)
+        result = detect_result(dyn)
+        long_score = (dyn.get("cards", {}).get("banker_total", 0) or 0)
+        short_score = (dyn.get("cards", {}).get("player_total", 0) or 0)
+        fixed = ext.fixed_info or {}
+
+        tick = LeyuAdapter().create_tick(
+            result=result or "N",
+            long_score=long_score,
+            short_score=short_score,
+            table_id=raw.get("urlTableId", 0),
+            counter_id=fixed.get("table_id", ""),
+            trade_seq=dyn.get("round_id", ""),
+            status=raw.get("status", ""),
+            countdown=int(raw.get("countdownText", "0") or 0) if raw.get("countdownText") else None,
+            table_type_id=raw.get("urlGameType", 0),
+            confidence=0.99 if result else 0.0,
+            bets=dyn.get("bets"),
+            extra_metadata={
+                "table_type": fixed.get("gameplay", ""),
+                "player_cards": raw.get("playerCards", ""),
+                "banker_cards": raw.get("bankerCards", ""),
+                "server_time": raw.get("timeDisplay", ""),
+                "dealer": fixed.get("dealer", ""),
+                "bet_limit": fixed.get("bet_limit", ""),
+                "total_rounds": dyn.get("boot_stats", {}).get("total_rounds", 0),
+                "streaks": raw.get("streaks", []),
+            },
+        )
+
+        assert tick.counter_id, "counter_id 不应为空"
+        assert tick.trade_seq, "trade_seq 不应为空"
+        assert tick.trade_seq == dyn["round_id"], "trade_seq 应等于 round_id"
+        assert tick.side in (
+            type(tick.side).LONG,
+            type(tick.side).SHORT,
+            type(tick.side).FLAT,
+        ), f"side 异常: {tick.side}"
+        assert 0 <= tick.long_score <= 9, f"long_score 越界: {tick.long_score}"
+        assert 0 <= tick.short_score <= 9, f"short_score 越界: {tick.short_score}"
+        assert tick.metadata.get("table_no") == raw.get("urlTableId", 0)
+        assert tick.metadata.get("table_type_id") == raw.get("urlGameType", 0)
+        assert tick.metadata.get("player_cards") == raw.get("playerCards", "")
+        assert tick.metadata.get("banker_cards") == raw.get("bankerCards", "")
