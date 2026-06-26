@@ -48,7 +48,6 @@ class WSSource(DataSource):
         try:
             tick = self._adapter.create_tick(
                 result="P",
-                score=2.0,
                 table_id=self._table_id or 2718,
                 counter_id="",
                 trade_seq="",

@@ -34,7 +34,6 @@ class LeyuAdapter:
     def create_tick(
         self,
         result: str,
-        score: int,
         table_id: int,
         counter_id: str = "",
         trade_seq: str = "",
@@ -80,7 +79,6 @@ class LeyuAdapter:
             status=status,
             countdown=countdown,
             side=side,
-            score=score,
             long_score=long_score,
             short_score=short_score,
             volume=1,

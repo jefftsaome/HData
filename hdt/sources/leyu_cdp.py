@@ -211,13 +211,11 @@ class CDPSource(DataSource):
 
             # 检测结果
             result = detect_result(dyn)
-            score = 0
             long_score = 0
             short_score = 0
             if dyn.get("cards"):
                 long_score = dyn["cards"].get("banker_total", 0) or 0
                 short_score = dyn["cards"].get("player_total", 0) or 0
-                score = max(long_score, short_score)
 
             # 倒计时转 int | None
             countdown_raw = raw.get("countdownText", "")
@@ -275,7 +273,6 @@ class CDPSource(DataSource):
             # 通过 Adapter 产出 MarketTick
             tick = self._adapter.create_tick(
                 result=result or "N",
-                score=score,
                 long_score=long_score,
                 short_score=short_score,
                 table_id=raw.get("urlTableId", 0),
@@ -283,7 +280,6 @@ class CDPSource(DataSource):
                 trade_seq=rid,
                 status=raw.get("status", ""),
                 countdown=countdown,
-                round_id=0,
                 table_type_id=raw.get("urlGameType", 0),
                 road_sequence=road_seq,
                 confidence=0.99 if result else 0.0,
