@@ -81,7 +81,6 @@ class LeyuAdapter:
             side=side,
             long_score=long_score,
             short_score=short_score,
-            volume=1,
             confidence=confidence,
             timestamp=int(time.time() * 1000),
             metadata=metadata,
