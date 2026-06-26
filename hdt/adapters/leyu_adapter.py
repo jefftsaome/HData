@@ -92,15 +92,15 @@ class LeyuAdapter:
 
     @staticmethod
     def _extract_bet_kwargs(bets: dict) -> dict:
-        """从 bets dict 提取 bet_* 关键字参数。"""
+        """从 bets dict 提取成交量关键字参数。"""
         kw = {}
         total = bets.get("total", {})
         if total.get("amount"):
-            kw["bet_total_amount"] = total["amount"]
-            kw["bet_total_count"] = total.get("count", 0)
+            kw["total_amt"] = total["amount"]
+            kw["total_cnt"] = total.get("count", 0)
         for raw_name, data in bets.get("areas", {}).items():
             semantic = BET_AREA_MAP.get(raw_name, raw_name)
             if data.get("amount"):
-                kw[f"bet_{semantic}_amount"] = data["amount"]
-                kw[f"bet_{semantic}_count"] = data.get("count", 0)
+                kw[f"{semantic}_amt"] = data["amount"]
+                kw[f"{semantic}_cnt"] = data.get("count", 0)
         return kw

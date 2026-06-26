@@ -70,7 +70,7 @@ class TestLeyuAdapter:
         assert tick.metadata["table_type_id"] == 2001
 
     def test_bet_fields_as_standard(self):
-        """投注字段为标准字段"""
+        """投注字段为标准字段，命名用 long_amt/cnt"""
         bets = {
             "total": {"amount_raw": "39.1K", "amount": 39100, "count": 196},
             "areas": {
@@ -80,16 +80,15 @@ class TestLeyuAdapter:
             },
         }
         tick = self.adapter.create_tick("banker", 8, table_id=2718, bets=bets)
-        assert tick.bet_total_amount == 39100
-        assert tick.bet_total_count == 196
-        assert tick.bet_long_amount == 16200
-        assert tick.bet_long_count == 94
-        assert tick.bet_short_amount == 22400
-        assert tick.bet_short_count == 95
-        assert tick.bet_flat_amount == 350
-        assert tick.bet_flat_count == 3
+        assert tick.total_amt == 39100
+        assert tick.total_cnt == 196
+        assert tick.long_amt == 16200
+        assert tick.long_cnt == 94
+        assert tick.short_amt == 22400
+        assert tick.short_cnt == 95
+        assert tick.flat_amt == 350
+        assert tick.flat_cnt == 3
         assert "bet_total_amount" not in tick.metadata
-        assert "bet_long_amount" not in tick.metadata
 
     def test_extra_metadata_merged(self):
         tick = self.adapter.create_tick(
