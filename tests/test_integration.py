@@ -135,12 +135,9 @@ async def game_data(cdp):
     ext = DOMExtractor(cdp)
     raw = await ext.extract_dynamic()
     if not raw or not raw.get("roundId"):
-        fixed = await ext.extract_fixed_info()
-        table = fixed.get("game_name", "") if fixed else ""
-        pytest.skip(
-            f"未检测到游戏数据 (tableName={table!r})。\n"
-            "请确认 Chrome 当前标签页在乐鱼游戏桌台页面。"
-        )
+        pytest.skip("未检测到游戏数据，请确认 Chrome 在游戏桌台页面。")
+    # 同时提取固定信息（桌台名、编号等）
+    await ext.extract_fixed_info()
     return raw, ext
 
 

@@ -24,12 +24,15 @@ class CDPSession:
             import websockets
             self._ws = await websockets.connect(self._cdp_url)
             targets = await self._send("Target.getTargets")
+            # 优先找 iframe（游戏页面），其次 page
             for t in targets.get("targetInfos", []):
-                if t["type"] == "page":
+                if t["type"] in ("iframe", "page"):
                     self._target_id = t["targetId"]
-                    break
+                    # iframe 优先，找到就停
+                    if t["type"] == "iframe":
+                        break
             if not self._target_id:
-                logger.warning("No page target found")
+                logger.warning("No page or iframe target found")
                 return False
             # attachToTarget with flatten=True
             # Chrome 150+ 先推一个 Target.attachedToTarget 事件（含 sessionId），
