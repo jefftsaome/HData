@@ -216,7 +216,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_adapter_produces_tick(self, game_data):
-        from hdt.capture.dom_parser import parse_dynamic, detect_result
+        from hdt.capture.dom_parser import parse_dynamic, detect_result, decode_cards
         from hdt.adapters.leyu_adapter import LeyuAdapter
 
         raw, ext = game_data
@@ -265,7 +265,6 @@ class TestFullPipeline:
         # player_cards: 有 data-value 时是解码格式 "7S,10H"，否则是原始文本
         pv = raw.get("playerCardValues", [])
         if pv and pv[0] != "-2":
-            from hdt.capture.dom_parser import decode_cards
             expected = ",".join(decode_cards(pv))
             assert tick.metadata.get("player_cards") == expected, f"闲牌解码不一致: {tick.metadata.get('player_cards')} != {expected}"
         else:
