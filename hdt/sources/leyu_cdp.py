@@ -1,7 +1,6 @@
 """CDPSource — 通过 Chrome CDP 连接游戏页面，从 DOM 实时采集行情"""
 
 import asyncio
-import re
 import time
 from typing import AsyncIterator, Callable
 
@@ -264,12 +263,6 @@ class CDPSource(DataSource):
             # 构建 CDP 原始数据 metadata（未显式展开的补充数据）
             fixed = self._extractor.fixed_info or {}
             boot = dyn.get("boot_stats", {})
-            # streaks：从 "11局未出" 中提取数字 [11, 3]
-            streak_nums = []
-            for s in raw.get("streaks", []):
-                m = re.search(r"\d+", s)
-                if m:
-                    streak_nums.append(int(m.group()))
             cdp_meta = {
                 "table_type": fixed.get("gameplay", ""),
                 "player_cards": ",".join(raw_player_cards) if raw_player_cards else raw.get("player_score_text", ""),
@@ -278,7 +271,6 @@ class CDPSource(DataSource):
                 "dealer": fixed.get("dealer", ""),
                 "bet_limit": fixed.get("bet_limit", ""),
                 "total_rounds": boot.get("total_rounds", 0),
-                "streaks": streak_nums,
             }
 
             # 通过 Adapter 产出 MarketTick
