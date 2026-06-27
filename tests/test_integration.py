@@ -216,7 +216,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_adapter_produces_tick(self, game_data):
-        from hdt.capture.dom_parser import parse_dynamic, detect_result, decode_cards
+        from hdt.capture.dom_parser import parse_dynamic, detect_result, decode_cards, parse_canvas_roads
         from hdt.adapters.leyu_adapter import LeyuAdapter
 
         raw, ext = game_data
@@ -225,6 +225,9 @@ class TestFullPipeline:
         long_score = (dyn.get("cards", {}).get("banker_total", 0) or 0)
         short_score = (dyn.get("cards", {}).get("player_total", 0) or 0)
         fixed = ext.fixed_info or {}
+
+        # 从 Canvas 提取路纸序列
+        road_seq_from_canvas = parse_canvas_roads(raw.get("canvasRoad"))
 
         tick = LeyuAdapter().create_tick(
             result=result or "N",
@@ -238,6 +241,7 @@ class TestFullPipeline:
             table_type_id=raw.get("urlGameType", 0),
             confidence=0.99 if result else 0.0,
             bets=dyn.get("bets"),
+            road_sequence=road_seq_from_canvas,
             extra_metadata={
                 "table_type": fixed.get("gameplay", ""),
                 "player_cards": ",".join(decode_cards(raw.get("playerCardValues", []))) if any(v != "-2" for v in raw.get("playerCardValues", [])) else raw.get("player_score_text", ""),
@@ -252,6 +256,9 @@ class TestFullPipeline:
         assert tick.counter_id, "counter_id 不应为空"
         assert tick.trade_seq, "trade_seq 不应为空"
         assert tick.trade_seq == dyn["round_id"], "trade_seq 应等于 round_id"
+        # 有 Canvas 路纸数据时 side_sequence 应有值
+        if raw.get("canvasRoad") and raw["canvasRoad"].get("sequence"):
+            assert len(tick.side_sequence) > 0, f"canvas 有路纸数据但 side_sequence 为空: {raw['canvasRoad']}"
         assert tick.side in (
             type(tick.side).LONG,
             type(tick.side).SHORT,
@@ -277,6 +284,7 @@ class TestFullPipeline:
 
         # 运行时加 -s 查看 MarketTick 完整摘要
         print(f"\n  counter={tick.counter_id}  trade_seq={tick.trade_seq}  side={tick.side.name}")
+        print(f"  side_sequence={tick.side_sequence}")
         print(f"  long_score={tick.long_score}  short_score={tick.short_score}")
         print(f"  status={tick.status}  countdown={tick.countdown}")
         print(f"  table_no={tick.metadata['table_no']}  type_id={tick.metadata['table_type_id']}  table_type={tick.metadata.get('table_type','')}")
