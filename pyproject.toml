@@ -12,6 +12,7 @@ dependencies = [
     "cryptography>=49.0.0",
     "curl-cffi>=0.15.0",
     "htools",
+    "playwright>=1.60.0",
     "websockets>=16.0",
 ]
 
