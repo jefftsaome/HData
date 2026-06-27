@@ -122,15 +122,10 @@ class TestParseCanvasRoads:
         from hdt.capture.dom_parser import parse_canvas_roads
         assert parse_canvas_roads({}) == []
 
-    def test_maps_b_to_l(self):
+    def test_passes_through_raw_sequence(self):
         from hdt.capture.dom_parser import parse_canvas_roads
         result = parse_canvas_roads({"sequence": ["B", "P", "B", "B", "T"]})
-        assert result == ["L", "S", "L", "L", "F"]
-
-    def test_uses_road_map(self):
-        from hdt.capture.dom_parser import parse_canvas_roads
-        result = parse_canvas_roads({"sequence": ["B", "P", "T"]})
-        assert result == ["L", "S", "F"]
+        assert result == ["B", "P", "B", "B", "T"], f"应原样返回: {result}"
 
 
 class TestMakeFingerprint:

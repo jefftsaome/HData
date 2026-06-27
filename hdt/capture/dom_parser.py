@@ -258,22 +258,10 @@ def decode_cards(values: list[str]) -> list[str]:
 
 
 def parse_canvas_roads(canvas_data: dict | None) -> list[str]:
-    """从 Canvas 像素分析结果中提取大路序列。
-
-    Args:
-        canvas_data: JS 返回的 canvasRoad dict，
-                    包含 {sequence: ["B","P","B",...], stats: {...}}
-
-    Returns:
-        语义化后的序列 ["L","S","L",...]，无数据返回 []
-    """
+    """从 Canvas 像素分析结果中提取大路序列（原始 B/P/T，映射由 adapter 统一处理）。"""
     if not canvas_data:
         return []
-    seq = canvas_data.get("sequence", [])
-    if not seq:
-        return []
-    road_map = {"B": "L", "P": "S", "T": "F"}
-    return [road_map.get(s, "F") for s in seq]
+    return canvas_data.get("sequence", [])
 
 
 def make_fingerprint(dynamic: dict, raw_result: str | None) -> str:
