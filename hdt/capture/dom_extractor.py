@@ -97,7 +97,7 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
         var canvases = document.querySelectorAll('canvas');
         if (canvases.length > 0) { (function(c) {
             var ctx = c.getContext('2d');
-            var w = c.width, h = c.height;
+            var w = c.width, ch = c.height;
 
             function hsv(r,g,b) {
                 r/=255; g/=255; b/=255;
@@ -120,8 +120,8 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
                 return null;
             }
 
-            var mx=w,my=h,MX=0,MY=0;
-            for (var y=0;y<h;y+=2) for (var x=0;x<w;x+=2) {
+            var mx=w,my=ch,MX=0,MY=0;
+            for (var y=0;y<ch;y+=2) for (var x=0;x<w;x+=2) {
                 var p=ctx.getImageData(x,y,1,1).data, l=cls(p[0],p[1],p[2]);
                 if (l) { if (x<mx) mx=x; if (y<my) my=y; if (x>MX) MX=x; if (y>MY) MY=y; }
             }
@@ -201,13 +201,13 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
                 var votes={B:0,P:0,T:0};
                 for (var d1=-RADIUS;d1<=RADIUS;d1+=STEP) for (var d2=-RADIUS;d2<=RADIUS;d2+=STEP) {
                     var px=cols[ci]+d1, py=rows[ri]+d2;
-                    if (px<0||px>=w||py<0||py>=h) continue;
+                    if (px<0||px>=w||py<0||py>=ch) continue;
                     var pData=ctx.getImageData(px,py,1,1).data, l2=cls(pData[0],pData[1],pData[2]);
                     if (l2) votes[l2]++;
                 }
-                var best='.', bestV=0;
-                for (var k in votes) { if (votes[k]>bestV) { bestV=votes[k]; best=k; } }
-                if (bestV>=MIN_VOTES) grid[ci+','+ri]=best; else grid[ci+','+ri]=null;
+                var ml=null,mv=0,tt=0;
+                for (var k in votes) {tt+=votes[k]; if(votes[k]>mv){mv=votes[k];ml=k;}}
+                if (ml&&mv>=MIN_VOTES&&mv/tt>0.35) { grid[ci+','+ri]=ml; }
             }
 
             var MIN_COL=Math.max(1,Math.floor(rows.length*0.25));
