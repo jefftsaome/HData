@@ -228,6 +228,12 @@ class TestFullPipeline:
 
         # 从 Canvas 提取路纸序列
         road_seq_from_canvas = parse_canvas_roads(raw.get("canvasRoad"))
+        # 调试：打印原始 canvasRoad 数据
+        cr = raw.get("canvasRoad")
+        if cr:
+            print(f"\n  [调试] canvasRoad: {len(cr.get('sequence',[]))} 笔, raw_seq={cr['sequence']}")
+        else:
+            print(f"\n  [调试] canvasRoad: null")
 
         tick = LeyuAdapter().create_tick(
             result=result or "N",
