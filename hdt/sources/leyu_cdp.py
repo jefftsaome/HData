@@ -11,7 +11,7 @@ from hdt.adapters.leyu_adapter import LeyuAdapter
 from hdt.auth.chrome_manager import ChromeManager
 from hdt.capture.cdp_bridge import CDPSession
 from hdt.capture.dom_extractor import DOMExtractor
-from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, decode_cards
+from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, decode_cards, parse_canvas_roads
 
 logger = get_logger(__name__)
 
@@ -253,8 +253,8 @@ class CDPSource(DataSource):
                 logger.info("New round: {} | table={}", rid,
                             raw.get("urlTableId", "?"))
 
-            # 提取路纸序列（从 raw 中取，暂时留空）
-            road_seq = []
+            # 从 Canvas 提取路纸序列
+            road_seq = parse_canvas_roads(raw.get("canvasRoad"))
 
             # 解码卡牌（从 data-value 转为牌面字符串）
             raw_player_cards = decode_cards(raw.get("playerCardValues", []))

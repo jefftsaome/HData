@@ -76,6 +76,138 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
     const myGameType = urlGameType > 0 ? urlGameType
         : parseInt((window.GameConst && window.GameConst._GAME_TYPE) || '0');
 
+    // ═══════════════════════════════════════════════════════════════
+    //  路纸数据：从 Canvas getImageData 读取大路像素
+    //
+    //  为什么在浏览器端做像素分析？
+    //    - Canvas 全像素数据约 2MB（RGBA），CDP JSON 传输太慢
+    //    - 浏览器端遍历 + 颜色分类 < 50ms
+    //    - 只传结构化结果 {sequence, stats, matrix}，通常 < 1KB
+    // ═══════════════════════════════════════════════════════════════
+    var canvasRoad = null;
+    try {
+        var canvases = document.querySelectorAll('canvas');
+        if (canvases.length > 0) { (function(c) {
+            var ctx = c.getContext('2d');
+            var w = c.width, h = c.height;
+
+            function hsv(r,g,b) {
+                r/=255; g/=255; b/=255;
+                var max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
+                var h=0, s=d/(max||1), v=max;
+                if (d) {
+                    if (max===r) h=((g-b)/d+(g<b?6:0))*60;
+                    else if (max===g) h=((b-r)/d+2)*60;
+                    else h=((r-g)/d+4)*60;
+                }
+                return {h:Math.round(h),s:Math.round(s*100),v:Math.round(v*100)};
+            }
+
+            function cls(r,g,b) {
+                var hh=hsv(r,g,b);
+                if (hh.s<30||hh.v<20) return null;
+                if ((hh.h<=15||hh.h>=345)&&hh.s>=40&&hh.v>=30) return 'B';
+                if (hh.h>=190&&hh.h<=260&&hh.s>=40&&hh.v>=30) return 'P';
+                if (hh.h>=80&&hh.h<=160&&hh.s>=40&&hh.v>=30) return 'T';
+                return null;
+            }
+
+            var mx=w,my=h,MX=0,MY=0;
+            for (var y=0;y<h;y+=2) for (var x=0;x<w;x+=2) {
+                var p=ctx.getImageData(x,y,1,1).data, l=cls(p[0],p[1],p[2]);
+                if (l) {
+                    if (x<mx) mx=x; if (y<my) my=y;
+                    if (x>MX) MX=x; if (y>MY) MY=y;
+                }
+            }
+            if (mx===w) { canvasRoad=null; return; }
+            var bboxH=MY-my+1, bboxW=MX-mx+1;
+
+            // 水平自相关找列间距
+            var hProj=[];
+            for (var x=mx; x<=MX; x+=2) {
+                var cnt=0;
+                for (var y=my; y<=MY; y+=6) { var pp=ctx.getImageData(x,y,1,1).data; if (cls(pp[0],pp[1],pp[2])) cnt++; }
+                hProj.push(cnt);
+            }
+            var hLen=hProj.length, hMean=0;
+            for (var i=0;i<hLen;i++) hMean+=hProj[i]; hMean/=hLen;
+            var hAc=[];
+            for (var lag=3; lag<Math.min(hLen/2,100); lag++) {
+                var num=0, den1=0, den2=0;
+                for (var i=0;i<hLen-lag;i++) { var d1=hProj[i]-hMean, d2=hProj[i+lag]-hMean; num+=d1*d2; den1+=d1*d1; den2+=d2*d2; }
+                if (den1>0.001&&den2>0.001) hAc.push({lag:lag,r:num/Math.sqrt(den1*den2)});
+            }
+            var estRowH=Math.max(10,Math.round(bboxH/6));
+            var cgMin=Math.max(5,Math.round(estRowH*0.7)), cgMax=Math.min(150,Math.round(estRowH*2.5));
+            var CG=10, nCols=0, colsArr=[];
+            for (var i=5;i<hAc.length;i++) { var p=hAc[i], cg=p.lag*2; if (cg<cgMin||cg>cgMax) continue; if (p.r<0.25) continue; if (p.r<hAc[i-1].r||p.r<hAc[i-2].r) continue; if (i+1<hAc.length&&p.r<hAc[i+1].r) continue; if (i+2<hAc.length&&p.r<hAc[i+2].r) continue; CG=cg; break; }
+            nCols=Math.max(1,Math.round(bboxW/CG));
+            CG=Math.max(10,Math.round(bboxW/nCols));
+            colsArr=[];
+            for (var xi=mx+Math.round(CG/2); xi<=MX+CG&&colsArr.length<30; xi+=CG) colsArr.push(xi);
+
+            // 垂直自相关找行间距
+            var vProj=[];
+            for (var y=my; y<=MY; y+=2) {
+                var cnt=0;
+                for (var xi=mx; xi<=MX; xi+=6) { var pp=ctx.getImageData(xi,y,1,1).data; if (cls(pp[0],pp[1],pp[2])) cnt++; }
+                vProj.push(cnt);
+            }
+            var vLen=vProj.length, vMean2=0;
+            for (var i=0;i<vLen;i++) vMean2+=vProj[i]; vMean2/=vLen;
+            var vBestLag=0, vBestR=0;
+            for (var lag=5; lag<Math.min(vLen/2,100); lag++) {
+                var num2=0, den12=0, den22=0;
+                for (var i=0;i<vLen-lag;i++) { var d1=vProj[i]-vMean2, d2=vProj[i+lag]-vMean2; num2+=d1*d2; den12+=d1*d1; den22+=d2*d2; }
+                if (den12>0.001&&den22>0.001) { var r2=num2/Math.sqrt(den12*den22); if (r2>vBestR) { vBestR=r2; vBestLag=lag; } }
+            }
+            var RG=vBestLag>=5?vBestLag*2:CG;
+            var nRows=Math.max(1,Math.round(bboxH/RG));
+            RG=Math.max(10,Math.min(150,Math.round(bboxH/nRows)));
+            var rowsArr=[];
+            for (var yi=my+Math.round(RG/2); yi<=MY+RG&&rowsArr.length<6; yi+=RG) rowsArr.push(yi);
+
+            // 多像素投票判定每格颜色
+            var RADIUS=Math.max(6,Math.round(CG*0.16)), STEP=Math.max(2,Math.round(RADIUS/2)), MIN_VOTES=4;
+            var grid={};
+            for (var ri=0;ri<rowsArr.length;ri++) for (var ci=0;ci<colsArr.length;ci++) {
+                var votes={B:0,P:0,T:0};
+                for (var d1=-RADIUS;d1<=RADIUS;d1+=STEP) for (var d2=-RADIUS;d2<=RADIUS;d2+=STEP) {
+                    var px=Math.round(colsArr[ci]+d1), py=Math.round(rowsArr[ri]+d2);
+                    if (px<0||px>=w||py<0||py>=h) continue;
+                    var pData=ctx.getImageData(px,py,1,1).data, l2=cls(pData[0],pData[1],pData[2]);
+                    if (l2) votes[l2]++;
+                }
+                var best='.', bestV=0;
+                for (var k in votes) { if (votes[k]>bestV) { bestV=votes[k]; best=k; } }
+                if (bestV>=MIN_VOTES) grid[ci+','+ri]=best; else grid[ci+','+ri]=null;
+            }
+
+            // 过滤空列
+            var MIN_COL=2, validCols=[];
+            for (var ci=0;ci<colsArr.length;ci++) {
+                var cnt=0;
+                for (var ri=0;ri<rowsArr.length;ri++) if(grid[ci+','+ri]) cnt++;
+                if (cnt>=MIN_COL) validCols.push(ci);
+            }
+
+            // 生成序列
+            var seq=[], st={B:0,P:0,T:0};
+            for (var vi=0;vi<validCols.length;vi++) {
+                var cix=validCols[vi];
+                for (var ri=0;ri<rowsArr.length;ri++) {
+                    var l=grid[cix+','+ri];
+                    if (l) { seq.push(l); st[l]++; }
+                }
+            }
+
+            canvasRoad = { sequence: seq, stats: st, cols: validCols.length, rows: rowsArr.length };
+        })(canvases[0]); }
+    } catch(e) {
+        canvasRoad = null;
+    }
+
     return JSON.stringify({
         ts: now,
         roundId: roundId,
@@ -92,7 +224,7 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
         streaks: streaks,
         urlTableId: myTableId,
         urlGameType: myGameType,
-        canvasRoad: null,
+        canvasRoad: canvasRoad,
     });
 })()"""
 

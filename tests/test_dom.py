@@ -113,6 +113,26 @@ class TestDetectResult:
         assert detect_result({"cards": {}}) is None
 
 
+class TestParseCanvasRoads:
+    def test_returns_empty_for_none(self):
+        from hdt.capture.dom_parser import parse_canvas_roads
+        assert parse_canvas_roads(None) == []
+
+    def test_returns_empty_for_empty_dict(self):
+        from hdt.capture.dom_parser import parse_canvas_roads
+        assert parse_canvas_roads({}) == []
+
+    def test_maps_b_to_l(self):
+        from hdt.capture.dom_parser import parse_canvas_roads
+        result = parse_canvas_roads({"sequence": ["B", "P", "B", "B", "T"]})
+        assert result == ["L", "S", "L", "L", "F"]
+
+    def test_uses_road_map(self):
+        from hdt.capture.dom_parser import parse_canvas_roads
+        result = parse_canvas_roads({"sequence": ["B", "P", "T"]})
+        assert result == ["L", "S", "F"]
+
+
 class TestMakeFingerprint:
     def test_same_data_same_fingerprint(self):
         dyn1 = {"round_id": "R1", "status": "结算中", "cards": None,
