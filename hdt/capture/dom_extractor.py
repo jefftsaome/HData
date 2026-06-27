@@ -65,7 +65,7 @@ DYNAMIC_EXTRACT_JS = r"""(function() {
     }
 
     const bodyText = document.body.innerText;
-    const streaks = (bodyText.match(/\d+[\u5c40\u672a\u51fa]/g) || []).map(s => s.trim());
+    const streaks = (bodyText.match(/\d+[\u5c40\u672a\u51fa]{3}/g) || []).map(s => s.trim());
 
     const urlMatch = window.location.href.match(/\/game\/(\d+)\/(\d+)/);
     const urlTableId = urlMatch ? parseInt(urlMatch[2]) : 0;

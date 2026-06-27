@@ -264,14 +264,13 @@ class TestFullPipeline:
         assert tick.metadata.get("table_type_id") == raw.get("urlGameType", 0)
         # player_cards: 有 data-value 时是解码格式 "7S,10H"，否则是原始文本
         pv = raw.get("playerCardValues", [])
-        if pv and pv[0] != "-2":
+        if pv and any(v != "-2" for v in pv):
             expected = ",".join(decode_cards(pv))
             assert tick.metadata.get("player_cards") == expected, f"闲牌解码不一致: {tick.metadata.get('player_cards')} != {expected}"
         else:
             assert tick.metadata.get("player_cards") == raw.get("player_score_text", "")
         bv = raw.get("bankerCardValues", [])
-        if bv and bv[0] != "-2":
-            from hdt.capture.dom_parser import decode_cards
+        if bv and any(v != "-2" for v in bv):
             expected = ",".join(decode_cards(bv))
             assert tick.metadata.get("banker_cards") == expected, f"庄牌解码不一致: {tick.metadata.get('banker_cards')} != {expected}"
         else:
