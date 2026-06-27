@@ -11,4 +11,5 @@ dist/
 # cython
 *.c
 *.so
-*.pyd.auth_cache.json
+*.pyd
+.auth_cache.json
