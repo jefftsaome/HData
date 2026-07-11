@@ -357,7 +357,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hdt"
+name = "hdata"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -402,7 +402,7 @@ dev = [
 [[package]]
 name = "htools"
 version = "0.1.0"
-source = { git = "https://github.com/jefftsaome/HTools.git#c284c715a5b63f5bb087fa1a269bf2de32e35c87" }
+source = { git = "https://github.com/jefftsaome/HTools.git#65824d810309189a99bd3f4b1a35c022575781ae" }
 dependencies = [
     { name = "cryptography" },
     { name = "loguru" },

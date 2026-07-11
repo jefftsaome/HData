@@ -15,7 +15,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 async def main():
     from playwright.async_api import async_playwright
-    from hdt.auth.captcha import fetch_captcha, solve
+    from hdata.auth.captcha import fetch_captcha, solve
     from curl_cffi import requests as cr
     from PIL import Image, ImageDraw
 

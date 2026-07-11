@@ -26,8 +26,8 @@ from Crypto.PublicKey.RSA import construct
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.Util.Padding import pad
 from curl_cffi import requests as cr
-from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
-from hdt.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
+from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+from hdata.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 JFBYM_TOKEN = os.getenv("JFBYM_TOKEN", "")
@@ -104,7 +104,7 @@ async def main():
 
         # 1. 域名
         print("\n[1] 获取域名...")
-        from hdt.auth.domain import resolve_domain
+        from hdata.auth.domain import resolve_domain
         domain = resolve_domain()
         print(f"  域名: {domain}")
 
@@ -204,7 +204,7 @@ async def main():
         if not browser_load_data:
             print("⚠️  未捕获到浏览器 load 数据")
             # 从已有的 fetch_captcha 接口获取
-            from hdt.auth.captcha import fetch_captcha
+            from hdata.auth.captcha import fetch_captcha
             browser_load_data = fetch_captcha()
             print(f"  改用 Python fetch_captcha() 数据")
         else:

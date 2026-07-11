@@ -17,7 +17,7 @@ FIXED_RANDOM = "aaaaaaaabbbbbbbb"  # 16 bytes = AES-128 key
 
 async def main():
     from playwright.async_api import async_playwright
-    from hdt.auth.captcha import fetch_captcha, solve
+    from hdata.auth.captcha import fetch_captcha, solve
 
     JFB = os.environ.get("JFB_TOKEN", "")
     if not JFB: print("❌ JFB_TOKEN"); return

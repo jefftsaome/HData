@@ -4,7 +4,7 @@
 后续登录失败（弹窗未出现等）时自动尝试更新选择器。
 
 用法:
-    from hdt.auth.selectors import SelectorSnapshot
+    from hdata.auth.selectors import SelectorSnapshot
 
     snap = SelectorSnapshot.load_or_default()
     btn = snap.login_button  # 或内置默认值

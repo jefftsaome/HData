@@ -48,7 +48,7 @@ def main():
     # 默认从 CDP 获取
     import asyncio
     import aiohttp
-    from hdt.capture.cdp_bridge import CDPSession
+    from hdata.capture.cdp_bridge import CDPSession
 
     async def from_cdp():
         async with aiohttp.ClientSession() as s:

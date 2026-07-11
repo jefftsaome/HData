@@ -53,7 +53,7 @@ async def main():
         if not sid: print("❌ 无 sid"); return
         print(f"✅ sid={sid[:12]}...")
 
-        from hdt.auth.domain import resolve_domain
+        from hdata.auth.domain import resolve_domain
         domain=resolve_domain()
         print(f"域名: {domain}")
         

@@ -15,8 +15,8 @@ from Crypto.PublicKey.RSA import construct
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.Util.Padding import pad
 from curl_cffi import requests as cr
-from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
-from hdt.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
+from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+from hdata.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 JFBYM_TOKEN = os.getenv("JFBYM_TOKEN", "")
@@ -106,7 +106,7 @@ async def main():
         print("✅ 已连接 Chrome")
         
         # 1. 域名 + 打开登录页
-        from hdt.auth.domain import resolve_domain
+        from hdata.auth.domain import resolve_domain
         domain=resolve_domain()
         print(f"域名: {domain}")
         await cdp_send('Page.navigate',{'url':f'{domain}/user/login'})

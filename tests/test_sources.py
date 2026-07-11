@@ -1,5 +1,5 @@
 import pytest
-from hdt.sources import CDPSource, WSSource
+from hdata.sources import CDPSource, WSSource
 
 
 class TestCDPSource:

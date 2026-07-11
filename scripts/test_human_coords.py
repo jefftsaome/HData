@@ -7,8 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from curl_cffi import requests as cr
-from hdt.auth.captcha import fetch_captcha
-from hdt.auth.geetest_signer import generate_w
+from hdata.auth.captcha import fetch_captcha
+from hdata.auth.geetest_signer import generate_w
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 

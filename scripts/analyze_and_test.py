@@ -12,7 +12,7 @@ from Crypto.PublicKey.RSA import construct
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.Util.Padding import pad
 from curl_cffi import requests as cr
-from hdt.auth.captcha import fetch_captcha
+from hdata.auth.captcha import fetch_captcha
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -36,7 +36,7 @@ def build_w(load_data, coords_str, field_ov):
     coords_array = [[int(p.split(',')[0]), int(p.split(',')[1])]
                     for p in coords_str.split('|')]
     
-    from hdt.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
+    from hdata.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
     lp = LotParser()
     
     eo = {
@@ -127,7 +127,7 @@ if best:
 # 如果有匹配，测试 verify
 if best:
     print(f"\n用 jfbym 测试最佳组合 verify...")
-    from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+    from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
     JFBYM_TOKEN = os.getenv("JFBYM_TOKEN", "")
     if JFBYM_TOKEN:
         solver = JfbymSolver(api_token=JFBYM_TOKEN)

@@ -12,7 +12,7 @@ from Crypto.Cipher import AES as AES_C
 from Crypto.PublicKey.RSA import construct
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.Util.Padding import pad
-from hdt.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
+from hdata.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 JFBYM_TOKEN = os.getenv("JFBYM_TOKEN","")
@@ -79,7 +79,7 @@ async def main():
         print("✅ Chrome已连接")
         
         # 获取域名
-        from hdt.auth.domain import resolve_domain
+        from hdata.auth.domain import resolve_domain
         domain=resolve_domain()
         
         # 打开登录页

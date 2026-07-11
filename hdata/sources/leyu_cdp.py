@@ -7,11 +7,11 @@ from typing import AsyncIterator, Callable
 from htools.interfaces import DataSource, SourceStatus
 from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
-from hdt.adapters.leyu_adapter import LeyuAdapter
-from hdt.auth.chrome_manager import ChromeManager
-from hdt.capture.cdp_bridge import CDPSession
-from hdt.capture.dom_extractor import DOMExtractor
-from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, parse_canvas_roads
+from hdata.adapters.leyu_adapter import LeyuAdapter
+from hdata.auth.chrome_manager import ChromeManager
+from hdata.capture.cdp_bridge import CDPSession
+from hdata.capture.dom_extractor import DOMExtractor
+from hdata.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, parse_canvas_roads
 
 logger = get_logger(__name__)
 

@@ -10,10 +10,10 @@
   - CaptchaSolveError / TokenUnavailableError: 异常
 """
 
-from hdt.auth.token_manager import TokenManager, TokenUnavailableError
-from hdt.auth.headless_login import HeadlessLogin
-from hdt.auth.domain import resolve_domain, DomainCache
-from hdt.auth.captcha_solver import (
+from hdata.auth.token_manager import TokenManager, TokenUnavailableError
+from hdata.auth.headless_login import HeadlessLogin
+from hdata.auth.domain import resolve_domain, DomainCache
+from hdata.auth.captcha_solver import (
     CaptchaSolver,
     JfbymSolver,
     CaptchaChallenge,

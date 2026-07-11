@@ -5,7 +5,7 @@ import json
 import gzip
 from typing import Any, Callable
 
-from hdt.protocol.decoder import decode_frame
+from hdata.protocol.decoder import decode_frame
 from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)

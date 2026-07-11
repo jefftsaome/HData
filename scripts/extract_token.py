@@ -52,7 +52,7 @@ async def main():
         print(f"     --user-data-dir=/tmp/chrome_debug")
         sys.exit(1)
 
-    from hdt.capture.cdp_bridge import CDPSession
+    from hdata.capture.cdp_bridge import CDPSession
 
     ws_url = await _resolve_ws_url(CDP_PORT)
     cdp = CDPSession(ws_url)

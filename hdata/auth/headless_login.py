@@ -123,7 +123,7 @@ class HeadlessLogin:
                          timeout: float = 30.0) -> dict:
         """完整登录流程 — 全 raw CDP，无 Playwright 参与。"""
         import aiohttp, websockets
-        from hdt.auth.captcha_solver import CaptchaSolveError
+        from hdata.auth.captcha_solver import CaptchaSolveError
 
         logger.info(f"[{self._account}] raw CDP 登录 (user={user})...")
 
@@ -294,7 +294,7 @@ class HeadlessLogin:
             if not img_data.get("bg") or len(img_data.get("ques", [])) < 3:
                 raise RuntimeError("验证码图片提取不完整")
 
-            from hdt.auth.captcha_solver import CaptchaChallenge
+            from hdata.auth.captcha_solver import CaptchaChallenge
             challenge = CaptchaChallenge(
                 lot_number="", payload="", process_token="",
                 bg_url=img_data["bg"],
@@ -403,7 +403,7 @@ class HeadlessLogin:
     async def _ensure_ba(self):
         """确保 browser-act 在线并更新 CDP 连接信息。"""
         if self._ba is None:
-            from hdt.auth.browser_act import BrowserActManager
+            from hdata.auth.browser_act import BrowserActManager
             self._ba = BrowserActManager()
         if not self._cdp_port or not self._cdp_base:
             port = await self._ba.ensure_running()
@@ -415,7 +415,7 @@ class HeadlessLogin:
     async def _resolve_domain(self, entry_url: str = DEFAULT_ENTRY_URL) -> str:
         """获取乐鱼真实域名。委托给 domain.resolve_domain()。"""
         import os
-        from hdt.auth.domain import resolve_domain, DomainCache
+        from hdata.auth.domain import resolve_domain, DomainCache
 
         # 1. 缓存
         cache = DomainCache()

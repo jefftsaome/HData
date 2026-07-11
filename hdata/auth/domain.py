@@ -7,7 +7,7 @@
 正则提取真实域名，按入口 key 缓存到 .cache/domain.json。
 
 用法:
-    from hdt.auth.domain import resolve_domain, DomainCache
+    from hdata.auth.domain import resolve_domain, DomainCache
 
     domain = resolve_domain("https://leyu.com")   # 从指定入口获取
     domain = resolve_domain()                      # 默认 leyu.com

@@ -23,8 +23,8 @@ RSA_E = int("10001", 16)
 
 
 def main():
-    from hdt.auth.captcha import fetch_captcha
-    from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+    from hdata.auth.captcha import fetch_captcha
+    from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
     import asyncio
     
     # Fresh captcha
@@ -97,7 +97,7 @@ def main():
 
 def test_one(ld, coords_str, overrides):
     """Test verify with modified e_obj."""
-    from hdt.auth.geetest_signer import generate_w, LotParser
+    from hdata.auth.geetest_signer import generate_w, LotParser
     import hashlib
     
     lot_number = ld["lot_number"]
@@ -114,7 +114,7 @@ def test_one(ld, coords_str, overrides):
     pow_string = f"{pow_detail['version']}|{b}|{pow_detail['hashfunc']}|{pow_detail['datetime']}|{CAPTCHA_ID}|{lot_number}||"
     
     # Generate pow just like _generate_pow does
-    from hdt.auth.geetest_signer import _generate_pow as gen_pow
+    from hdata.auth.geetest_signer import _generate_pow as gen_pow
     import types
     # _generate_pow is a module-level function in geetest_signer
     # But it's private. Let me just replicate it.

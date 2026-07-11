@@ -5,7 +5,7 @@
 """
 
 import asyncio, json, base64, re
-from hdt.capture.cdp_bridge import CDPSession
+from hdata.capture.cdp_bridge import CDPSession
 import aiohttp
 
 

@@ -102,7 +102,7 @@ document.querySelectorAll('[class*="botion"] img').forEach(i=>{if(i.naturalWidth
                 (ABDIR / "bg.jpg").write_bytes(cr.get(info['bg'], impersonate="chrome110", timeout=15).content)
                 for j, u in enumerate(info['ques']):
                     (ABDIR / f"ques_{j + 1}.png").write_bytes(cr.get(u, impersonate="chrome110", timeout=10).content)
-                from hdt.auth.captcha import solve
+                from hdata.auth.captcha import solve
                 jr = None
                 for _ in range(3):
                     jr = solve(info['bg'], info['ques'], os.environ.get('JFBYM_TOKEN', ''))

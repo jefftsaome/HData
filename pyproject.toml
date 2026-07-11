@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel", "cython>=3.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hdt"
+name = "hdata"
 version = "0.1.0"
 description = "Harvester data team — data source implementations"
 requires-python = "==3.13.5"
@@ -23,8 +23,8 @@ dependencies = [
 htools = { git = "https://github.com/jefftsaome/HTools.git" }
 
 [project.entry-points."data_sources"]
-cdp_source = "hdt.sources.leyu_cdp:CDPSource"
-ws_source = "hdt.sources.leyu_ws:WSSource"
+cdp_source = "hdata.sources.leyu_cdp:CDPSource"
+ws_source = "hdata.sources.leyu_ws:WSSource"
 
 [tool.setuptools.packages.find]
 where = ["."]

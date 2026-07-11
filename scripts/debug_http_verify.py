@@ -154,7 +154,7 @@ def main():
     print("  纯 HTTP verify 调试")
     print("=" * 60)
     
-    from hdt.auth.captcha import fetch_captcha
+    from hdata.auth.captcha import fetch_captcha
     
     print("\n[1/4] 获取验证码...")
     data = fetch_captcha()
@@ -175,7 +175,7 @@ def main():
         if not JFBYM_TOKEN:
             print("  ❌ 需要设置 JFBYM_TOKEN 环境变量")
             return 1
-        from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+        from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
         solver = JfbymSolver(api_token=JFBYM_TOKEN)
         challenge = CaptchaChallenge(
             lot_number=data["lot_number"],
@@ -207,7 +207,7 @@ def main():
     
     # ── 3. 生成 w 参数 ──
     print("\n[3/4] 生成 w 参数...")
-    from hdt.auth.geetest_signer import generate_w
+    from hdata.auth.geetest_signer import generate_w
     
     w = generate_w(data, CAPTCHA_ID, coords)
     w_info = w_decompose(w)

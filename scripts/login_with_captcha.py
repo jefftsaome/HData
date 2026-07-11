@@ -18,7 +18,7 @@ SESSION_CACHE = _PROJ_ROOT / ".session_cache.json"
 
 async def login(user: str, pwd: str, jfbym_token: str) -> dict | None:
     from playwright.async_api import async_playwright
-    from hdt.auth.captcha import fetch_captcha
+    from hdata.auth.captcha import fetch_captcha
 
     pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
 
@@ -62,7 +62,7 @@ async def login(user: str, pwd: str, jfbym_token: str) -> dict | None:
 
         # 4. jfbym 30112 拿坐标
         print("4. jfbym 30112...")
-        from hdt.auth.captcha import solve
+        from hdata.auth.captcha import solve
         data = fetch_captcha(f"{dm}/user/login")
         if not data: print("❌ fetch_captcha 失败"); return None
         result = solve(data["bg_url"], data["ques_urls"], jfbym_token)
@@ -125,7 +125,7 @@ async def main():
     if s:
         print("\n✅ 登录成功！")
         if s.get("uuidToBase64"):
-            from hdt.auth.token_manager import get_token
+            from hdata.auth.token_manager import get_token
             try: get_token(s); print("✅ JWT 已刷新")
             except Exception as e: print(f"⚠️ JWT: {e}")
         return 0

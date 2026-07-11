@@ -34,7 +34,7 @@ def gen_pow(ln, ci, hf, v, b, dt):
         elif hd.startswith(p) and len(p) <= [0, 7, 3, 1][br]:
             return {"pow_msg": c, "pow_sign": hd}
 
-from hdt.auth.geetest_signer import LotParser
+from hdata.auth.geetest_signer import LotParser
 LP = LotParser
 
 def make_w_eobj(ld, cs, eo_ov):
@@ -87,8 +87,8 @@ def verify(ld, w):
     return {"status": "parse_error", "raw": t[:200]}
 
 # Single captcha fetch, reused for all tests
-from hdt.auth.captcha import fetch_captcha
-from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+from hdata.auth.captcha import fetch_captcha
+from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
 import asyncio
 
 print("Fetching captcha...")

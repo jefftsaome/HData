@@ -48,7 +48,7 @@ async def main() -> dict | None:
     
     # ── 1. 获取验证码数据 ──
     print("\n[1/6] 获取验证码挑战数据...")
-    from hdt.auth.captcha import fetch_captcha
+    from hdata.auth.captcha import fetch_captcha
     ld = fetch_captcha()
     if not ld:
         print("  ❌ fetch_captcha 失败")
@@ -57,7 +57,7 @@ async def main() -> dict | None:
     
     # ── 2. jfbym 识别 ──
     print("\n[2/6] jfbym 识别坐标...")
-    from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+    from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
     solver = JfbymSolver(api_token=JFBYM_TOKEN)
     challenge = CaptchaChallenge(
         lot_number=ld["lot_number"], payload=ld["payload"],
@@ -73,7 +73,7 @@ async def main() -> dict | None:
     
     # ── 3. 生成 w 参数 ──
     print("\n[3/6] 生成 w 参数...")
-    from hdt.auth.geetest_signer import generate_w
+    from hdata.auth.geetest_signer import generate_w
     w = generate_w(ld, CAPTCHA_ID, sol.coords)
     print(f"  ✅ w: {len(w)} hex chars (AES: {(len(w)-256)//2}B, RSA: 128B)")
     

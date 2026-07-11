@@ -298,8 +298,8 @@ async def main():
         listener_task = asyncio.create_task(handle_ws())
         
         # 同时轮询验证码弹窗，尝试用 jfbym 自动解决
-        from hdt.auth.captcha import fetch_captcha
-        from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+        from hdata.auth.captcha import fetch_captcha
+        from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
         
         has_captcha = False
         for i in range(60):
@@ -420,7 +420,7 @@ async def main():
             # 也获取 load 数据
             load_data = None
             try:
-                from hdt.auth.captcha import fetch_captcha
+                from hdata.auth.captcha import fetch_captcha
                 load_data = fetch_captcha()
             except:
                 pass

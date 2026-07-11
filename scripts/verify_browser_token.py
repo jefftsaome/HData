@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp, websockets
 from curl_cffi import requests as cr
-from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 JFBYM_TOKEN = os.getenv("JFBYM_TOKEN", "")
@@ -26,7 +26,7 @@ async def main():
     from Crypto.PublicKey.RSA import construct
     from Crypto.Cipher import PKCS1_v1_5
     from Crypto.Util.Padding import pad
-    from hdt.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
+    from hdata.auth.geetest_signer import LotParser, _generate_pow, _rand_uid
     
     RSA_N = int("00C1E3934D1614465B33053E7F48EE4EC87B14B95EF88947713D25EECBFF7E74C7977D02DC1D9451F79DD5D1C10C29ACB6A9B4D6FB7D0A0279B6719E1772565F09AF627715919221AEF91899CAE08C0D686D748B20A3603BE2318CA6BC2B59706592A9219D0BF05C9F65023A21D2330807252AE0066D59CEEFA5F2748EA80BAB81", 16)
     RSA_E = int("10001", 16)
@@ -77,7 +77,7 @@ async def main():
         
         # 1. 获取域名
         print("\n[1] 获取域名...")
-        from hdt.auth.domain import resolve_domain
+        from hdata.auth.domain import resolve_domain
         domain = resolve_domain()
         print(f"  域名: {domain}")
         

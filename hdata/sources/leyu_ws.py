@@ -5,7 +5,7 @@
 
 用法:
     import asyncio
-    from hdt.sources.leyu_ws import WSSource
+    from hdata.sources.leyu_ws import WSSource
 
     async def main():
         src = WSSource(table_id=2718)
@@ -22,8 +22,8 @@ import json
 import time
 from typing import AsyncIterator, Callable
 
-from hdt.adapters.leyu_adapter import LeyuAdapter
-from hdt.capture.direct_client import WSClient
+from hdata.adapters.leyu_adapter import LeyuAdapter
+from hdata.capture.direct_client import WSClient
 from htools.interfaces import DataSource, SourceStatus
 from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
@@ -172,7 +172,7 @@ class WSSource(DataSource):
 
     async def _ensure_token(self):
         """确保有有效的游戏 JWT，通过 TokenManager 自动处理缓存和刷新。"""
-        from hdt.auth.token_manager import TokenManager
+        from hdata.auth.token_manager import TokenManager
         tm = TokenManager(self._account)
 
         token = await tm.get_token()
@@ -196,7 +196,7 @@ class WSSource(DataSource):
         """检查 JWT 是否将在 5 分钟内过期。"""
         if not self._token:
             return True
-        from hdt.auth.token_manager import decode_jwt
+        from hdata.auth.token_manager import decode_jwt
         jwt_info = decode_jwt(self._token)
         if jwt_info:
             return jwt_info.get("exp", 0) - time.time() < 300

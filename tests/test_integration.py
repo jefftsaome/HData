@@ -11,7 +11,7 @@
 import os
 import asyncio
 import pytest
-from hdt.capture.cdp_bridge import CDPSession
+from hdata.capture.cdp_bridge import CDPSession
 
 # 默认 CDP 端口
 CDP_PORT = int(os.environ.get("CDP_PORT", "9222"))
@@ -56,7 +56,7 @@ async def _resolve_ws_url(port: int) -> str:
 @pytest.mark.asyncio
 async def test_auto_start():
     """ChromeManager 启动 Chrome，验证端口就绪后关闭。"""
-    from hdt.auth.chrome_manager import ChromeManager
+    from hdata.auth.chrome_manager import ChromeManager
 
     cm = ChromeManager()
     try:
@@ -131,7 +131,7 @@ async def test_cdp_page_targets(cdp: CDPSession):
 @pytest.fixture(scope="function")
 async def game_data(cdp):
     """从游戏页面提取原始 DOM 数据。若不在游戏页面则 skip。"""
-    from hdt.capture.dom_extractor import DOMExtractor
+    from hdata.capture.dom_extractor import DOMExtractor
     ext = DOMExtractor(cdp)
     raw = await ext.extract_dynamic()
     if not raw or not raw.get("roundId"):
@@ -178,7 +178,7 @@ class TestParseAndDetect:
 
     @pytest.mark.asyncio
     async def test_parse_dynamic(self, game_data):
-        from hdt.capture.dom_parser import parse_dynamic
+        from hdata.capture.dom_parser import parse_dynamic
         raw, _ = game_data
         dyn = parse_dynamic(raw)
         assert dyn["round_id"] == raw.get("roundId", "")
@@ -194,7 +194,7 @@ class TestParseAndDetect:
 
     @pytest.mark.asyncio
     async def test_detect_result(self, game_data):
-        from hdt.capture.dom_parser import parse_dynamic, detect_result
+        from hdata.capture.dom_parser import parse_dynamic, detect_result
         raw, _ = game_data
         dyn = parse_dynamic(raw)
         result = detect_result(dyn)
@@ -202,7 +202,7 @@ class TestParseAndDetect:
 
     @pytest.mark.asyncio
     async def test_bet_data(self, game_data):
-        from hdt.capture.dom_parser import parse_dynamic
+        from hdata.capture.dom_parser import parse_dynamic
         raw, _ = game_data
         dyn = parse_dynamic(raw)
         bets = dyn.get("bets", {})
@@ -216,8 +216,8 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_adapter_produces_tick(self, game_data):
-        from hdt.capture.dom_parser import parse_dynamic, detect_result, decode_cards, parse_canvas_roads
-        from hdt.adapters.leyu_adapter import LeyuAdapter
+        from hdata.capture.dom_parser import parse_dynamic, detect_result, decode_cards, parse_canvas_roads
+        from hdata.adapters.leyu_adapter import LeyuAdapter
 
         raw, ext = game_data
         dyn = parse_dynamic(raw)

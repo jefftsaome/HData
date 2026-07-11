@@ -76,7 +76,7 @@ async def main():
         # ── 1. 获取域名 ──
         print("\n[1/7] 获取域名...")
         # 先尝试用 domain.py 解析
-        from hdt.auth.domain import resolve_domain, DomainCache
+        from hdata.auth.domain import resolve_domain, DomainCache
         domain = resolve_domain()
         if not domain:
             print("  domain.py 解析失败，从浏览器获取...")
@@ -246,7 +246,7 @@ async def main():
         
         # jfbym
         if JFBYM_TOKEN:
-            from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+            from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
             solver = JfbymSolver(api_token=JFBYM_TOKEN)
             challenge = CaptchaChallenge(
                 lot_number='', payload='', process_token='',

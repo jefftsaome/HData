@@ -3,7 +3,7 @@
 流程: fetch_captcha → jfbym 31111 → w 参数 → verify → login → session
 
 用法:
-    from hdt.auth.http_login import login
+    from hdata.auth.http_login import login
     session = login("username", "password", "jfbym_token")
     # session 自动保存为 account 对应的缓存
 """
@@ -14,8 +14,8 @@ import re
 import time
 import urllib.parse
 from curl_cffi import requests as cr
-from hdt.auth.captcha import fetch_captcha, solve
-from hdt.auth.geetest_signer import generate_w
+from hdata.auth.captcha import fetch_captcha, solve
+from hdata.auth.geetest_signer import generate_w
 from htools.utils.time import now_ms
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"

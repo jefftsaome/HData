@@ -114,7 +114,7 @@ async def main():
             'returnByValue': True}))
 
         from curl_cffi import requests as cr
-        from hdt.auth.captcha import solve
+        from hdata.auth.captcha import solve
         img_data = json.loads(img_json)
 
         for attempt in range(3):

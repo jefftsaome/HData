@@ -237,7 +237,7 @@ def test_variant(label, load_data, coords, overrides, ref_size=None):
 
 def get_jfbym_coords(load_data):
     """通过 jfbym 获取真实坐标。"""
-    from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+    from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
     import asyncio
     
     solver = JfbymSolver(api_token=JFBYM_TOKEN)
@@ -261,7 +261,7 @@ def main():
     p.add_argument("--only", type=int, help="只运行第 N 个测试")
     args = p.parse_args()
     
-    from hdt.auth.captcha import fetch_captcha
+    from hdata.auth.captcha import fetch_captcha
     print("获取验证码...")
     data = fetch_captcha()
     if not data:

@@ -14,8 +14,8 @@
   L4: 抛出 TokenUnavailableError
 
 用法:
-    from hdt.auth.token_manager import TokenManager
-    from hdt.auth.captcha_solver import JfbymSolver
+    from hdata.auth.token_manager import TokenManager
+    from hdata.auth.captcha_solver import JfbymSolver
 
     tm = TokenManager(account="lds003", solver=JfbymSolver(token="xxx"))
     jwt = await tm.get_token()  # 一切自动
@@ -111,7 +111,7 @@ class TokenManager:
 
         # CaptchaSolver — 默认用 JfbymSolver（从环境变量读 token）
         if solver is None:
-            from hdt.auth.captcha_solver import JfbymSolver
+            from hdata.auth.captcha_solver import JfbymSolver
             jfbym_token = os.getenv("JFBYM_TOKEN", "")
             solver = JfbymSolver(api_token=jfbym_token) if jfbym_token else None
         self._solver = solver
@@ -460,7 +460,7 @@ class TokenManager:
 
     async def _refresh_via_headless(self, cache: dict | None) -> dict | None:
         """用持久化 browser profile 自动跳转截获 JWT。"""
-        from hdt.auth.headless_login import HeadlessLogin
+        from hdata.auth.headless_login import HeadlessLogin
 
         hl = HeadlessLogin(account=self.account, profile_dir=self._profile_dir)
         domain = (cache or {}).get("domain", "")
@@ -489,7 +489,7 @@ class TokenManager:
 
     async def _login_via_headless(self, user: str, pwd: str, solver) -> dict:
         """完整 headless 登录流程。"""
-        from hdt.auth.headless_login import HeadlessLogin
+        from hdata.auth.headless_login import HeadlessLogin
 
         hl = HeadlessLogin(account=self.account, profile_dir=self._profile_dir)
         return await hl.full_login(user=user, pwd=pwd, solver=solver)
@@ -504,9 +504,9 @@ class TokenManager:
         注意: verify 依赖坐标精度，当前 jfbym 坐标约 ±20px 偏移。
         如果 verify 持续返回 result=fail，可尝试 Capsolver 等替代打码平台。
         """
-        from hdt.auth.captcha import fetch_captcha
-        from hdt.auth.captcha_solver import CaptchaChallenge
-        from hdt.auth.geetest_signer import generate_w
+        from hdata.auth.captcha import fetch_captcha
+        from hdata.auth.captcha_solver import CaptchaChallenge
+        from hdata.auth.geetest_signer import generate_w
         from curl_cffi import requests as cr
         import hashlib, urllib.parse, re
 
@@ -600,7 +600,7 @@ class TokenManager:
 
     async def _resolve_domain(self) -> str | None:
         """解析乐鱼域名。"""
-        from hdt.auth.domain import resolve_domain, DomainCache
+        from hdata.auth.domain import resolve_domain, DomainCache
         cache = DomainCache()
         cached = cache.get()
         if cached:
@@ -765,14 +765,14 @@ async def main():
     p.add_argument("--resolve-domain", nargs="?", const="", help="获取真实域名并缓存。可选指定入口 URL")
     args = p.parse_args()
 
-    from hdt.auth.captcha_solver import JfbymSolver
+    from hdata.auth.captcha_solver import JfbymSolver
 
     solver = JfbymSolver(api_token=args.jfbym_token) if args.jfbym_token else None
     tm = TokenManager(account=args.account, solver=solver,
                       user=args.user or "", pwd=args.pwd or "")
 
     if args.resolve_domain is not None:
-        from hdt.auth.domain import resolve_domain as do_resolve
+        from hdata.auth.domain import resolve_domain as do_resolve
         entry = args.resolve_domain if args.resolve_domain else ""
         domain = do_resolve(entry)
         if domain:
@@ -784,7 +784,7 @@ async def main():
             return 1
 
     if args.recapture_signatures:
-        from hdt.auth.signature_recapture import recapture_signatures
+        from hdata.auth.signature_recapture import recapture_signatures
         try:
             sigs = await recapture_signatures(args.account)
             if sigs:

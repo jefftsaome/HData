@@ -1,6 +1,6 @@
 """测试 DOM 提取与解析模块"""
 
-from hdt.capture.dom_parser import (
+from hdata.capture.dom_parser import (
     baccarat_value, parse_number, parse_cards, parse_bets,
     parse_dynamic, detect_result, make_fingerprint,
 )
@@ -115,15 +115,15 @@ class TestDetectResult:
 
 class TestParseCanvasRoads:
     def test_returns_empty_for_none(self):
-        from hdt.capture.dom_parser import parse_canvas_roads
+        from hdata.capture.dom_parser import parse_canvas_roads
         assert parse_canvas_roads(None) == []
 
     def test_returns_empty_for_empty_dict(self):
-        from hdt.capture.dom_parser import parse_canvas_roads
+        from hdata.capture.dom_parser import parse_canvas_roads
         assert parse_canvas_roads({}) == []
 
     def test_passes_through_raw_sequence(self):
-        from hdt.capture.dom_parser import parse_canvas_roads
+        from hdata.capture.dom_parser import parse_canvas_roads
         result = parse_canvas_roads({"sequence": ["B", "P", "B", "B", "T"]})
         assert result == ["B", "P", "B", "B", "T"], f"应原样返回: {result}"
 

@@ -20,7 +20,7 @@ import random
 import re
 
 from Crypto.Cipher import AES
-from hdt.auth.captcha import fetch_captcha
+from hdata.auth.captcha import fetch_captcha
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"

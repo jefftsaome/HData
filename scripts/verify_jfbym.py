@@ -19,8 +19,8 @@ async def main():
         print("需要 JFBYM_TOKEN")
         return
     
-    from hdt.auth.captcha import fetch_captcha
-    from hdt.auth.captcha_solver import JfbymSolver, CaptchaChallenge
+    from hdata.auth.captcha import fetch_captcha
+    from hdata.auth.captcha_solver import JfbymSolver, CaptchaChallenge
     from curl_cffi import requests as cr
     
     # 1. 获取验证码

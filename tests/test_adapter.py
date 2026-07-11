@@ -1,5 +1,5 @@
 from htools.types import TickSide
-from hdt.adapters.leyu_adapter import LeyuAdapter
+from hdata.adapters.leyu_adapter import LeyuAdapter
 
 
 class TestLeyuAdapter:

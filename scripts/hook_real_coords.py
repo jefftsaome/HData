@@ -14,7 +14,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 async def main():
     from playwright.async_api import async_playwright
-    from hdt.auth.captcha import fetch_captcha, solve
+    from hdata.auth.captcha import fetch_captcha, solve
 
     JFB = os.environ.get("JFB_TOKEN", "")
     if not JFB: print("❌ JFB_TOKEN"); return
@@ -106,7 +106,7 @@ async def main():
         if verify_w.get("w"):
             print(f"   jfbym: {jfbym_pts}")
             # 真实 w 短 vs 我们生成的长 → 对比分析
-            from hdt.auth.geetest_signer import _rand_uid, _encrypt_aes, _encrypt_rsa
+            from hdata.auth.geetest_signer import _rand_uid, _encrypt_aes, _encrypt_rsa
             import hashlib, binascii
             data2 = fetch_captcha(f"https://www.1d8e47.vip:9249/user/login")
             pd = data2['pow_detail']

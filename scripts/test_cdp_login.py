@@ -3,7 +3,7 @@
 import asyncio, json, time, aiohttp, websockets, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from hdt.auth.captcha import solve
+from hdata.auth.captcha import solve
 
 async def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 64371

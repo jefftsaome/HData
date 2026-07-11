@@ -11,7 +11,7 @@ data-value 编码:
 """
 
 import asyncio, json, aiohttp
-from hdt.capture.cdp_bridge import CDPSession
+from hdata.capture.cdp_bridge import CDPSession
 
 RANK_NAMES = {1:'A', 11:'J', 12:'Q', 13:'K'}
 SUIT = {0:'D', 1:'C', 2:'H', 3:'S'}  # ♦=D, ♣=C, ♥=H, ♠=S
