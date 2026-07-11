@@ -11,7 +11,7 @@ from hdt.adapters.leyu_adapter import LeyuAdapter
 from hdt.auth.chrome_manager import ChromeManager
 from hdt.capture.cdp_bridge import CDPSession
 from hdt.capture.dom_extractor import DOMExtractor
-from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, decode_cards, parse_canvas_roads
+from hdt.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, parse_canvas_roads
 
 logger = get_logger(__name__)
 
@@ -103,7 +103,7 @@ class CDPSource(DataSource):
             try:
                 # ── 连接阶段 ──
                 if self._cdp is None:
-                    yield await self._ensure_connected(reconnect_delay)
+                    await self._ensure_connected(reconnect_delay)
                     reconnect_delay = 1.0
                     continue  # 连上后进入采集循环
 
@@ -159,6 +159,26 @@ class CDPSource(DataSource):
         if not self._chrome.is_attached:
             await self._chrome.start()
 
+
+        # 解析 CDP URL（attach 模式下通过 json/version 获取完整 WS URL）
+        if self._chrome.is_attached:
+            import aiohttp
+            from urllib.parse import urlparse
+            parsed = urlparse(self._chrome.cdp_url)
+            port = parsed.port or 9222
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"http://127.0.0.1:{port}/json/version",
+                        timeout=aiohttp.ClientTimeout(total=3),
+                    ) as resp:
+                        data = await resp.json()
+                        ws_url = data.get("webSocketDebuggerUrl", "")
+                        if ws_url:
+                            self._chrome._attached_url = ws_url
+            except Exception:
+                pass
+
         # 连接 CDP
         try:
             self._cdp = CDPSession(self._chrome.cdp_url)
@@ -179,8 +199,7 @@ class CDPSource(DataSource):
 
         # 返回占位 tick（连接成功但还没数据）
         return self._adapter.create_tick(
-            result="N", score=0, table_id=0,
-            confidence=0,
+            result="N", table_id=0, confidence=0,
         )
 
     async def _poll_loop(self) -> AsyncIterator[MarketTick]:
@@ -193,7 +212,7 @@ class CDPSource(DataSource):
         # 首次或换台后提取固定信息
         if not self._fixed_gameinfo_init:
             fixed = await self._extractor.extract_fixed_info()
-            if fixed:
+            if fixed["table_id"] and fixed["table_id"].strip() != "-":
                 self._fixed_gameinfo_init = True
                 logger.info("Fixed info extracted: {}", fixed.get("game_name", ""))
 
@@ -213,12 +232,15 @@ class CDPSource(DataSource):
             result = detect_result(dyn)
             long_score = 0
             short_score = 0
-            if dyn.get("cards"):
-                long_score = dyn["cards"].get("banker_total", 0) or 0
-                short_score = dyn["cards"].get("player_total", 0) or 0
+            cards = dyn.get("cards")
+            if cards:
+                long_score = cards.get("banker_score") or 0
+                short_score = cards.get("player_score") or 0
 
             # 倒计时转 int | None
             countdown_raw = raw.get("countdownText", "")
+            print('----'*15)
+            print('countdown_raw:', countdown_raw)
             countdown: int | None = None
             if countdown_raw:
                 try:
@@ -256,21 +278,18 @@ class CDPSource(DataSource):
             # 从 Canvas 提取路纸序列
             road_seq = parse_canvas_roads(raw.get("canvasRoad"))
 
-            # 解码卡牌（从 data-value 转为牌面字符串）
-            raw_player_cards = decode_cards(raw.get("playerCardValues", []))
-            raw_banker_cards = decode_cards(raw.get("bankerCardValues", []))
-
-            # 构建 CDP 原始数据 metadata（未显式展开的补充数据）
+            # 构建 CDP 原始数据 metadata
             fixed = self._extractor.fixed_info or {}
             boot = dyn.get("boot_stats", {})
+            player_cards = cards.get("player_cards", []) if cards else []
+            banker_cards = cards.get("banker_cards", []) if cards else []
             cdp_meta = {
                 "table_type": fixed.get("gameplay", ""),
-                "player_cards": ",".join(raw_player_cards) if raw_player_cards else raw.get("player_score_text", ""),
-                "banker_cards": ",".join(raw_banker_cards) if raw_banker_cards else raw.get("banker_score_text", ""),
+                "player_cards": ",".join(player_cards) if player_cards else None,
+                "banker_cards": ",".join(banker_cards) if banker_cards else None,
                 "server_time": raw.get("timeDisplay", ""),
                 "dealer": fixed.get("dealer", ""),
                 "bet_limit": fixed.get("bet_limit", ""),
-                "total_rounds": boot.get("total_rounds", 0),
             }
 
             # 通过 Adapter 产出 MarketTick
@@ -285,6 +304,7 @@ class CDPSource(DataSource):
                 countdown=countdown,
                 table_type_id=raw.get("urlGameType", 0),
                 road_sequence=road_seq,
+                session_id=str(boot.get("total_rounds", "")),
                 confidence=0.99 if result else 0.0,
                 bets=dyn.get("bets"),
                 extra_metadata=cdp_meta,

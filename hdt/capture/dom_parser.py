@@ -149,6 +149,21 @@ def parse_boot_stats(boot_items: list[dict]) -> dict:
     return stats
 
 
+def _parse_score_text(text: str | None) -> int | None:
+    """从 "4 闲" 这样的点数字符串中提取前导数字。
+
+    Args:
+        text: 如 "4 闲"、"9 庄"、""、None
+
+    Returns:
+        整数点数，无法解析返回 None
+    """
+    if not text:
+        return None
+    m = re.match(r"(\d+)", str(text).strip())
+    return int(m.group(1)) if m else None
+
+
 def parse_dynamic(raw: dict) -> dict:
     """将 JS 返回的原始 dict 解析为结构化动态数据。
 
@@ -163,11 +178,14 @@ def parse_dynamic(raw: dict) -> dict:
          boot_stats: {...},
          streaks}
     """
-    # 卡牌解析
-    player_cards = parse_cards(raw.get("player_score_text", ""))
-    banker_cards = parse_cards(raw.get("banker_score_text", ""))
-    player_total = sum(c["baccarat_value"] for c in player_cards) % 10
-    banker_total = sum(c["baccarat_value"] for c in banker_cards) % 10
+    # 牌面总点数
+    raw_player = raw.get("player_score_text")
+    raw_banker = raw.get("banker_score_text")
+    player_total = _parse_score_text(raw_player)
+    banker_total = _parse_score_text(raw_banker)
+    # data-value 花色解码
+    player_card_values = decode_cards(raw.get("playerCardValues", []))
+    banker_card_values = decode_cards(raw.get("bankerCardValues", []))
 
     # 投注解析
     total_bet, areas = parse_bets(raw.get("betRaw", ""))
@@ -191,12 +209,15 @@ def parse_dynamic(raw: dict) -> dict:
         "countdown_seconds": countdown,
         "server_time": raw.get("timeDisplay", ""),
         "cards": {
-            "player": player_cards,
-            "banker": banker_cards,
-            "player_total": player_total,
-            "banker_total": banker_total,
+            "player_score": player_total,
+            "banker_score": banker_total,
+            "player_cards": player_card_values,
+            "banker_cards": banker_card_values,
         },
-        "bets": {"total": total_bet, "areas": areas},
+        "bets": {
+            "total": total_bet,
+            "areas": areas
+        },
         "boot_stats": boot_stats,
         "streaks": raw.get("streaks", []),
     }
@@ -212,8 +233,8 @@ def detect_result(dynamic: dict) -> str | None:
         "B" (庄/banker) / "P" (闲/player) / "T" (和/tie)，数据不足返回 None
     """
     cards = dynamic.get("cards", {})
-    player_total = cards.get("player_total")
-    banker_total = cards.get("banker_total")
+    player_total = cards.get("player_score")
+    banker_total = cards.get("banker_score")
 
     if player_total is None or banker_total is None:
         return None

@@ -2,6 +2,7 @@
 
 import time
 from htools.types import MarketTick, TickSide
+from htools.utils.time import now_ms
 
 # 投注区域原始名称 → 语义化 key
 BET_AREA_MAP = {
@@ -51,6 +52,7 @@ class LeyuAdapter:
         boot_no: int = 0,
         road_sequence: list[str] | None = None,
         confidence: float = 1.0,
+        session_id: str = "",
         bets: dict | None = None,
         extra_metadata: dict | None = None,
     ) -> MarketTick:
@@ -60,7 +62,17 @@ class LeyuAdapter:
         # 状态文本语义化
         # countdown 存在时说明处于下注期，DOM status 可能延迟，强制 OPEN
         if isinstance(countdown, int):
+            # 这些数据都会有上局残留的可能性
             mapped_status = "OPEN"
+            side, long_score, short_score = None, None, None
+            if extra_metadata is None:
+                extra_metadata = {}
+            extra_metadata.update(
+                {
+                    "player_cards": None,
+                    "banker_cards": None,
+                }
+            )
         else:
             mapped_status = self.STATUS_MAP.get(status, status)
 
@@ -85,17 +97,21 @@ class LeyuAdapter:
         bet_kwargs = self._extract_bet_kwargs(bets or {})
 
         return MarketTick(
-            counter_id=counter_id,
-            trade_seq=trade_seq,
-            side_sequence=side_seq,
-            status=mapped_status,
-            countdown=countdown,
-            side=side,
-            long_score=long_score,
-            short_score=short_score,
-            confidence=confidence,
-            timestamp=int(time.time() * 1000),
-            metadata=metadata,
+            counter_id=counter_id,      # 桌台信息
+            trade_seq=trade_seq,        # 牌局信息
+            side_sequence=side_seq,     # 路纸数据
+            status=mapped_status,       # 状态文本
+            countdown=countdown,        # 倒计时
+            side=side,                  # 牌局结果
+            long_score=long_score,      # 庄点数
+            short_score=short_score,    # 闲点数
+            session_id=session_id,      # 靴盘局数
+            confidence=confidence,      # 数据置信度
+            timestamp=now_ms(),         # 时间戳 ms
+            metadata=metadata,          # 不希望给到下游的数据
+            # bet_kwargs include：
+            # long_amt/short_amt/flat_amt/total_amt
+            # long_cnt/short_cnt/flat_cnt/total_cnt
             **bet_kwargs,
         )
 
@@ -107,11 +123,12 @@ class LeyuAdapter:
         if total.get("amount"):
             kw["total_amt"] = total["amount"]
             kw["total_cnt"] = total.get("count", 0)
-        for raw_name, data in bets.get("areas", {}).items():
-            semantic = BET_AREA_MAP.get(raw_name)
-            if semantic is None:
-                continue  # 跳过未映射的区域（如"庄对""闲对"）
-            if data.get("amount"):
-                kw[f"{semantic}_amt"] = data["amount"]
-                kw[f"{semantic}_cnt"] = data.get("count", 0)
+
+        needed_areas = BET_AREA_MAP.keys()
+        areas = bets.get("areas", {})
+        for raw_name in needed_areas:
+            data = areas.get(raw_name, {})
+            semantic = BET_AREA_MAP[raw_name]
+            kw[f"{semantic}_amt"] = data.get("amount", 0)
+            kw[f"{semantic}_cnt"] = data.get("count", 0)
         return kw

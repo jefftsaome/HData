@@ -74,8 +74,8 @@ class TestParseDynamic:
             "countdownText": "9",
             "timeDisplay": "17:59 (UTC+08)",
             "tableName": "百家乐A01",
-            "player_score_text": "8 9",
-            "banker_score_text": "A K",
+            "player_score_text": "7 闲",
+            "banker_score_text": "1 庄",
             "betRaw": "39.1K/196本局总投注庄16.2K/94闲22.4K/95",
             "bootItems": [
                 {"icon": "", "value": "57"},
@@ -90,23 +90,23 @@ class TestParseDynamic:
         assert result["round_id"] == "GB05266066BD"
         assert result["status"] == "结算中"
         assert result["countdown_seconds"] == 9
-        assert result["cards"]["player_total"] == 7  # (8+9)%10
-        assert result["cards"]["banker_total"] == 1  # (1+0)%10
+        assert result["cards"]["player_score"] == 7  # (8+9)%10
+        assert result["cards"]["banker_score"] == 1  # (1+0)%10
         assert result["boot_stats"]["total_rounds"] == 57
         assert result["boot_stats"]["banker_wins"] == 24
 
 
 class TestDetectResult:
     def test_player_wins(self):
-        dyn = {"cards": {"player_total": 7, "banker_total": 1}}
+        dyn = {"cards": {"player_score": 7, "banker_score": 1}}
         assert detect_result(dyn) == "P"
 
     def test_banker_wins(self):
-        dyn = {"cards": {"player_total": 2, "banker_total": 9}}
+        dyn = {"cards": {"player_score": 2, "banker_score": 9}}
         assert detect_result(dyn) == "B"
 
     def test_tie(self):
-        dyn = {"cards": {"player_total": 5, "banker_total": 5}}
+        dyn = {"cards": {"player_score": 5, "banker_score": 5}}
         assert detect_result(dyn) == "T"
 
     def test_no_cards_returns_none(self):
