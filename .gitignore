@@ -16,6 +16,7 @@ build/
 .auth_cache.json
 .session_cache.json
 .chrome_profile/
-data/
+data/*
 !data/botion_js/
+!data/botion_js/**
 node_modules/
