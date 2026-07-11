@@ -385,7 +385,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=49.0.0" },
     { name = "curl-cffi", specifier = ">=0.15.0" },
     { name = "easyocr", specifier = ">=1.7.2" },
-    { name = "htools", directory = "../hsys/htools" },
+    { name = "htools", git = "https://github.com/jefftsaome/HTools.git" },
     { name = "playwright", specifier = ">=1.60.0" },
     { name = "pycryptodome", specifier = ">=3.23.0" },
     { name = "pytesseract", specifier = ">=0.3.13" },
@@ -402,16 +402,10 @@ dev = [
 [[package]]
 name = "htools"
 version = "0.1.0"
-source = { directory = "../hsys/htools" }
+source = { git = "https://github.com/jefftsaome/HTools.git#c284c715a5b63f5bb087fa1a269bf2de32e35c87" }
 dependencies = [
     { name = "cryptography" },
     { name = "loguru" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cryptography", specifier = ">=48.0.0" },
-    { name = "loguru", specifier = ">=0.7.3" },
 ]
 
 [[package]]

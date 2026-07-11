@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-htools = { path = "../hsys/htools" }
+htools = { git = "https://github.com/jefftsaome/HTools.git" }
 
 [project.entry-points."data_sources"]
 cdp_source = "hdt.sources.leyu_cdp:CDPSource"
