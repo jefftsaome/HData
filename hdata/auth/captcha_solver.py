@@ -228,9 +228,16 @@ class JfbymSolver(CaptchaSolver):
         t0 = time.time()
 
         # 1. 下载背景图
-        bg_b64 = base64.b64encode(
-            cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
-        ).decode()
+        try:
+            bg_b64 = base64.b64encode(
+                cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
+            ).decode()
+        except Exception as exc:
+            raise CaptchaSolveError(
+                "jfbym",
+                "background image download failed",
+                _safe_failure("background_download", exc=exc),
+            ) from None
 
         # 2. 构建请求体
         body = {
@@ -240,9 +247,16 @@ class JfbymSolver(CaptchaSolver):
             "extra": self.EXTRA,
         }
         for i, url in enumerate(challenge.ques_urls):
-            ref_b64 = base64.b64encode(
-                cr.get(url, impersonate="chrome110", timeout=10).content
-            ).decode()
+            try:
+                ref_b64 = base64.b64encode(
+                    cr.get(url, impersonate="chrome110", timeout=10).content
+                ).decode()
+            except Exception as exc:
+                raise CaptchaSolveError(
+                "jfbym",
+                "reference image download failed",
+                _safe_failure("reference_download", attempt=i + 1, exc=exc),
+                ) from None
             body[f"image_label{i + 1}"] = ref_b64
 
         # 3. 调用 jfbym（最多 6 次重试）
@@ -262,17 +276,49 @@ class JfbymSolver(CaptchaSolver):
 
             code = r.get("code")
             if code == 10000:
-                data = r.get("data", {}) or {}
-                coords = data.get("data", "")
+                try:
+                    data = r.get("data", {}) or {}
+                    coords = data.get("data", "")
+                except Exception as exc:
+                    raise CaptchaSolveError(
+                        "jfbym",
+                        "invalid provider response",
+                        _safe_failure(
+                            "response_parse",
+                            attempt=attempt + 1,
+                            code=code,
+                            exc=exc,
+                        ),
+                    ) from None
                 if not coords:
-                    last_error = f"jfbym 返回空坐标: {r}"
-                    continue
+                    raise CaptchaSolveError(
+                        "jfbym",
+                        "invalid provider response",
+                        _safe_failure(
+                            "response_parse",
+                            attempt=attempt + 1,
+                            code=code,
+                            exc=ValueError(),
+                        ),
+                    )
 
                 # 解析坐标
-                pts = [
-                    [int(p.split(",")[0]), int(p.split(",")[1])]
-                    for p in coords.split("|")
-                ]
+                try:
+                    pts = [
+                        [int(p.split(",")[0]), int(p.split(",")[1])]
+                        for p in coords.split("|")
+                    ]
+                except Exception as exc:
+                    raise CaptchaSolveError(
+                        "jfbym",
+                        "invalid provider response",
+                        _safe_failure(
+                            "response_parse",
+                            attempt=attempt + 1,
+                            code=code,
+                            exc=exc,
+                        ),
+                    ) from None
 
                 return CaptchaSolution(
                     coords=coords,
@@ -334,16 +380,30 @@ class GeepassSolver(CaptchaSolver):
         t0 = time.time()
 
         # 1. 下载背景图
-        bg_b64 = base64.b64encode(
-            cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
-        ).decode()
+        try:
+            bg_b64 = base64.b64encode(
+                cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
+            ).decode()
+        except Exception as exc:
+            raise CaptchaSolveError(
+                "geepass",
+                "background image download failed",
+                _safe_failure("background_download", exc=exc),
+            ) from None
 
         # 2. 下载参考图
         ques_b64s = []
         for url in challenge.ques_urls:
-            ref_b64 = base64.b64encode(
-                cr.get(url, impersonate="chrome110", timeout=10).content
-            ).decode()
+            try:
+                ref_b64 = base64.b64encode(
+                    cr.get(url, impersonate="chrome110", timeout=10).content
+                ).decode()
+            except Exception as exc:
+                raise CaptchaSolveError(
+                "geepass",
+                "reference image download failed",
+                _safe_failure("reference_download", attempt=len(ques_b64s) + 1, exc=exc),
+                ) from None
             ques_b64s.append(ref_b64)
 
         # 3. 构建请求体
@@ -372,24 +432,56 @@ class GeepassSolver(CaptchaSolver):
 
             code = r.get("code")
             if code == 10000:
-                data = r.get("data", {}).get("data", {})
-                targets = data.get("targets", [])
+                try:
+                    data = r.get("data", {}).get("data", {})
+                    targets = data.get("targets", [])
+                except Exception as exc:
+                    raise CaptchaSolveError(
+                        "geepass",
+                        "invalid provider response",
+                        _safe_failure(
+                            "response_parse",
+                            attempt=attempt + 1,
+                            code=code,
+                            exc=exc,
+                        ),
+                    ) from None
 
                 if not targets or len(targets) < 3:
-                    last_error = f"geepass 返回不足3个targets: {targets}"
-                    continue
+                    raise CaptchaSolveError(
+                        "geepass",
+                        "invalid provider response",
+                        _safe_failure(
+                            "response_parse",
+                            attempt=attempt + 1,
+                            code=code,
+                            exc=ValueError(),
+                        ),
+                    )
 
                 # 5. 转换边界框 → 中心点坐标
-                pts = []
-                coords_parts = []
-                for box in targets[:3]:
-                    x1, y1, x2, y2 = box
-                    cx = (x1 + x2) // 2
-                    cy = (y1 + y2) // 2
-                    pts.append([cx, cy])
-                    coords_parts.append(f"{cx},{cy}")
+                try:
+                    pts = []
+                    coords_parts = []
+                    for box in targets[:3]:
+                        x1, y1, x2, y2 = box
+                        cx = (x1 + x2) // 2
+                        cy = (y1 + y2) // 2
+                        pts.append([cx, cy])
+                        coords_parts.append(f"{cx},{cy}")
 
-                coords = "|".join(coords_parts)
+                    coords = "|".join(coords_parts)
+                except Exception as exc:
+                    raise CaptchaSolveError(
+                        "geepass",
+                        "invalid provider response",
+                        _safe_failure(
+                            "response_parse",
+                            attempt=attempt + 1,
+                            code=code,
+                            exc=exc,
+                        ),
+                    ) from None
 
                 return CaptchaSolution(
                     coords=coords,

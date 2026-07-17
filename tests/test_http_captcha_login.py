@@ -369,3 +369,82 @@ async def test_geepass_solver_redacts_platform_response_values(monkeypatch):
     assert sentinel not in str(exc_info.value)
     assert sentinel not in exc_info.value.raw_error
     assert exc_info.value.raw_error == "stage=response attempt=1 code=40001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("solver_class", "failing_url", "expected_metadata"),
+    [
+        (JfbymSolver, "https://example.invalid/bg.jpg", "stage=background_download exception=RuntimeError"),
+        (JfbymSolver, "q1", "stage=reference_download attempt=1 exception=RuntimeError"),
+        (GeepassSolver, "https://example.invalid/bg.jpg", "stage=background_download exception=RuntimeError"),
+        (GeepassSolver, "q1", "stage=reference_download attempt=1 exception=RuntimeError"),
+    ],
+)
+async def test_solver_redacts_image_download_exception(
+    monkeypatch, solver_class, failing_url, expected_metadata
+):
+    sentinel = f"{solver_class.__name__}-download-secret"
+
+    def fake_get(url, **kwargs):
+        if url == failing_url:
+            raise RuntimeError(sentinel)
+        return SimpleNamespace(content=b"image")
+
+    monkeypatch.setattr("curl_cffi.requests.get", fake_get)
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await solver_class("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == expected_metadata
+
+
+@pytest.mark.asyncio
+async def test_jfbym_solver_redacts_malformed_success_data(monkeypatch):
+    sentinel = "jfbym-malformed-coords-secret"
+
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            json=lambda: {"code": 10000, "data": {"data": sentinel}}
+        ),
+    )
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await JfbymSolver("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=response_parse attempt=1 code=10000 exception=ValueError"
+
+
+@pytest.mark.asyncio
+async def test_geepass_solver_redacts_malformed_success_data(monkeypatch):
+    sentinel = "geepass-malformed-target-secret"
+
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            json=lambda: {
+                "code": 10000,
+                "data": {"data": {"targets": [[sentinel, 0, 10, 10]] * 3}},
+            }
+        ),
+    )
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await GeepassSolver("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=response_parse attempt=1 code=10000 exception=TypeError"
