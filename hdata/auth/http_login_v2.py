@@ -190,6 +190,10 @@ async def _verify_captcha(load_data: dict, coords: str) -> dict:
     return {field: seccode[field] for field in required}
 
 
+def _safe_status_code(value: object) -> int | str:
+    return value if type(value) is int else "unexpected_status"
+
+
 def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> bool:
     """调用 validateGeeCheckV2 API 验证验证码。"""
     validate_url = f"{domain}/site/api/v1/user/member/validateGeeCheckV2"
@@ -227,7 +231,8 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> bool:
     except Exception as exc:
         print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
         return False
-    status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
+    raw_status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
+    status_code = _safe_status_code(raw_status_code)
 
     if status_code == 6000:
         print(f"  validateGeeCheckV2: success")
@@ -274,7 +279,8 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str) -> Optional
         print(f"  login: failed stage=login exception={type(exc).__name__}")
         return None
 
-    status_code = lresp.get("status_code") if isinstance(lresp, Mapping) else None
+    raw_status_code = lresp.get("status_code") if isinstance(lresp, Mapping) else None
+    status_code = _safe_status_code(raw_status_code)
     if status_code != 6000:
         print(f"  login: failed stage=login status={status_code}")
         return None

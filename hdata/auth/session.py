@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import time
 from pathlib import Path
@@ -282,6 +283,9 @@ async def refresh_game_token(account: str, session: dict) -> str:
         decrypt_error = _refresh_error("params_decrypt", exc=exc)
     if decrypt_error:
         raise decrypt_error
+
+    if not isinstance(decrypted, Mapping):
+        raise _refresh_error("params_decrypt_parse")
 
     token = decrypted.get("token", "")
     if not token:

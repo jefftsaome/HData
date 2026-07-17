@@ -643,6 +643,28 @@ async def test_refresh_game_token_redacts_network_and_response_values(monkeypatc
     assert "status=503" in str(exc_info.value)
 
 
+@pytest.mark.asyncio
+async def test_refresh_game_token_rejects_nonmapping_decrypted_params(monkeypatch):
+    from hdata.auth import session
+
+    monkeypatch.setattr(
+        session.requests,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200,
+            json=lambda: {"data": {"url": "https://safe.example/?params=value&ttl=1"}},
+        ),
+    )
+    monkeypatch.setattr(session, "extract_params_from_url", lambda url: ("value", "1"))
+    monkeypatch.setattr(session, "decrypt_params", lambda params, ttl: ["payload-secret"])
+
+    with pytest.raises(session.TokenRefreshError) as exc_info:
+        await session.refresh_game_token("account", {"domain": "https://safe.example", "token": "token"})
+
+    assert_safe_error(exc_info.value, "payload-secret")
+    assert "stage=params_decrypt_parse" in str(exc_info.value)
+
+
 def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monkeypatch, capsys):
     from hdata.auth import http_login_v2
 
@@ -671,6 +693,27 @@ def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monke
     assert "stage=validate" in output
     assert "stage=login" in output
     assert "stage=uuid" in output
+
+
+def test_http_login_stage_output_normalizes_untrusted_status(monkeypatch, capsys):
+    from hdata.auth import http_login_v2
+
+    sentinel = "status-code-secret"
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=400,
+            json=lambda: {"status_code": sentinel},
+        ),
+    )
+
+    assert not http_login_v2._validate_geecheck("https://safe.example", "lot", {})
+    assert http_login_v2._do_login("https://safe.example", "user", "hash", "lot") is None
+
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    assert output.count("status=unexpected_status") == 2
 
 
 def test_http_login_stage_output_redacts_request_exceptions(monkeypatch, capsys):
