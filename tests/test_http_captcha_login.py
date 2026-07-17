@@ -1,3 +1,6 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -39,6 +42,9 @@ async def test_api_legacy_captcha_token_maps_only_to_jfbym(monkeypatch):
         return {"token": "site-token"}
 
     monkeypatch.setattr(api, "_get_login", fake_get_login)
+    monkeypatch.delenv("CAPTCHA_TOKEN", raising=False)
+    monkeypatch.delenv("GEEPASS_TOKEN", raising=False)
+    monkeypatch.delenv("JFBYM_TOKEN", raising=False)
     await api.get_login("account", "password", captcha_token="legacy-secret")
 
     assert captured["geepass_token"] == ""
@@ -103,3 +109,48 @@ async def test_session_forwards_platform_tokens_as_explicit_http_keywords(monkey
         "geepass_token": "gp-secret",
         "jfbym_token": "jf-secret",
     }
+
+
+@pytest.mark.asyncio
+async def test_session_http_login_failure_does_not_log_exception_secrets(monkeypatch):
+    from hdata.auth import http_login_v2, session
+
+    sentinel_secret = "password=captcha-token=raw-response-w"
+    logged_warnings = []
+
+    class FakeLogger:
+        def info(self, message):
+            pass
+
+        def warning(self, message):
+            logged_warnings.append(message)
+
+    class FakeBrowserLogin:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self):
+            return {"domain": "https://safe.example", "game_token": "game-token"}
+
+    async def fake_http_login(*args, **kwargs):
+        raise RuntimeError(sentinel_secret)
+
+    monkeypatch.setattr(session, "get_cached_session", lambda account: None)
+    monkeypatch.setattr(session, "get_real_domain", lambda entry_url: "https://safe.example")
+    monkeypatch.setattr(session, "save_session", lambda account, login_session: None)
+    monkeypatch.setattr(session, "logger", FakeLogger())
+    monkeypatch.setattr(http_login_v2, "login", fake_http_login)
+    monkeypatch.setitem(
+        sys.modules,
+        "hdata.auth.browser_login",
+        SimpleNamespace(GameBrowserLogin=FakeBrowserLogin),
+    )
+
+    result = await session.get_login(
+        "account",
+        "password",
+        geepass_token="geepass-token",
+    )
+
+    assert result["source"] == "browser_login"
+    assert all(sentinel_secret not in message for message in logged_warnings)

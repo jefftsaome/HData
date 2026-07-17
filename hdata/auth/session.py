@@ -497,7 +497,10 @@ async def get_login(account: str, password: str = "",
                 # game_token 刷新失败 → 降级到浏览器登录
                 logger.info(f"[{account}] get_login: game_token refresh failed, fall to browser")
         except Exception as e:
-            logger.warning(f"[{account}] get_login: HTTP login failed ({e}), fall to browser")
+            logger.warning(
+                f"[{account}] get_login: HTTP login stage failed "
+                f"({type(e).__name__}), fall to browser"
+            )
 
     # ── 3. 浏览器登录 ──
     if not password:
