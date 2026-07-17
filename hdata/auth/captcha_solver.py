@@ -65,6 +65,7 @@ class CaptchaSolution:
     pts: list[list[int]]
     raw_response: dict = field(default_factory=dict)
     latency_ms: float = 0.0
+    solver_name: str = ""
 
 
 @dataclass
@@ -250,3 +251,118 @@ class JfbymSolver(CaptchaSolver):
                 break
 
         raise CaptchaSolveError("jfbym", "solve 失败 (6 次重试用尽)", last_error)
+
+
+# ═══════════════════════════════════════════════════════════
+# GeepassSolver — geepass.cn 打码平台
+# ═══════════════════════════════════════════════════════════
+
+
+class GeepassSolver(CaptchaSolver):
+    """geepass.cn 打码平台 — GeeTest v4 文字点选识别。
+
+    使用 geepass API type=30104：
+    传入背景图 + 参考字图数组，返回边界框坐标。
+
+    API 返回 targets: [[x1,y1,x2,y2], ...] 格式的边界框，
+    自动计算中心点转为 GeeTest 坐标格式。
+
+    Usage:
+        solver = GeepassSolver(api_token="5a5ca...")
+        solution = await solver.solve(challenge)
+    """
+
+    DEFAULT_API_URL = "https://api.geepass.cn/api/recognize/captcha"
+    TYPE_CODE = 30104
+
+    def __init__(self, api_token: str, api_url: str = ""):
+        if not api_token:
+            raise ValueError("geepass API token 不能为空")
+        self._token = api_token
+        self._url = api_url or self.DEFAULT_API_URL
+
+    def info(self) -> SolverInfo:
+        return SolverInfo(name="geepass", type_code=str(self.TYPE_CODE), avg_latency_ms=300)
+
+    async def solve(self, challenge: CaptchaChallenge) -> CaptchaSolution:
+        """geepass 30104 识别 — 返回边界框，自动转为中心坐标。"""
+        import base64
+        import time
+        from curl_cffi import requests as cr
+
+        t0 = time.time()
+
+        # 1. 下载背景图
+        bg_b64 = base64.b64encode(
+            cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
+        ).decode()
+
+        # 2. 下载参考图
+        ques_b64s = []
+        for url in challenge.ques_urls:
+            ref_b64 = base64.b64encode(
+                cr.get(url, impersonate="chrome110", timeout=10).content
+            ).decode()
+            ques_b64s.append(ref_b64)
+
+        # 3. 构建请求体
+        body = {
+            "token": self._token,
+            "type": self.TYPE_CODE,
+            "image": bg_b64,
+            "ques": ques_b64s,
+        }
+
+        # 4. 调用 geepass（最多 3 次重试）
+        last_error = ""
+        for attempt in range(3):
+            try:
+                r = cr.post(
+                    self._url,
+                    json=body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30,
+                ).json()
+            except Exception as e:
+                last_error = f"网络错误(attempt {attempt + 1}): {e}"
+                import asyncio
+                await asyncio.sleep(1)
+                continue
+
+            code = r.get("code")
+            if code == 10000:
+                data = r.get("data", {}).get("data", {})
+                targets = data.get("targets", [])
+
+                if not targets or len(targets) < 3:
+                    last_error = f"geepass 返回不足3个targets: {targets}"
+                    continue
+
+                # 5. 转换边界框 → 中心点坐标
+                pts = []
+                coords_parts = []
+                for box in targets[:3]:
+                    x1, y1, x2, y2 = box
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
+                    pts.append([cx, cy])
+                    coords_parts.append(f"{cx},{cy}")
+
+                coords = "|".join(coords_parts)
+
+                return CaptchaSolution(
+                    coords=coords,
+                    pts=pts,
+                    raw_response=r,
+                    latency_ms=(time.time() - t0) * 1000,
+                )
+
+            elif code == 10009:
+                import asyncio
+                await asyncio.sleep(2)
+                continue
+            else:
+                last_error = f"geepass code={code}: {r.get('msg', str(r)[:200])}"
+                break
+
+        raise CaptchaSolveError("geepass", "solve 失败 (3 次重试用尽)", last_error)

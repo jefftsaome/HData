@@ -3,6 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from hdata.auth.captcha_solver import (
+    CaptchaChallenge,
+    CaptchaSolution,
+    CaptchaSolveError,
+    SolverInfo,
+)
+
 
 @pytest.mark.asyncio
 async def test_api_routes_platform_tokens_without_cross_reuse(monkeypatch):
@@ -154,3 +161,113 @@ async def test_session_http_login_failure_does_not_log_exception_secrets(monkeyp
 
     assert result["source"] == "browser_login"
     assert all(sentinel_secret not in message for message in logged_warnings)
+
+
+def make_challenge() -> CaptchaChallenge:
+    return CaptchaChallenge(
+        lot_number="0123456789abcdef0123456789abcdef",
+        payload="payload",
+        process_token="process",
+        bg_url="https://example.invalid/bg.jpg",
+        ques_urls=["q1", "q2", "q3"],
+        captcha_id="captcha-id",
+        pow_detail={"hashfunc": "md5", "version": "1", "bits": 0, "datetime": "date"},
+    )
+
+
+class FakeSolver:
+    def __init__(self, name, calls, error=None):
+        self.name = name
+        self.calls = calls
+        self.error = error
+
+    def info(self):
+        return SolverInfo(name=self.name, type_code="test", avg_latency_ms=0)
+
+    async def solve(self, challenge):
+        self.calls.append(self.name)
+        if self.error:
+            raise self.error
+        return CaptchaSolution(
+            coords="10,20|30,40|50,60",
+            pts=[[10, 20], [30, 40], [50, 60]],
+        )
+
+
+@pytest.mark.asyncio
+async def test_solver_chain_falls_back_in_order():
+    from hdata.auth.http_login_v2 import _solve_captcha
+
+    calls = []
+    solvers = [
+        FakeSolver("geepass", calls, CaptchaSolveError("geepass", "failed")),
+        FakeSolver("jfbym", calls),
+    ]
+
+    solution = await _solve_captcha(make_challenge(), solvers)
+
+    assert calls == ["geepass", "jfbym"]
+    assert solution.solver_name == "jfbym"
+
+
+@pytest.mark.asyncio
+async def test_solver_error_redacts_secret_values():
+    from hdata.auth.http_login_v2 import _solve_captcha
+
+    secret = "never-print-this-token"
+    solver = FakeSolver(
+        "geepass",
+        [],
+        CaptchaSolveError("geepass", "request rejected", raw_error=f"token={secret}"),
+    )
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await _solve_captcha(make_challenge(), [solver])
+
+    assert secret not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_login_solves_each_challenge_once_after_verify_failure(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    fetched_lots = iter(["lot-a-0123456789", "lot-b-0123456789"])
+    solved_lots = []
+
+    def fake_fetch():
+        lot = next(fetched_lots)
+        return {
+            "lot_number": lot,
+            "payload": f"payload-{lot}",
+            "process_token": f"process-{lot}",
+            "bg_url": "bg",
+            "ques_urls": ["q1", "q2", "q3"],
+            "pow_detail": {"hashfunc": "md5", "version": "1", "bits": 0, "datetime": "date"},
+        }
+
+    async def fake_solve(challenge, solvers):
+        solved_lots.append(challenge.lot_number)
+        return CaptchaSolution(
+            coords="10,20|30,40|50,60",
+            pts=[[10, 20], [30, 40], [50, 60]],
+            solver_name="geepass",
+        )
+
+    async def fake_verify(load_data, coords):
+        raise http_login_v2.VerifyError("fail", fail_count=1)
+
+    monkeypatch.setattr(http_login_v2, "_get_domain", lambda: "https://example.invalid")
+    monkeypatch.setattr(http_login_v2, "_fetch_captcha", fake_fetch)
+    monkeypatch.setattr(http_login_v2, "_build_solvers", lambda *args: [FakeSolver("geepass", [])])
+    monkeypatch.setattr(http_login_v2, "_solve_captcha", fake_solve)
+    monkeypatch.setattr(http_login_v2, "_verify_captcha", fake_verify)
+
+    result = await http_login_v2.login(
+        "account",
+        "password",
+        geepass_token="gp-secret",
+        max_retries=2,
+    )
+
+    assert result is None
+    assert solved_lots == ["lot-a-0123456789", "lot-b-0123456789"]
