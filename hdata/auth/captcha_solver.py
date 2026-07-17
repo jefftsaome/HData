@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import re
 
@@ -274,6 +275,12 @@ class JfbymSolver(CaptchaSolver):
                 await asyncio.sleep(2)
                 continue
 
+            if not isinstance(r, Mapping):
+                raise CaptchaSolveError(
+                    "jfbym",
+                    "invalid provider response",
+                    _safe_failure("response_parse", attempt=attempt + 1, exc=TypeError()),
+                )
             code = r.get("code")
             if code == 10000:
                 try:
@@ -430,6 +437,12 @@ class GeepassSolver(CaptchaSolver):
                 await asyncio.sleep(1)
                 continue
 
+            if not isinstance(r, Mapping):
+                raise CaptchaSolveError(
+                    "geepass",
+                    "invalid provider response",
+                    _safe_failure("response_parse", attempt=attempt + 1, exc=TypeError()),
+                )
             code = r.get("code")
             if code == 10000:
                 try:

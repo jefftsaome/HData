@@ -56,6 +56,20 @@ class TokenRefreshError(SessionError):
     """Token 刷新失败。"""
 
 
+def _refresh_error(
+    stage: str,
+    *,
+    status: int | None = None,
+    exc: BaseException | None = None,
+) -> TokenRefreshError:
+    fields = [f"stage={stage}"]
+    if status is not None:
+        fields.append(f"status={status}")
+    if exc is not None:
+        fields.append(f"exception={type(exc).__name__}")
+    return TokenRefreshError("refresh " + " ".join(fields))
+
+
 # ── 域名 ──────────────────────────────────────────────
 
 
@@ -227,6 +241,7 @@ async def refresh_game_token(account: str, session: dict) -> str:
     url = f"{domain}/game/api/v1/venue/launch"
     headers = _api_headers(session, url)
 
+    request_error = None
     try:
         resp = requests.post(
             url,
@@ -235,38 +250,44 @@ async def refresh_game_token(account: str, session: dict) -> str:
             impersonate="chrome110",
             timeout=15,
         )
-    except Exception as e:
-        raise TokenRefreshError(f"[{account}] venue/launch 请求失败: {e}") from e
+    except Exception as exc:
+        request_error = _refresh_error("venue_launch", exc=exc)
+    if request_error:
+        raise request_error
 
     if resp.status_code != 200:
-        raise TokenRefreshError(
-            f"[{account}] venue/launch 返回 {resp.status_code}: {resp.text[:200]}"
-        )
+        raise _refresh_error("venue_launch", status=resp.status_code)
 
+    parse_error = None
     try:
         data = resp.json()
         game_url = data.get("data", {}).get("url", "")
-    except Exception as e:
-        raise TokenRefreshError(f"[{account}] 解析 venue/launch 响应失败: {e}") from e
+    except Exception as exc:
+        parse_error = _refresh_error("venue_launch_parse", exc=exc)
+    if parse_error:
+        raise parse_error
 
     if not game_url or "params=" not in game_url:
-        raise TokenRefreshError(f"[{account}] venue/launch 返回的 URL 缺少 params")
+        raise _refresh_error("venue_launch_params")
 
     # 提取并解密 params
     params_b64, ttl = extract_params_from_url(game_url)
     if not params_b64 or not ttl:
-        raise TokenRefreshError(f"[{account}] 从 URL 提取 params/ttl 失败: {game_url[:100]}")
+        raise _refresh_error("params_extract")
 
+    decrypt_error = None
     try:
         decrypted = decrypt_params(params_b64, ttl)
-    except Exception as e:
-        raise TokenRefreshError(f"[{account}] params 解密失败: {e}") from e
+    except Exception as exc:
+        decrypt_error = _refresh_error("params_decrypt", exc=exc)
+    if decrypt_error:
+        raise decrypt_error
 
     token = decrypted.get("token", "")
     if not token:
-        raise TokenRefreshError(f"[{account}] 解密后的 params 中无 token 字段")
+        raise _refresh_error("params_token")
 
-    logger.info(f"[{account}] 成功刷新 game JWT: {token[:50]}...{token[-20:]}")
+    logger.info(f"[{account}] game JWT refresh succeeded")
     return token
 
 

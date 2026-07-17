@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 from typing import Optional
@@ -209,22 +210,30 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> bool:
         "X-API-VERSION": "2.0.0",
     }
 
-    resp = cr.post(
-        validate_url,
-        json=validate_body,
-        headers=headers,
-        impersonate="chrome110",
-        timeout=15,
-    )
+    try:
+        resp = cr.post(
+            validate_url,
+            json=validate_body,
+            headers=headers,
+            impersonate="chrome110",
+            timeout=15,
+        )
+    except Exception as exc:
+        print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
+        return False
 
-    vresp = resp.json()
-    status_code = vresp.get("status_code")
+    try:
+        vresp = resp.json()
+    except Exception as exc:
+        print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
+        return False
+    status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
 
     if status_code == 6000:
         print(f"  validateGeeCheckV2: success")
         return True
 
-    print(f"  validateGeeCheckV2: failed ({status_code}): {vresp.get('message', '')}")
+    print(f"  validateGeeCheckV2: failed stage=validate status={status_code}")
     return False
 
 
@@ -247,21 +256,31 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str) -> Optional
         "X-API-VERSION": "2.0.0",
     }
 
-    resp = cr.post(
-        login_url,
-        json=login_body,
-        headers=headers,
-        impersonate="chrome110",
-        timeout=15,
-    )
-
-    lresp = resp.json()
-
-    if lresp.get("status_code") != 6000:
-        print(f"  login: failed: {lresp.get('message', '')}")
+    try:
+        resp = cr.post(
+            login_url,
+            json=login_body,
+            headers=headers,
+            impersonate="chrome110",
+            timeout=15,
+        )
+    except Exception as exc:
+        print(f"  login: failed stage=login exception={type(exc).__name__}")
         return None
 
-    token = (lresp.get("data", {}) or {}).get("token", "")
+    try:
+        lresp = resp.json()
+    except Exception as exc:
+        print(f"  login: failed stage=login exception={type(exc).__name__}")
+        return None
+
+    status_code = lresp.get("status_code") if isinstance(lresp, Mapping) else None
+    if status_code != 6000:
+        print(f"  login: failed stage=login status={status_code}")
+        return None
+
+    login_data = lresp.get("data", {}) if isinstance(lresp, Mapping) else {}
+    token = login_data.get("token", "") if isinstance(login_data, Mapping) else ""
     if not token:
         print("  login: no token in response")
         return None
@@ -293,8 +312,8 @@ def _get_uuid(domain: str, api_token: str) -> str:
                         base64.urlsafe_b64decode(parts[1] + "==")
                     )
                     return payload.get("uuid", "")
-    except Exception as e:
-        print(f"  UUID 获取失败: {e}")
+    except Exception as exc:
+        print(f"  UUID 获取失败: stage=uuid exception={type(exc).__name__}")
 
     return ""
 

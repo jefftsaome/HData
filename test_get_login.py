@@ -160,11 +160,9 @@ def _print_result(result: dict):
     """精简打印返回值。"""
     print(f"  account:    {result.get('account', 'N/A')}")
     print(f"  domain:     {result.get('domain', 'N/A')}")
-    t = result.get('token', '')
-    print(f"  token:      {t[:30]}..." if t else "  token:      none")
+    print(f"  token:      {'present' if result.get('token') else 'none'}")
     print(f"  uuid:       {'yes' if result.get('uuid') else 'no'}")
-    gt = result.get('game_token', '')
-    print(f"  game_token: {gt[:30]}..." if gt else "  game_token: none")
+    print(f"  game_token: {'present' if result.get('game_token') else 'none'}")
     print(f"  player_id:  {result.get('game_player_id', 'N/A')}")
     print(f"  backend:    {result.get('game_backend', 'N/A')}")
     sigs = result.get('signatures', {})

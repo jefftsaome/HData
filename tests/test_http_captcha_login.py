@@ -609,6 +609,125 @@ async def test_login_verify_diagnostics_redact_server_response(monkeypatch, caps
     assert "e_obj_fields=safe_field" in output
 
 
+def assert_safe_error(error, sentinel):
+    assert sentinel not in str(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_game_token_redacts_network_and_response_values(monkeypatch):
+    from hdata.auth import session
+
+    sentinel = "refresh-network-and-response-secret"
+    safe_session = {"domain": "https://safe.example", "token": "site-token"}
+
+    monkeypatch.setattr(
+        session.requests,
+        "post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+    with pytest.raises(session.TokenRefreshError) as exc_info:
+        await session.refresh_game_token("account", safe_session)
+    assert_safe_error(exc_info.value, sentinel)
+    assert "stage=venue_launch" in str(exc_info.value)
+
+    monkeypatch.setattr(
+        session.requests,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(status_code=503, text=sentinel),
+    )
+    with pytest.raises(session.TokenRefreshError) as exc_info:
+        await session.refresh_game_token("account", safe_session)
+    assert_safe_error(exc_info.value, sentinel)
+    assert "status=503" in str(exc_info.value)
+
+
+def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monkeypatch, capsys):
+    from hdata.auth import http_login_v2
+
+    sentinel = "validate-login-uuid-server-secret"
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=400,
+            json=lambda: {"status_code": 4001, "message": sentinel},
+        ),
+    )
+
+    assert not http_login_v2._validate_geecheck("https://safe.example", "lot", {})
+    assert http_login_v2._do_login("https://safe.example", "user", "hash", "lot") is None
+
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+    assert http_login_v2._get_uuid("https://safe.example", "site-token") == ""
+
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    assert "stage=validate" in output
+    assert "stage=login" in output
+    assert "stage=uuid" in output
+
+
+def test_http_login_stage_output_redacts_request_exceptions(monkeypatch, capsys):
+    from hdata.auth import http_login_v2
+
+    sentinel = "validate-login-request-secret"
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+
+    assert not http_login_v2._validate_geecheck("https://safe.example", "lot", {})
+    assert http_login_v2._do_login("https://safe.example", "user", "hash", "lot") is None
+
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    assert "stage=validate" in output
+    assert "stage=login" in output
+
+
+def test_http_login_module_main_dependencies_are_imported():
+    from hdata.auth import http_login_v2
+
+    assert http_login_v2.sys is sys
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("solver_class, payload", [(JfbymSolver, []), (GeepassSolver, "payload-secret")])
+async def test_solver_redacts_nonmapping_top_level_response(monkeypatch, solver_class, payload):
+    sentinel = "payload-secret"
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(json=lambda: payload),
+    )
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await solver_class("api-token").solve(make_challenge())
+
+    assert_safe_error(exc_info.value, sentinel)
+    assert "stage=response_parse" in exc_info.value.raw_error
+
+
+def test_manual_cli_output_never_includes_token_values(capsys):
+    from test_get_login import _print_result
+
+    _print_result({"token": "site-token-secret", "game_token": "jwt-secret"})
+
+    output = capsys.readouterr().out
+    assert "site-token-secret" not in output
+    assert "jwt-secret" not in output
+
+
 @pytest.mark.asyncio
 async def test_jfbym_solver_redacts_network_exception_values(monkeypatch):
     sentinel = "jfbym-network-secret"
