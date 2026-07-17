@@ -93,27 +93,93 @@ L3 展开:
 ## 环境变量
 
 ```bash
-export JFBYM_TOKEN=xxx     # jfbym API token（必需）
-export LEYU_USER=xxx       # 用户名（可选）
-export LEYU_PWD=xxx        # 密码（可选）
+# 打码平台 token（geepass 优先，jfbym 备选）
+export GEEPASS_TOKEN=<geepass token>
+export JFBYM_TOKEN=<jfbym token>
+export CAPTCHA_TOKEN=<legacy jfbym token; deprecated>
+
+# 账号（可选）
+export LEYU_USER=<username>
+export LEYU_PWD=<password>
 ```
 
 ## CLI
 
-```bash
-uv run python -m hdt.auth.token_manager --account X --user X --pwd X  # 获取 token
-uv run python -m hdt.auth.token_manager --resolve-domain              # 解析域名
-uv run python -m hdt.auth.token_manager --diagnose                    # 诊断
-uv run python -m hdt.auth.token_manager --health                      # 健康检查
-```
-
-## Python
+### Python API
 
 ```python
-from hdt.auth import TokenManager, resolve_domain
-tm = TokenManager(account="x", user="u", pwd="p")
-token = await tm.get_token()
+from hdata.auth.api import get_login
+import os
+
+# 最简单用法（缓存有效时完全纯HTTP）
+session = await get_login("username", "password")
+
+# 使用打码平台（尝试纯HTTP登录）
+session = await get_login(
+    "username",
+    "password",
+    geepass_token=os.getenv("GEEPASS_TOKEN", ""),
+    jfbym_token=os.getenv("JFBYM_TOKEN", ""),
+)
+
+# 返回结构:
+{
+    "account": "username",
+    "token": "X-API-TOKEN...",       # 主站 API token
+    "uuid": "...",                    # 用户 UUID
+    "domain": "https://...",          # 真实域名
+    "game_token": "[redacted]",           # 游戏 JWT
+    "game_player_id": 123456,         # 玩家 ID
+    "game_backend": "host:port",      # 游戏后端
+    "signatures": {...},              # API 签名表
+}
 ```
+
+### CLI
+
+```bash
+# 首次登录（打开浏览器，手动完成验证码）
+uv run python -m hdata.auth.token_manager --manual-capture
+
+# 获取 game_token（优先缓存/刷新）
+uv run python -m hdata.auth.token_manager --account lidongsen1
+
+# 诊断
+uv run python -m hdata.auth.token_manager --diagnose
+
+# 注入外部 token
+uv run python -m hdata.auth.token_manager --inject-game-token <token>
+```
+
+## 纯HTTP verify 研究结论
+
+Separate platform tokens fix credential routing and improve diagnostics. They do
+not prove that pure HTTP `verify` succeeds or resolve the unknown 76-byte
+`e_obj` difference.
+
+经过 50+ 次测试和 20+ 次人工协作的结论：
+
+**w 参数已完全匹配：**
+- 长度：始终 1216 hex (608 bytes)
+- AES 段：480 bytes (960 hex)
+- RSA 段：128 bytes (256 hex)
+- AES IV、加密算法、PKCS7 填充均正确
+
+**未解决：e_obj JSON 字段差异**
+- 真实 SDK 的 e_obj 原文约 476 bytes
+- 我们生成的 e_obj 约 400 bytes
+- 差异 76 bytes，即缺少/不同的字段值
+- botion SDK (704KB 混淆，字符串 XOR 编码) 无法通过静态分析提取具体字段
+- 无 sourcemap 可用
+- hook JSON.stringify / crypto.subtle / XHR / fetch 均无效（SDK 使用自实现 AES + JSONP script 请求）
+
+**验证码打码平台对比：**
+| 平台 | 速度 | 坐标精度 | verify 通过 |
+|------|------|----------|------------|
+| geepass (30104) | ~0.2s | 较好 | ❌ |
+| jfbym (31111) | ~0.5s | 较好 | ❌ |
+
+打码平台坐标精度不是 verify 失败的原因——e_obj 字段差异才是。
 
 ## 关键文件
 

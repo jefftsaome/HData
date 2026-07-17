@@ -14,6 +14,17 @@ from hdata.auth.captcha_solver import (
 )
 
 
+def test_manual_cli_accepts_separate_platform_tokens():
+    from test_get_login import build_parser
+
+    args = build_parser().parse_args(
+        ["--http", "--geepass-token", "gp", "--jfbym-token", "jf"]
+    )
+
+    assert args.geepass_token == "gp"
+    assert args.jfbym_token == "jf"
+
+
 @pytest.mark.asyncio
 async def test_api_routes_platform_tokens_without_cross_reuse(monkeypatch):
     from hdata.auth import api
