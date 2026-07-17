@@ -1,3 +1,4 @@
+import json
 import sys
 from types import SimpleNamespace
 
@@ -401,6 +402,7 @@ def assert_safe_verify_error(error, sentinel):
     assert sentinel not in error.reason
     assert sentinel not in str(error.diagnostics)
     assert error.__cause__ is None
+    assert error.__context__ is None
 
 
 @pytest.mark.asyncio
@@ -469,6 +471,34 @@ async def test_verify_redacts_unexpected_result_and_invalid_fail_count(monkeypat
 
     assert exc_info.value.result == "unexpected_result"
     assert exc_info.value.fail_count == 0
+    assert_safe_verify_error(exc_info.value, sentinel)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_result",
+    [[], {"server_result_secret": "unhashable-result-secret"}],
+)
+async def test_verify_rejects_nonstring_result_values(monkeypatch, raw_result):
+    from hdata.auth import http_login_v2
+
+    sentinel = "unhashable-result-secret"
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            "botion_cb(" + json.dumps({"data": {"result": raw_result}}) + ")"
+        ),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError) as exc_info:
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
+
+    assert exc_info.value.result == "unexpected_result"
     assert_safe_verify_error(exc_info.value, sentinel)
 
 

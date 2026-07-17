@@ -132,22 +132,29 @@ async def _verify_captcha(load_data: dict, coords: str) -> dict:
         "Accept-Language": "zh-CN,zh;q=0.9",
     }
 
+    network_error = ""
     try:
         text = cr.get(url, impersonate="chrome110", headers=headers, timeout=30).text
     except Exception as exc:
+        network_error = type(exc).__name__
+    if network_error:
         raise VerifyError(
             "network_error",
-            reason=type(exc).__name__,
+            reason=network_error,
             diagnostics=diagnostics,
-        ) from None
+        )
 
     match = re.search(r"^[^(]+\((.*)\)$", text, re.DOTALL)
     if not match:
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
+    payload = None
+    json_error = False
     try:
         payload = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        raise VerifyError("invalid_jsonp", diagnostics=diagnostics) from None
+    except json.JSONDecodeError:
+        json_error = True
+    if json_error:
+        raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
 
     if not isinstance(payload, Mapping):
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
@@ -157,7 +164,11 @@ async def _verify_captcha(load_data: dict, coords: str) -> dict:
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
 
     raw_result = data.get("result")
-    result = raw_result if raw_result in {"success", "fail"} else "unexpected_result"
+    result = (
+        raw_result
+        if isinstance(raw_result, str) and raw_result in {"success", "fail"}
+        else "unexpected_result"
+    )
     try:
         fail_count = int(data.get("fail_count") or 0)
     except (TypeError, ValueError):
