@@ -320,6 +320,7 @@ async def test_geepass_solver_redacts_network_exception_values(monkeypatch):
 
     assert sentinel not in str(exc_info.value)
     assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=submit attempt=3 exception=RuntimeError"
 
 
 class FakeResponse:
@@ -392,6 +393,157 @@ async def test_verify_requires_complete_seccode(monkeypatch):
             {"lot_number": "lot", "payload": "payload", "process_token": "process"},
             "10,20|30,40|50,60",
         )
+
+
+def assert_safe_verify_error(error, sentinel):
+    assert sentinel not in str(error)
+    assert sentinel not in error.result
+    assert sentinel not in error.reason
+    assert sentinel not in str(error.diagnostics)
+    assert error.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_verify_network_error_does_not_chain_raw_exception(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    sentinel = "network-url-secret"
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError) as exc_info:
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
+
+    assert exc_info.value.result == "network_error"
+    assert_safe_verify_error(exc_info.value, sentinel)
+
+
+@pytest.mark.asyncio
+async def test_verify_malformed_json_does_not_chain_raw_body(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    sentinel = "malformed-json-secret"
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(f"botion_cb({{bad:{sentinel}}})"),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError) as exc_info:
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
+
+    assert exc_info.value.result == "invalid_jsonp"
+    assert_safe_verify_error(exc_info.value, sentinel)
+
+
+@pytest.mark.asyncio
+async def test_verify_redacts_unexpected_result_and_invalid_fail_count(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    sentinel = "unexpected-result-secret"
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            f'botion_cb({{"data":{{"result":"{sentinel}","fail_count":"{sentinel}"}}}})'
+        ),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError) as exc_info:
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
+
+    assert exc_info.value.result == "unexpected_result"
+    assert exc_info.value.fail_count == 0
+    assert_safe_verify_error(exc_info.value, sentinel)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected_result"),
+    [
+        ("[]", "invalid_jsonp"),
+        ('{"data":[]}', "invalid_jsonp"),
+        ('{"data":{"result":"success","seccode":[]}}', "incomplete_seccode"),
+    ],
+)
+async def test_verify_rejects_nonmapping_protocol_values(monkeypatch, body, expected_result):
+    from hdata.auth import http_login_v2
+
+    sentinel = "nonmapping-body-secret"
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(f"botion_cb({body})"),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError) as exc_info:
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
+
+    assert exc_info.value.result == expected_result
+    assert_safe_verify_error(exc_info.value, sentinel)
+
+
+@pytest.mark.asyncio
+async def test_login_verify_diagnostics_redact_server_response(monkeypatch, capsys):
+    from hdata.auth import http_login_v2
+
+    sentinel = "server-response-secret"
+
+    def fake_generate_w(*args, diagnostics=None, **kwargs):
+        diagnostics.update(e_obj_fields=["safe_field"], e_obj_bytes=12)
+        return "safe-w"
+
+    async def fake_solve(challenge, solvers):
+        return CaptchaSolution("10,20|30,40|50,60", [[10, 20], [30, 40], [50, 60]])
+
+    monkeypatch.setattr(http_login_v2, "_get_domain", lambda: "https://example.invalid")
+    monkeypatch.setattr(
+        http_login_v2,
+        "_fetch_captcha",
+        lambda: {
+            "lot_number": "challenge-prefix",
+            "payload": "payload",
+            "process_token": "process",
+            "bg_url": "bg",
+            "ques_urls": ["q1", "q2", "q3"],
+        },
+    )
+    monkeypatch.setattr(http_login_v2, "_build_solvers", lambda *args: [FakeSolver("test", [])])
+    monkeypatch.setattr(http_login_v2, "_solve_captcha", fake_solve)
+    monkeypatch.setattr(http_login_v2, "generate_w", fake_generate_w)
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            f'botion_cb({{"data":{{"result":"{sentinel}"}}}})'
+        ),
+    )
+
+    assert await http_login_v2.login("account", "password", geepass_token="token", max_retries=1) is None
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    assert "result=unexpected_result" in output
+    assert "e_obj_bytes=12" in output
+    assert "e_obj_fields=safe_field" in output
 
 
 @pytest.mark.asyncio

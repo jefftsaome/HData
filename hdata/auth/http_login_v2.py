@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -138,7 +139,7 @@ async def _verify_captcha(load_data: dict, coords: str) -> dict:
             "network_error",
             reason=type(exc).__name__,
             diagnostics=diagnostics,
-        ) from exc
+        ) from None
 
     match = re.search(r"^[^(]+\((.*)\)$", text, re.DOTALL)
     if not match:
@@ -146,17 +147,29 @@ async def _verify_captcha(load_data: dict, coords: str) -> dict:
     try:
         payload = json.loads(match.group(1))
     except json.JSONDecodeError as exc:
-        raise VerifyError("invalid_jsonp", diagnostics=diagnostics) from exc
+        raise VerifyError("invalid_jsonp", diagnostics=diagnostics) from None
 
-    data = payload.get("data") or {}
-    result = data.get("result", "unknown")
-    fail_count = int(data.get("fail_count") or 0)
+    if not isinstance(payload, Mapping):
+        raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
+
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
+
+    raw_result = data.get("result")
+    result = raw_result if raw_result in {"success", "fail"} else "unexpected_result"
+    try:
+        fail_count = int(data.get("fail_count") or 0)
+    except (TypeError, ValueError):
+        fail_count = 0
     if result != "success":
         raise VerifyError(result, fail_count, diagnostics=diagnostics)
 
-    seccode = data.get("seccode") or {}
+    seccode = data.get("seccode")
     required = ("captcha_output", "gen_time", "pass_token")
-    if any(not seccode.get(field) for field in required):
+    if not isinstance(seccode, Mapping) or any(
+        not seccode.get(field) for field in required
+    ):
         raise VerifyError(
             "incomplete_seccode",
             fail_count,
