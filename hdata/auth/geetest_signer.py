@@ -145,23 +145,26 @@ def _encrypt_rsa(message: str) -> str:
     return binascii.hexlify(cipher.encrypt(message.encode())).decode()
 
 
-def _generate_pow(lot_number, captcha_id, hash_func, version, bits, date) -> dict:
+def _hash_pow(value: str, hash_func: str) -> str:
+    if hash_func not in {"md5", "sha1", "sha256"}:
+        raise ValueError(f"unsupported pow hashfunc: {hash_func}")
+    return getattr(hashlib, hash_func)(value.encode()).hexdigest()
+
+
+def _generate_pow(lot_number, captcha_id, hash_func, version, bits, date, nonce=None) -> dict:
     bit_remainder = bits % 4
     bit_division = bits // 4
     prefix = "0" * bit_division
     pow_string = f"{version}|{bits}|{hash_func}|{date}|{captcha_id}|{lot_number}||"
 
+    if nonce is not None:
+        combined = pow_string + nonce
+        return {"pow_msg": combined, "pow_sign": _hash_pow(combined, hash_func)}
+
     while True:
         h = _rand_uid()
         combined = pow_string + h
-        if hash_func == "md5":
-            hashed = hashlib.md5(combined.encode()).hexdigest()
-        elif hash_func == "sha1":
-            hashed = hashlib.sha1(combined.encode()).hexdigest()
-        elif hash_func == "sha256":
-            hashed = hashlib.sha256(combined.encode()).hexdigest()
-        else:
-            hashed = ""
+        hashed = _hash_pow(combined, hash_func)
 
         if bit_remainder == 0:
             if hashed.startswith(prefix):
@@ -170,7 +173,61 @@ def _generate_pow(lot_number, captcha_id, hash_func, version, bits, date) -> dic
             return {"pow_msg": pow_string + h, "pow_sign": hashed}
 
 
-def generate_w(load_data: dict, captcha_id: str, coords: str) -> str:
+def build_e_obj(
+    load_data: dict,
+    captcha_id: str,
+    coords: str,
+    *,
+    passtime: int | None = None,
+    pow_nonce: str | None = None,
+) -> dict:
+    required = {"hashfunc", "version", "bits", "datetime"}
+    pow_detail = load_data.get("pow_detail") or {}
+    if not required.issubset(pow_detail):
+        raise ValueError("pow_detail is missing required fields")
+
+    try:
+        coords_array = [[int(v) for v in point.split(",")] for point in coords.split("|")]
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("coords must contain exactly three x,y integer pairs") from None
+    if len(coords_array) != 3 or any(len(point) != 2 for point in coords_array):
+        raise ValueError("coords must contain exactly three x,y integer pairs")
+
+    lot_number = load_data["lot_number"]
+    return {
+        **_generate_pow(
+            lot_number,
+            captcha_id,
+            pow_detail["hashfunc"],
+            pow_detail["version"],
+            pow_detail["bits"],
+            pow_detail["datetime"],
+            pow_nonce,
+        ),
+        **_lot_parser.get_dict(lot_number),
+        "biht": "1426265548",
+        "em": {"cp": 0, "ek": "11"},
+        "gee_guard": {"auh": "3", "aup": "3", "cdc": "3", "egp": "3",
+                      "res": "3", "rew": "3", "sep": "3", "snh": "3"},
+        "geetest": "captcha",
+        "lang": "zh",
+        "lot_number": lot_number,
+        "userresponse": coords_array,
+        "passtime": passtime if passtime is not None else random.randint(1500, 3500),
+    }
+
+
+def serialize_e_obj(e_obj: dict) -> str:
+    return json.dumps(e_obj, separators=(",", ":"), ensure_ascii=False)
+
+
+def generate_w(
+    load_data: dict,
+    captcha_id: str,
+    coords: str,
+    *,
+    diagnostics: dict | None = None,
+) -> str:
     """生成 GeeTest v4 文字点选的 w 参数。
 
     w = hex(AES-CBC(e_obj, random_key, zero-IV)) + hex(RSA-1024(random_key))
@@ -184,31 +241,16 @@ def generate_w(load_data: dict, captcha_id: str, coords: str) -> str:
     Returns:
         w 参数字符串
     """
-    lot_number = load_data["lot_number"]
-    pow_detail = load_data["pow_detail"]
-
-    # 坐标转为二维数组格式
-    coords_array = [[int(p.split(',')[0]), int(p.split(',')[1])]
-                    for p in coords.split('|')]
-
-    # e_obj 结构：与标准 GeeTest/GeekedTest 一致，包含所有字段
-    base = {
-        **_generate_pow(lot_number, captcha_id, pow_detail["hashfunc"],
-                        pow_detail["version"], pow_detail["bits"], pow_detail["datetime"]),
-        **_lot_parser.get_dict(lot_number),
-        "biht": "1426265548",
-        "em": {},
-        "gee_guard": {"auh": "3", "aup": "3", "cdc": "3", "egp": "3",
-                       "res": "3", "rew": "3", "sep": "3", "snh": "3"},
-        "geetest": "captcha",
-        "lang": "zh",
-        "lot_number": lot_number,
-        "userresponse": coords_array,
-        "passtime": random.randint(2000, 5000),
-    }
+    e_obj = build_e_obj(load_data, captcha_id, coords)
+    plaintext = serialize_e_obj(e_obj)
+    if diagnostics is not None:
+        diagnostics.update(
+            e_obj_fields=sorted(e_obj),
+            e_obj_bytes=len(plaintext.encode()),
+        )
 
     random_key = _rand_uid()
-    encrypted_input = _encrypt_aes(json.dumps(base, separators=(',', ':')), random_key)
+    encrypted_input = _encrypt_aes(plaintext, random_key)
     encrypted_key = _encrypt_rsa(random_key)
 
     return binascii.hexlify(encrypted_input).decode() + encrypted_key
