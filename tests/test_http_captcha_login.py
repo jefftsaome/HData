@@ -25,6 +25,28 @@ def test_manual_cli_accepts_separate_platform_tokens():
     assert args.jfbym_token == "jf"
 
 
+def test_auth_package_keeps_legacy_exports():
+    import hdata.auth as auth
+
+    legacy_names = {
+        "TokenManager",
+        "TokenUnavailableError",
+        "HeadlessLogin",
+        "resolve_domain",
+        "DomainCache",
+        "CaptchaSolver",
+        "JfbymSolver",
+        "CaptchaChallenge",
+        "CaptchaSolution",
+        "SolverInfo",
+        "CaptchaSolveError",
+    }
+
+    assert legacy_names <= set(auth.__all__)
+    for name in ("TokenManager", "DomainCache", "CaptchaSolver"):
+        assert getattr(auth, name) is not None
+
+
 @pytest.mark.asyncio
 async def test_api_routes_platform_tokens_without_cross_reuse(monkeypatch):
     from hdata.auth import api

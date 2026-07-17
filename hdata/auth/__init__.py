@@ -35,6 +35,33 @@
         ...
     }
 """
+from importlib import import_module
+
 from .session import get_login, LoginError, get_game_session
 
-__all__ = ["get_login", "LoginError", "get_game_session"]
+_LEGACY_EXPORTS = {
+    "TokenManager": (".token_manager", "TokenManager"),
+    "TokenUnavailableError": (".token_manager", "TokenUnavailableError"),
+    "HeadlessLogin": (".headless_login", "HeadlessLogin"),
+    "resolve_domain": (".domain", "resolve_domain"),
+    "DomainCache": (".domain", "DomainCache"),
+    "CaptchaSolver": (".captcha_solver", "CaptchaSolver"),
+    "JfbymSolver": (".captcha_solver", "JfbymSolver"),
+    "CaptchaChallenge": (".captcha_solver", "CaptchaChallenge"),
+    "CaptchaSolution": (".captcha_solver", "CaptchaSolution"),
+    "SolverInfo": (".captcha_solver", "SolverInfo"),
+    "CaptchaSolveError": (".captcha_solver", "CaptchaSolveError"),
+}
+
+__all__ = ["get_login", "LoginError", "get_game_session", *_LEGACY_EXPORTS]
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute_name = _LEGACY_EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
