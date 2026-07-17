@@ -280,10 +280,11 @@ async def login(
 ) -> Optional[dict]:
     """纯 HTTP 乐鱼登录。
 
-    打码平台 token 指定方式（优先级递增）:
-      1. 分别指定 geepass_token / jfbym_token
-      2. 指定统一 token（同时用于两个平台）
-      3. 环境变量 CAPTCHA_TOKEN
+    打码平台 token 的解析方式:
+      - geepass 仅使用 geepass_token 或 GEEPASS_TOKEN。
+      - jfbym 使用 jfbym_token、旧版 captcha_token、JFBYM_TOKEN，
+        再回退到旧版 CAPTCHA_TOKEN。
+      - 旧版 captcha_token 和 CAPTCHA_TOKEN 不会用于 geepass。
 
     Args:
         user: 用户名

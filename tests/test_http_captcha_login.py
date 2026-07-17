@@ -7,6 +7,8 @@ from hdata.auth.captcha_solver import (
     CaptchaChallenge,
     CaptchaSolution,
     CaptchaSolveError,
+    GeepassSolver,
+    JfbymSolver,
     SolverInfo,
 )
 
@@ -271,3 +273,99 @@ async def test_login_solves_each_challenge_once_after_verify_failure(monkeypatch
 
     assert result is None
     assert solved_lots == ["lot-a-0123456789", "lot-b-0123456789"]
+
+
+@pytest.mark.asyncio
+async def test_jfbym_solver_redacts_platform_response_values(monkeypatch):
+    sentinel = "jfbym-platform-secret"
+
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            json=lambda: {"code": 40001, "msg": sentinel, "token": sentinel}
+        ),
+    )
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await JfbymSolver("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=response attempt=1 code=40001"
+
+
+@pytest.mark.asyncio
+async def test_geepass_solver_redacts_network_exception_values(monkeypatch):
+    sentinel = "geepass-network-secret"
+
+    async def no_sleep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+    monkeypatch.setattr("asyncio.sleep", no_sleep)
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await GeepassSolver("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=submit attempt=3 exception=RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_jfbym_solver_redacts_network_exception_values(monkeypatch):
+    sentinel = "jfbym-network-secret"
+
+    async def no_sleep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+    monkeypatch.setattr("asyncio.sleep", no_sleep)
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await JfbymSolver("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=submit attempt=6 exception=RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_geepass_solver_redacts_platform_response_values(monkeypatch):
+    sentinel = "geepass-platform-secret"
+
+    monkeypatch.setattr(
+        "curl_cffi.requests.get",
+        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
+    )
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            json=lambda: {"code": 40001, "msg": sentinel, "token": sentinel}
+        ),
+    )
+
+    with pytest.raises(CaptchaSolveError) as exc_info:
+        await GeepassSolver("api-token").solve(make_challenge())
+
+    assert sentinel not in str(exc_info.value)
+    assert sentinel not in exc_info.value.raw_error
+    assert exc_info.value.raw_error == "stage=response attempt=1 code=40001"

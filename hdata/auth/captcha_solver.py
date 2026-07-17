@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import re
 
 
 # ═══════════════════════════════════════════════════════════
@@ -91,8 +92,46 @@ class CaptchaSolveError(Exception):
     def __init__(self, solver_name: str, reason: str, raw_error: str = ""):
         self.solver_name = solver_name
         self.reason = reason
-        self.raw_error = raw_error
-        super().__init__(f"[{solver_name}] {reason}" + (f": {raw_error}" if raw_error else ""))
+        self.raw_error = _safe_error_metadata(raw_error)
+        super().__init__(
+            f"[{solver_name}] {reason}"
+            + (f": {self.raw_error}" if self.raw_error else "")
+        )
+
+
+def _safe_failure(
+    stage: str,
+    *,
+    attempt: int | None = None,
+    code: int | str | None = None,
+    exc: BaseException | None = None,
+) -> str:
+    parts = [f"stage={stage}"]
+    if attempt is not None:
+        parts.append(f"attempt={attempt}")
+    if code is not None:
+        parts.append(f"code={code}")
+    if exc is not None:
+        parts.append(f"exception={type(exc).__name__}")
+    return " ".join(parts)
+
+
+def _safe_error_metadata(raw_error: str) -> str:
+    """Keep only stable metadata from direct solver failure details."""
+    if not raw_error:
+        return ""
+
+    stable_fields = (
+        r"stage=[a-z_]+",
+        r"attempt=\d+",
+        r"code=\d+",
+        r"exception=[A-Za-z_]\w*",
+    )
+    return " ".join(
+        field
+        for field in raw_error.split()
+        if any(re.fullmatch(pattern, field) for pattern in stable_fields)
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -217,7 +256,7 @@ class JfbymSolver(CaptchaSolver):
                     timeout=60,
                 ).json()
             except Exception as e:
-                last_error = f"网络错误(attempt {attempt + 1}): {e}"
+                last_error = _safe_failure("submit", attempt=attempt + 1, exc=e)
                 await asyncio.sleep(2)
                 continue
 
@@ -247,7 +286,9 @@ class JfbymSolver(CaptchaSolver):
                 await asyncio.sleep(3)
                 continue
             else:
-                last_error = f"jfbym code={code}: {r.get('msg', str(r)[:200])}"
+                last_error = _safe_failure(
+                    "response", attempt=attempt + 1, code=code
+                )
                 break
 
         raise CaptchaSolveError("jfbym", "solve 失败 (6 次重试用尽)", last_error)
@@ -324,7 +365,7 @@ class GeepassSolver(CaptchaSolver):
                     timeout=30,
                 ).json()
             except Exception as e:
-                last_error = f"网络错误(attempt {attempt + 1}): {e}"
+                last_error = _safe_failure("submit", attempt=attempt + 1, exc=e)
                 import asyncio
                 await asyncio.sleep(1)
                 continue
@@ -362,7 +403,9 @@ class GeepassSolver(CaptchaSolver):
                 await asyncio.sleep(2)
                 continue
             else:
-                last_error = f"geepass code={code}: {r.get('msg', str(r)[:200])}"
+                last_error = _safe_failure(
+                    "response", attempt=attempt + 1, code=code
+                )
                 break
 
         raise CaptchaSolveError("geepass", "solve 失败 (3 次重试用尽)", last_error)
