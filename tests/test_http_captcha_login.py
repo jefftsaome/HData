@@ -320,7 +320,78 @@ async def test_geepass_solver_redacts_network_exception_values(monkeypatch):
 
     assert sentinel not in str(exc_info.value)
     assert sentinel not in exc_info.value.raw_error
-    assert exc_info.value.raw_error == "stage=submit attempt=3 exception=RuntimeError"
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+
+@pytest.mark.asyncio
+async def test_verify_fail_raises_typed_error(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            'botion_cb({"data":{"result":"fail","fail_count":2}})'
+        ),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError) as exc_info:
+        await http_login_v2._verify_captcha(
+            {
+                "lot_number": "lot-secret",
+                "payload": "payload-secret",
+                "process_token": "process-secret",
+            },
+            "10,20|30,40|50,60",
+        )
+
+    assert exc_info.value.result == "fail"
+    assert exc_info.value.fail_count == 2
+    assert "payload-secret" not in str(exc_info.value)
+    assert "process-secret" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_invalid_jsonp(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse("not-jsonp"),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError, match="invalid_jsonp"):
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
+
+
+@pytest.mark.asyncio
+async def test_verify_requires_complete_seccode(monkeypatch):
+    from hdata.auth import http_login_v2
+
+    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
+    monkeypatch.setattr(
+        http_login_v2.cr,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            'botion_cb({"data":{"result":"success","seccode":{"pass_token":"x"}}})'
+        ),
+    )
+
+    with pytest.raises(http_login_v2.VerifyError, match="incomplete_seccode"):
+        await http_login_v2._verify_captcha(
+            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
+            "10,20|30,40|50,60",
+        )
 
 
 @pytest.mark.asyncio

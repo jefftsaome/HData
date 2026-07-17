@@ -47,10 +47,19 @@ CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 
 
 class VerifyError(RuntimeError):
-    def __init__(self, result: str, fail_count: int = 0):
+    def __init__(
+        self,
+        result: str,
+        fail_count: int = 0,
+        reason: str = "",
+        *,
+        diagnostics: dict | None = None,
+    ):
         self.result = result
         self.fail_count = fail_count
-        super().__init__(f"verify {result}; fail_count={fail_count}")
+        self.reason = reason
+        self.diagnostics = diagnostics or {}
+        super().__init__(f"verify {result}: {reason}; fail_count={fail_count}")
 
 
 def _get_domain() -> str:
@@ -91,17 +100,14 @@ async def _solve_captcha(
     raise CaptchaSolveError("solver-chain", "all solvers failed", "; ".join(failures))
 
 
-async def _verify_captcha(load_data: dict, coords: str) -> Optional[dict]:
-    """调用 GeeTest verify API，返回 seccode dict 或 None。
+async def _verify_captcha(load_data: dict, coords: str) -> dict:
+    """Return a complete verify seccode or raise a typed failure."""
+    diagnostics = {}
+    w = generate_w(load_data, CAPTCHA_ID, coords, diagnostics=diagnostics)
 
-    Returns:
-        {"captcha_output": ..., "gen_time": ..., "pass_token": ...} 或 None
-    """
-    w = generate_w(load_data, CAPTCHA_ID, coords)
-
-    cb = f"botion_{int(time.time() * 1000)}"
+    callback = f"botion_{int(time.time() * 1000)}"
     params = {
-        "callback": cb,
+        "callback": callback,
         "captcha_id": CAPTCHA_ID,
         "client_type": "web",
         "lot_number": load_data["lot_number"],
@@ -125,38 +131,38 @@ async def _verify_captcha(load_data: dict, coords: str) -> Optional[dict]:
         "Accept-Language": "zh-CN,zh;q=0.9",
     }
 
-    resp = cr.get(url, impersonate="chrome110", headers=headers, timeout=30)
-    text = resp.text
+    try:
+        text = cr.get(url, impersonate="chrome110", headers=headers, timeout=30).text
+    except Exception as exc:
+        raise VerifyError(
+            "network_error",
+            reason=type(exc).__name__,
+            diagnostics=diagnostics,
+        ) from exc
 
-    # 检查是否成功
-    if '"result":"success"' not in text:
-        m = re.search(r"\((.*)\)$", text, re.DOTALL)
-        if m:
-            vdata = json.loads(m.group(1))
-            result = vdata.get("data", {}).get("result", "unknown")
-            fail_count = vdata.get("data", {}).get("fail_count", 0)
-            print(f"  verify: result={result}, fail_count={fail_count}")
-            raise VerifyError(result, fail_count)
-        raise VerifyError("invalid-response")
+    match = re.search(r"^[^(]+\((.*)\)$", text, re.DOTALL)
+    if not match:
+        raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise VerifyError("invalid_jsonp", diagnostics=diagnostics) from exc
 
-    # 解析 JSONP 响应
-    m = re.search(r"\((.*)\)$", text, re.DOTALL)
-    if not m:
-        print("  verify: 无法解析 JSONP 响应")
-        return None
+    data = payload.get("data") or {}
+    result = data.get("result", "unknown")
+    fail_count = int(data.get("fail_count") or 0)
+    if result != "success":
+        raise VerifyError(result, fail_count, diagnostics=diagnostics)
 
-    vdata = json.loads(m.group(1))
-    seccode = vdata.get("data", {}).get("seccode", {})
-
-    if not seccode:
-        print("  verify: 响应中无 seccode")
-        return None
-
-    return {
-        "captcha_output": seccode.get("captcha_output", ""),
-        "gen_time": seccode.get("gen_time", ""),
-        "pass_token": seccode.get("pass_token", ""),
-    }
+    seccode = data.get("seccode") or {}
+    required = ("captcha_output", "gen_time", "pass_token")
+    if any(not seccode.get(field) for field in required):
+        raise VerifyError(
+            "incomplete_seccode",
+            fail_count,
+            diagnostics=diagnostics,
+        )
+    return {field: seccode[field] for field in required}
 
 
 def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> bool:
@@ -361,8 +367,14 @@ async def login(
         print("[3/5] 验证验证码...")
         try:
             seccode = await _verify_captcha(load_data, coords)
-        except VerifyError:
-            print("  ❌ verify 失败")
+        except VerifyError as exc:
+            fields = ",".join(exc.diagnostics.get("e_obj_fields", []))
+            size = exc.diagnostics.get("e_obj_bytes", 0)
+            print(
+                f"  verify failed: result={exc.result}, "
+                f"fail_count={exc.fail_count}, lot={load_data['lot_number'][:8]}..., "
+                f"e_obj_bytes={size}, e_obj_fields={fields}"
+            )
             continue
 
         if not seccode:
