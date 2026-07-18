@@ -271,3 +271,39 @@ captcha_output + lot_number  → validateGeeCheckV2         → {"result": "succ
 3. **CDP Input 是唯一可靠的点击方式**。Playwright 的 page.mouse.click() 被 SDK 检测为自动化。
 
 4. **登录请求中 Kaptchcate=0** 表示"验证码已在 validateGeeCheckV2 中校验过，login 不需要再次校验"。codeId=lot_number 是关联验证码批次的 key。
+
+---
+
+## 附：e_obj 最终结构（2026-07-17 运行时解密实测，已修复 generate_w）
+
+通过 hook `Math.random` 拿到 SDK 的 AES 随机密钥（经典 4×hex4 公式），
+解密真实 w 得到浏览器 e_obj 明文（`data/e_obj_real_decrypted.json`、`data/e_obj_real_2.json`）：
+
+```json
+{"passtime":2264,
+ "userresponse":[[2239,2594],[4080,5906],[7908,2649]],
+ "device_id":"",
+ "lot_number":"82af761c...",
+ "pow_msg":"1|0|md5|<datetime>|<captcha_id>|<lot_number>||<16hex nonce>",
+ "pow_sign":"<md5(pow_msg)>",
+ "geetest":"captcha","lang":"zh",
+ "ep":"123","nqfq":"622265669","EKAI":"y7R8",
+ "f275":{"4bf2":"e059"},
+ "em":{"ph":0,"cp":0,"ek":"11","wd":1,"nt":0,"si":0,"sc":0}}
+```
+
+关键修正点（相对旧实现）：
+
+1. **删除** `biht`、`gee_guard`（旧版字段，浏览器已不发）。
+2. **新增** `device_id:""`、`ep:"123"`、`nqfq`、`EKAI`。
+   `nqfq`/`EKAI` 是 gct4 构建常量（当前构建 gct4.614b49d4a6f9b9c251919ce8a63098bd，
+   两份样本完全一致；旧构建的键是 `ZAhG:"MwHu"`，换构建需重新提取）。
+3. **userresponse 是归一化坐标**：`[round(x/300*10000), round(y/200*10000)]`
+   （相对显示图片的 0-10000 归一化，已用真实点击坐标数值验证）。
+4. `em` 固定 7 键：`{ph,cp,ek,wd,nt,si,sc}`。
+5. lot 动态键（如 `f275:{"4bf2":"e059"}`）我们的 LotParser 映射**本来就正确**（两份样本均验证）。
+6. AES IV = **ASCII `'0'×16`**（不是 `\x00×16`！旧代码恰好用的就是 ASCII 零，歪打正着）。
+7. 字段顺序与浏览器一致（passtime 在最前）。
+
+**端到端验证状态**：真实挑战 + 错误坐标 → verify 返回 `{"status":"success","data":{"result":"fail","fail_count":1}}`，
+即服务端正常解密并进入判分流程 = **w 格式已被接受**。待正确坐标做最终成功验证。

@@ -1,0 +1,553 @@
+# Review package: ab19321..f30523d
+
+## Commits
+f30523d fix: redact remaining auth failures
+
+## Files changed
+ hdata/auth/captcha_solver.py     |  13 +++++
+ hdata/auth/http_login_v2.py      |  65 +++++++++++++--------
+ hdata/auth/session.py            |  47 +++++++++++-----
+ test_get_login.py                |   6 +-
+ tests/test_http_captcha_login.py | 119 +++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 210 insertions(+), 40 deletions(-)
+
+## Diff
+diff --git a/hdata/auth/captcha_solver.py b/hdata/auth/captcha_solver.py
+index 3ff7250..03126aa 100644
+--- a/hdata/auth/captcha_solver.py
++++ b/hdata/auth/captcha_solver.py
+@@ -8,20 +8,21 @@
+ 用法:
+     solver = JfbymSolver(api_token="xxx")
+     solution = await solver.solve(challenge)
+     # solution.coords = "74,124|235,132|176,65"
+     # solution.pts = [[74,124],[235,132],[176,65]]
+ """
+ 
+ from __future__ import annotations
+ 
+ from abc import ABC, abstractmethod
++from collections.abc import Mapping
+ from dataclasses import dataclass, field
+ import re
+ 
+ 
+ # ═══════════════════════════════════════════════════════════
+ # 数据类型
+ # ═══════════════════════════════════════════════════════════
+ 
+ 
+ @dataclass
+@@ -267,20 +268,26 @@ class JfbymSolver(CaptchaSolver):
+                     self._url,
+                     json=body,
+                     headers={"Content-Type": "application/json"},
+                     timeout=60,
+                 ).json()
+             except Exception as e:
+                 last_error = _safe_failure("submit", attempt=attempt + 1, exc=e)
+                 await asyncio.sleep(2)
+                 continue
+ 
++            if not isinstance(r, Mapping):
++                raise CaptchaSolveError(
++                    "jfbym",
++                    "invalid provider response",
++                    _safe_failure("response_parse", attempt=attempt + 1, exc=TypeError()),
++                )
+             code = r.get("code")
+             if code == 10000:
+                 try:
+                     data = r.get("data", {}) or {}
+                     coords = data.get("data", "")
+                 except Exception as exc:
+                     raise CaptchaSolveError(
+                         "jfbym",
+                         "invalid provider response",
+                         _safe_failure(
+@@ -423,20 +430,26 @@ class GeepassSolver(CaptchaSolver):
+                     json=body,
+                     headers={"Content-Type": "application/json"},
+                     timeout=30,
+                 ).json()
+             except Exception as e:
+                 last_error = _safe_failure("submit", attempt=attempt + 1, exc=e)
+                 import asyncio
+                 await asyncio.sleep(1)
+                 continue
+ 
++            if not isinstance(r, Mapping):
++                raise CaptchaSolveError(
++                    "geepass",
++                    "invalid provider response",
++                    _safe_failure("response_parse", attempt=attempt + 1, exc=TypeError()),
++                )
+             code = r.get("code")
+             if code == 10000:
+                 try:
+                     data = r.get("data", {}).get("data", {})
+                     targets = data.get("targets", [])
+                 except Exception as exc:
+                     raise CaptchaSolveError(
+                         "geepass",
+                         "invalid provider response",
+                         _safe_failure(
+diff --git a/hdata/auth/http_login_v2.py b/hdata/auth/http_login_v2.py
+index 53f9821..e04efc0 100644
+--- a/hdata/auth/http_login_v2.py
++++ b/hdata/auth/http_login_v2.py
+@@ -19,20 +19,21 @@
+ """
+ from __future__ import annotations
+ 
+ import asyncio
+ import base64
+ from collections.abc import Mapping
+ import hashlib
+ import json
+ import os
+ import re
++import sys
+ import time
+ import urllib.parse
+ from typing import Optional
+ 
+ from curl_cffi import requests as cr
+ 
+ from hdata.auth.captcha import fetch_captcha as _fetch_captcha
+ from hdata.auth.captcha_solver import (
+     CaptchaChallenge,
+     CaptchaSolution,
+@@ -202,36 +203,44 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> bool:
+ 
+     headers = {
+         "Content-Type": "application/json",
+         "Referer": f"{domain}/user/login",
+         "User-Agent": "Mozilla/5.0",
+         "X-API-CLIENT": "web",
+         "X-API-SITE": "2001",
+         "X-API-VERSION": "2.0.0",
+     }
+ 
+-    resp = cr.post(
+-        validate_url,
+-        json=validate_body,
+-        headers=headers,
+-        impersonate="chrome110",
+-        timeout=15,
+-    )
++    try:
++        resp = cr.post(
++            validate_url,
++            json=validate_body,
++            headers=headers,
++            impersonate="chrome110",
++            timeout=15,
++        )
++    except Exception as exc:
++        print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
++        return False
+ 
+-    vresp = resp.json()
+-    status_code = vresp.get("status_code")
++    try:
++        vresp = resp.json()
++    except Exception as exc:
++        print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
++        return False
++    status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
+ 
+     if status_code == 6000:
+         print(f"  validateGeeCheckV2: success")
+         return True
+ 
+-    print(f"  validateGeeCheckV2: failed ({status_code}): {vresp.get('message', '')}")
++    print(f"  validateGeeCheckV2: failed stage=validate status={status_code}")
+     return False
+ 
+ 
+ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str) -> Optional[str]:
+     """调用 login API 获取 X-API-TOKEN。"""
+     login_url = f"{domain}/site/api/v1/user/login"
+     login_body = {
+         "name": user,
+         "password": pwd_md5,
+         "Kaptchcate": 0,
+@@ -240,35 +249,45 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str) -> Optional
+ 
+     headers = {
+         "Content-Type": "application/json",
+         "Referer": f"{domain}/user/login",
+         "User-Agent": "Mozilla/5.0",
+         "X-API-CLIENT": "web",
+         "X-API-SITE": "2001",
+         "X-API-VERSION": "2.0.0",
+     }
+ 
+-    resp = cr.post(
+-        login_url,
+-        json=login_body,
+-        headers=headers,
+-        impersonate="chrome110",
+-        timeout=15,
+-    )
++    try:
++        resp = cr.post(
++            login_url,
++            json=login_body,
++            headers=headers,
++            impersonate="chrome110",
++            timeout=15,
++        )
++    except Exception as exc:
++        print(f"  login: failed stage=login exception={type(exc).__name__}")
++        return None
+ 
+-    lresp = resp.json()
++    try:
++        lresp = resp.json()
++    except Exception as exc:
++        print(f"  login: failed stage=login exception={type(exc).__name__}")
++        return None
+ 
+-    if lresp.get("status_code") != 6000:
+-        print(f"  login: failed: {lresp.get('message', '')}")
++    status_code = lresp.get("status_code") if isinstance(lresp, Mapping) else None
++    if status_code != 6000:
++        print(f"  login: failed stage=login status={status_code}")
+         return None
+ 
+-    token = (lresp.get("data", {}) or {}).get("token", "")
++    login_data = lresp.get("data", {}) if isinstance(lresp, Mapping) else {}
++    token = login_data.get("token", "") if isinstance(login_data, Mapping) else ""
+     if not token:
+         print("  login: no token in response")
+         return None
+ 
+     print(f"  login: success")
+     return token
+ 
+ 
+ def _get_uuid(domain: str, api_token: str) -> str:
+     """从 JWT API 获取 UUID。"""
+@@ -286,22 +305,22 @@ def _get_uuid(domain: str, api_token: str) -> str:
+         )
+         if resp.status_code == 200:
+             site_jwt = resp.json().get("data", "")
+             if site_jwt:
+                 parts = site_jwt.split(".")
+                 if len(parts) == 3:
+                     payload = json.loads(
+                         base64.urlsafe_b64decode(parts[1] + "==")
+                     )
+                     return payload.get("uuid", "")
+-    except Exception as e:
+-        print(f"  UUID 获取失败: {e}")
++    except Exception as exc:
++        print(f"  UUID 获取失败: stage=uuid exception={type(exc).__name__}")
+ 
+     return ""
+ 
+ 
+ async def login(
+     user: str,
+     pwd: str,
+     captcha_token: str = "",
+     *,
+     geepass_token: str = "",
+diff --git a/hdata/auth/session.py b/hdata/auth/session.py
+index 4ffff90..81d0d28 100644
+--- a/hdata/auth/session.py
++++ b/hdata/auth/session.py
+@@ -49,20 +49,34 @@ class SessionError(RuntimeError):
+ 
+ 
+ class DomainError(SessionError):
+     """域名解析失败。"""
+ 
+ 
+ class TokenRefreshError(SessionError):
+     """Token 刷新失败。"""
+ 
+ 
++def _refresh_error(
++    stage: str,
++    *,
++    status: int | None = None,
++    exc: BaseException | None = None,
++) -> TokenRefreshError:
++    fields = [f"stage={stage}"]
++    if status is not None:
++        fields.append(f"status={status}")
++    if exc is not None:
++        fields.append(f"exception={type(exc).__name__}")
++    return TokenRefreshError("refresh " + " ".join(fields))
++
++
+ # ── 域名 ──────────────────────────────────────────────
+ 
+ 
+ def get_real_domain(entry_url: str = "") -> str:
+     """从集团入口站获取真实主站域名。
+ 
+     缓存优先（.cache/domain.json），缓存未命中则从入口站 HTML 提取。
+ 
+     Args:
+         entry_url: 入口站 URL，如 "https://leyu.me"。为空时使用默认入口。
+@@ -220,60 +234,67 @@ async def refresh_game_token(account: str, session: dict) -> str:
+     Raises:
+         TokenRefreshError: API 调用或解密失败
+     """
+     domain = session.get("domain", "")
+     if not domain:
+         raise TokenRefreshError(f"[{account}] session 缺少 domain")
+ 
+     url = f"{domain}/game/api/v1/venue/launch"
+     headers = _api_headers(session, url)
+ 
++    request_error = None
+     try:
+         resp = requests.post(
+             url,
+             headers=headers,
+             json={"enName": "YBZR"},
+             impersonate="chrome110",
+             timeout=15,
+         )
+-    except Exception as e:
+-        raise TokenRefreshError(f"[{account}] venue/launch 请求失败: {e}") from e
++    except Exception as exc:
++        request_error = _refresh_error("venue_launch", exc=exc)
++    if request_error:
++        raise request_error
+ 
+     if resp.status_code != 200:
+-        raise TokenRefreshError(
+-            f"[{account}] venue/launch 返回 {resp.status_code}: {resp.text[:200]}"
+-        )
++        raise _refresh_error("venue_launch", status=resp.status_code)
+ 
++    parse_error = None
+     try:
+         data = resp.json()
+         game_url = data.get("data", {}).get("url", "")
+-    except Exception as e:
+-        raise TokenRefreshError(f"[{account}] 解析 venue/launch 响应失败: {e}") from e
++    except Exception as exc:
++        parse_error = _refresh_error("venue_launch_parse", exc=exc)
++    if parse_error:
++        raise parse_error
+ 
+     if not game_url or "params=" not in game_url:
+-        raise TokenRefreshError(f"[{account}] venue/launch 返回的 URL 缺少 params")
++        raise _refresh_error("venue_launch_params")
+ 
+     # 提取并解密 params
+     params_b64, ttl = extract_params_from_url(game_url)
+     if not params_b64 or not ttl:
+-        raise TokenRefreshError(f"[{account}] 从 URL 提取 params/ttl 失败: {game_url[:100]}")
++        raise _refresh_error("params_extract")
+ 
++    decrypt_error = None
+     try:
+         decrypted = decrypt_params(params_b64, ttl)
+-    except Exception as e:
+-        raise TokenRefreshError(f"[{account}] params 解密失败: {e}") from e
++    except Exception as exc:
++        decrypt_error = _refresh_error("params_decrypt", exc=exc)
++    if decrypt_error:
++        raise decrypt_error
+ 
+     token = decrypted.get("token", "")
+     if not token:
+-        raise TokenRefreshError(f"[{account}] 解密后的 params 中无 token 字段")
++        raise _refresh_error("params_token")
+ 
+-    logger.info(f"[{account}] 成功刷新 game JWT: {token[:50]}...{token[-20:]}")
++    logger.info(f"[{account}] game JWT refresh succeeded")
+     return token
+ 
+ 
+ # ── 完整游戏会话 ─────────────────────────────────────
+ 
+ 
+ async def get_game_session(account: str) -> dict:
+     """获取账号的完整游戏会话（自动降级：缓存 → API 刷新）。
+ 
+     返回 dict 包含:
+diff --git a/test_get_login.py b/test_get_login.py
+index 3e56ae3..3f9b30f 100644
+--- a/test_get_login.py
++++ b/test_get_login.py
+@@ -153,25 +153,23 @@ async def test_validate_result(account: str) -> bool:
+         print(f"  [FAIL] account: expected {account}, got {result.get('account')}")
+         all_ok = False
+ 
+     return all_ok
+ 
+ 
+ def _print_result(result: dict):
+     """精简打印返回值。"""
+     print(f"  account:    {result.get('account', 'N/A')}")
+     print(f"  domain:     {result.get('domain', 'N/A')}")
+-    t = result.get('token', '')
+-    print(f"  token:      {t[:30]}..." if t else "  token:      none")
++    print(f"  token:      {'present' if result.get('token') else 'none'}")
+     print(f"  uuid:       {'yes' if result.get('uuid') else 'no'}")
+-    gt = result.get('game_token', '')
+-    print(f"  game_token: {gt[:30]}..." if gt else "  game_token: none")
++    print(f"  game_token: {'present' if result.get('game_token') else 'none'}")
+     print(f"  player_id:  {result.get('game_player_id', 'N/A')}")
+     print(f"  backend:    {result.get('game_backend', 'N/A')}")
+     sigs = result.get('signatures', {})
+     print(f"  signatures: {len(sigs)} entries")
+     c = result.get('cookies', '')
+     print(f"  cookies:    {len(c)} chars")
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(description="get_login interface test")
+diff --git a/tests/test_http_captcha_login.py b/tests/test_http_captcha_login.py
+index c36e888..b936a88 100644
+--- a/tests/test_http_captcha_login.py
++++ b/tests/test_http_captcha_login.py
+@@ -602,20 +602,139 @@ async def test_login_verify_diagnostics_redact_server_response(monkeypatch, caps
+     )
+ 
+     assert await http_login_v2.login("account", "password", geepass_token="token", max_retries=1) is None
+     output = capsys.readouterr().out
+     assert sentinel not in output
+     assert "result=unexpected_result" in output
+     assert "e_obj_bytes=12" in output
+     assert "e_obj_fields=safe_field" in output
+ 
+ 
++def assert_safe_error(error, sentinel):
++    assert sentinel not in str(error)
++    assert error.__cause__ is None
++    assert error.__context__ is None
++
++
++@pytest.mark.asyncio
++async def test_refresh_game_token_redacts_network_and_response_values(monkeypatch):
++    from hdata.auth import session
++
++    sentinel = "refresh-network-and-response-secret"
++    safe_session = {"domain": "https://safe.example", "token": "site-token"}
++
++    monkeypatch.setattr(
++        session.requests,
++        "post",
++        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
++    )
++    with pytest.raises(session.TokenRefreshError) as exc_info:
++        await session.refresh_game_token("account", safe_session)
++    assert_safe_error(exc_info.value, sentinel)
++    assert "stage=venue_launch" in str(exc_info.value)
++
++    monkeypatch.setattr(
++        session.requests,
++        "post",
++        lambda *args, **kwargs: SimpleNamespace(status_code=503, text=sentinel),
++    )
++    with pytest.raises(session.TokenRefreshError) as exc_info:
++        await session.refresh_game_token("account", safe_session)
++    assert_safe_error(exc_info.value, sentinel)
++    assert "status=503" in str(exc_info.value)
++
++
++def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monkeypatch, capsys):
++    from hdata.auth import http_login_v2
++
++    sentinel = "validate-login-uuid-server-secret"
++    monkeypatch.setattr(
++        http_login_v2.cr,
++        "post",
++        lambda *args, **kwargs: SimpleNamespace(
++            status_code=400,
++            json=lambda: {"status_code": 4001, "message": sentinel},
++        ),
++    )
++
++    assert not http_login_v2._validate_geecheck("https://safe.example", "lot", {})
++    assert http_login_v2._do_login("https://safe.example", "user", "hash", "lot") is None
++
++    monkeypatch.setattr(
++        http_login_v2.cr,
++        "post",
++        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
++    )
++    assert http_login_v2._get_uuid("https://safe.example", "site-token") == ""
++
++    output = capsys.readouterr().out
++    assert sentinel not in output
++    assert "stage=validate" in output
++    assert "stage=login" in output
++    assert "stage=uuid" in output
++
++
++def test_http_login_stage_output_redacts_request_exceptions(monkeypatch, capsys):
++    from hdata.auth import http_login_v2
++
++    sentinel = "validate-login-request-secret"
++    monkeypatch.setattr(
++        http_login_v2.cr,
++        "post",
++        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
++    )
++
++    assert not http_login_v2._validate_geecheck("https://safe.example", "lot", {})
++    assert http_login_v2._do_login("https://safe.example", "user", "hash", "lot") is None
++
++    output = capsys.readouterr().out
++    assert sentinel not in output
++    assert "stage=validate" in output
++    assert "stage=login" in output
++
++
++def test_http_login_module_main_dependencies_are_imported():
++    from hdata.auth import http_login_v2
++
++    assert http_login_v2.sys is sys
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("solver_class, payload", [(JfbymSolver, []), (GeepassSolver, "payload-secret")])
++async def test_solver_redacts_nonmapping_top_level_response(monkeypatch, solver_class, payload):
++    sentinel = "payload-secret"
++    monkeypatch.setattr(
++        "curl_cffi.requests.get",
++        lambda *args, **kwargs: SimpleNamespace(content=b"image"),
++    )
++    monkeypatch.setattr(
++        "curl_cffi.requests.post",
++        lambda *args, **kwargs: SimpleNamespace(json=lambda: payload),
++    )
++
++    with pytest.raises(CaptchaSolveError) as exc_info:
++        await solver_class("api-token").solve(make_challenge())
++
++    assert_safe_error(exc_info.value, sentinel)
++    assert "stage=response_parse" in exc_info.value.raw_error
++
++
++def test_manual_cli_output_never_includes_token_values(capsys):
++    from test_get_login import _print_result
++
++    _print_result({"token": "site-token-secret", "game_token": "jwt-secret"})
++
++    output = capsys.readouterr().out
++    assert "site-token-secret" not in output
++    assert "jwt-secret" not in output
++
++
+ @pytest.mark.asyncio
+ async def test_jfbym_solver_redacts_network_exception_values(monkeypatch):
+     sentinel = "jfbym-network-secret"
+ 
+     async def no_sleep(*args, **kwargs):
+         return None
+ 
+     monkeypatch.setattr(
+         "curl_cffi.requests.get",
+         lambda *args, **kwargs: SimpleNamespace(content=b"image"),

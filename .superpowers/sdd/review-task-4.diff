@@ -1,0 +1,303 @@
+# Review package: f1daa3d1f04ae83e678c5a4c3fa6a2d845061a10..8fbc4fe
+
+## Commits
+8fbc4fe fix: report captcha verify failures by stage
+
+## Files changed
+ hdata/auth/http_login_v2.py      | 102 ++++++++++++++++++++++-----------------
+ tests/test_http_captcha_login.py |  73 +++++++++++++++++++++++++++-
+ 2 files changed, 129 insertions(+), 46 deletions(-)
+
+## Diff
+diff --git a/hdata/auth/http_login_v2.py b/hdata/auth/http_login_v2.py
+index bc10159..c8e54ff 100644
+--- a/hdata/auth/http_login_v2.py
++++ b/hdata/auth/http_login_v2.py
+@@ -40,24 +40,33 @@ from hdata.auth.captcha_solver import (
+     GeepassSolver,
+     JfbymSolver,
+ )
+ from hdata.auth.domain import resolve_domain as _resolve_domain
+ from hdata.auth.geetest_signer import generate_w
+ 
+ CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
+ 
+ 
+ class VerifyError(RuntimeError):
+-    def __init__(self, result: str, fail_count: int = 0):
++    def __init__(
++        self,
++        result: str,
++        fail_count: int = 0,
++        reason: str = "",
++        *,
++        diagnostics: dict | None = None,
++    ):
+         self.result = result
+         self.fail_count = fail_count
+-        super().__init__(f"verify {result}; fail_count={fail_count}")
++        self.reason = reason
++        self.diagnostics = diagnostics or {}
++        super().__init__(f"verify {result}: {reason}; fail_count={fail_count}")
+ 
+ 
+ def _get_domain() -> str:
+     """获取乐鱼真实域名（缓存优先）。"""
+     domain = _resolve_domain()
+     if domain:
+         return domain
+ 
+     # 兜底：直接从入口站重定向获取
+     resp = cr.get("https://leyu.me", impersonate="chrome110",
+@@ -84,31 +93,28 @@ async def _solve_captcha(
+         name = solver.info().name
+         try:
+             solution = await solver.solve(challenge)
+             solution.solver_name = name
+             return solution
+         except Exception as exc:
+             failures.append(f"{name}: {type(exc).__name__}")
+     raise CaptchaSolveError("solver-chain", "all solvers failed", "; ".join(failures))
+ 
+ 
+-async def _verify_captcha(load_data: dict, coords: str) -> Optional[dict]:
+-    """调用 GeeTest verify API，返回 seccode dict 或 None。
++async def _verify_captcha(load_data: dict, coords: str) -> dict:
++    """Return a complete verify seccode or raise a typed failure."""
++    diagnostics = {}
++    w = generate_w(load_data, CAPTCHA_ID, coords, diagnostics=diagnostics)
+ 
+-    Returns:
+-        {"captcha_output": ..., "gen_time": ..., "pass_token": ...} 或 None
+-    """
+-    w = generate_w(load_data, CAPTCHA_ID, coords)
+-
+-    cb = f"botion_{int(time.time() * 1000)}"
++    callback = f"botion_{int(time.time() * 1000)}"
+     params = {
+-        "callback": cb,
++        "callback": callback,
+         "captcha_id": CAPTCHA_ID,
+         "client_type": "web",
+         "lot_number": load_data["lot_number"],
+         "payload": load_data["payload"],
+         "process_token": load_data["process_token"],
+         "payload_protocol": load_data.get("payload_protocol", "1"),
+         "pt": load_data.get("pt", "1"),
+         "w": w,
+     }
+ 
+@@ -118,52 +124,52 @@ async def _verify_captcha(load_data: dict, coords: str) -> Optional[dict]:
+         "Referer": "https://www.leyu.me/",
+         "User-Agent": (
+             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+             "AppleWebKit/537.36 (KHTML, like Gecko) "
+             "Chrome/149.0.0.0 Safari/537.36"
+         ),
+         "Accept": "*/*",
+         "Accept-Language": "zh-CN,zh;q=0.9",
+     }
+ 
+-    resp = cr.get(url, impersonate="chrome110", headers=headers, timeout=30)
+-    text = resp.text
+-
+-    # 检查是否成功
+-    if '"result":"success"' not in text:
+-        m = re.search(r"\((.*)\)$", text, re.DOTALL)
+-        if m:
+-            vdata = json.loads(m.group(1))
+-            result = vdata.get("data", {}).get("result", "unknown")
+-            fail_count = vdata.get("data", {}).get("fail_count", 0)
+-            print(f"  verify: result={result}, fail_count={fail_count}")
+-            raise VerifyError(result, fail_count)
+-        raise VerifyError("invalid-response")
+-
+-    # 解析 JSONP 响应
+-    m = re.search(r"\((.*)\)$", text, re.DOTALL)
+-    if not m:
+-        print("  verify: 无法解析 JSONP 响应")
+-        return None
+-
+-    vdata = json.loads(m.group(1))
+-    seccode = vdata.get("data", {}).get("seccode", {})
+-
+-    if not seccode:
+-        print("  verify: 响应中无 seccode")
+-        return None
+-
+-    return {
+-        "captcha_output": seccode.get("captcha_output", ""),
+-        "gen_time": seccode.get("gen_time", ""),
+-        "pass_token": seccode.get("pass_token", ""),
+-    }
++    try:
++        text = cr.get(url, impersonate="chrome110", headers=headers, timeout=30).text
++    except Exception as exc:
++        raise VerifyError(
++            "network_error",
++            reason=type(exc).__name__,
++            diagnostics=diagnostics,
++        ) from exc
++
++    match = re.search(r"^[^(]+\((.*)\)$", text, re.DOTALL)
++    if not match:
++        raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
++    try:
++        payload = json.loads(match.group(1))
++    except json.JSONDecodeError as exc:
++        raise VerifyError("invalid_jsonp", diagnostics=diagnostics) from exc
++
++    data = payload.get("data") or {}
++    result = data.get("result", "unknown")
++    fail_count = int(data.get("fail_count") or 0)
++    if result != "success":
++        raise VerifyError(result, fail_count, diagnostics=diagnostics)
++
++    seccode = data.get("seccode") or {}
++    required = ("captcha_output", "gen_time", "pass_token")
++    if any(not seccode.get(field) for field in required):
++        raise VerifyError(
++            "incomplete_seccode",
++            fail_count,
++            diagnostics=diagnostics,
++        )
++    return {field: seccode[field] for field in required}
+ 
+ 
+ def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> bool:
+     """调用 validateGeeCheckV2 API 验证验证码。"""
+     validate_url = f"{domain}/site/api/v1/user/member/validateGeeCheckV2"
+     validate_body = {
+         "validate_way": 1,
+         "lot_number": lot_number,
+         "captcha_output": seccode.get("captcha_output", ""),
+         "gen_time": seccode.get("gen_time", ""),
+@@ -354,22 +360,28 @@ async def login(
+         if not coords:
+             print("  ❌ 验证码识别失败")
+             continue
+ 
+         print(f"  ✅ 坐标: {coords}")
+ 
+         # 3. Verify
+         print("[3/5] 验证验证码...")
+         try:
+             seccode = await _verify_captcha(load_data, coords)
+-        except VerifyError:
+-            print("  ❌ verify 失败")
++        except VerifyError as exc:
++            fields = ",".join(exc.diagnostics.get("e_obj_fields", []))
++            size = exc.diagnostics.get("e_obj_bytes", 0)
++            print(
++                f"  verify failed: result={exc.result}, "
++                f"fail_count={exc.fail_count}, lot={load_data['lot_number'][:8]}..., "
++                f"e_obj_bytes={size}, e_obj_fields={fields}"
++            )
+             continue
+ 
+         if not seccode:
+             continue
+ 
+         print("  ✅ seccode obtained")
+ 
+         # 4. Validate
+         print("[4/5] 校验验证码...")
+         if not _validate_geecheck(domain, load_data["lot_number"], seccode):
+diff --git a/tests/test_http_captcha_login.py b/tests/test_http_captcha_login.py
+index 8a0ac3f..0adce7b 100644
+--- a/tests/test_http_captcha_login.py
++++ b/tests/test_http_captcha_login.py
+@@ -313,21 +313,92 @@ async def test_geepass_solver_redacts_network_exception_values(monkeypatch):
+         "curl_cffi.requests.post",
+         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+     )
+     monkeypatch.setattr("asyncio.sleep", no_sleep)
+ 
+     with pytest.raises(CaptchaSolveError) as exc_info:
+         await GeepassSolver("api-token").solve(make_challenge())
+ 
+     assert sentinel not in str(exc_info.value)
+     assert sentinel not in exc_info.value.raw_error
+-    assert exc_info.value.raw_error == "stage=submit attempt=3 exception=RuntimeError"
++
++
++class FakeResponse:
++    def __init__(self, text):
++        self.text = text
++
++
++@pytest.mark.asyncio
++async def test_verify_fail_raises_typed_error(monkeypatch):
++    from hdata.auth import http_login_v2
++
++    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
++    monkeypatch.setattr(
++        http_login_v2.cr,
++        "get",
++        lambda *args, **kwargs: FakeResponse(
++            'botion_cb({"data":{"result":"fail","fail_count":2}})'
++        ),
++    )
++
++    with pytest.raises(http_login_v2.VerifyError) as exc_info:
++        await http_login_v2._verify_captcha(
++            {
++                "lot_number": "lot-secret",
++                "payload": "payload-secret",
++                "process_token": "process-secret",
++            },
++            "10,20|30,40|50,60",
++        )
++
++    assert exc_info.value.result == "fail"
++    assert exc_info.value.fail_count == 2
++    assert "payload-secret" not in str(exc_info.value)
++    assert "process-secret" not in str(exc_info.value)
++
++
++@pytest.mark.asyncio
++async def test_verify_rejects_invalid_jsonp(monkeypatch):
++    from hdata.auth import http_login_v2
++
++    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
++    monkeypatch.setattr(
++        http_login_v2.cr,
++        "get",
++        lambda *args, **kwargs: FakeResponse("not-jsonp"),
++    )
++
++    with pytest.raises(http_login_v2.VerifyError, match="invalid_jsonp"):
++        await http_login_v2._verify_captcha(
++            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
++            "10,20|30,40|50,60",
++        )
++
++
++@pytest.mark.asyncio
++async def test_verify_requires_complete_seccode(monkeypatch):
++    from hdata.auth import http_login_v2
++
++    monkeypatch.setattr(http_login_v2, "generate_w", lambda *args, **kwargs: "safe-w")
++    monkeypatch.setattr(
++        http_login_v2.cr,
++        "get",
++        lambda *args, **kwargs: FakeResponse(
++            'botion_cb({"data":{"result":"success","seccode":{"pass_token":"x"}}})'
++        ),
++    )
++
++    with pytest.raises(http_login_v2.VerifyError, match="incomplete_seccode"):
++        await http_login_v2._verify_captcha(
++            {"lot_number": "lot", "payload": "payload", "process_token": "process"},
++            "10,20|30,40|50,60",
++        )
+ 
+ 
+ @pytest.mark.asyncio
+ async def test_jfbym_solver_redacts_network_exception_values(monkeypatch):
+     sentinel = "jfbym-network-secret"
+ 
+     async def no_sleep(*args, **kwargs):
+         return None
+ 
+     monkeypatch.setattr(

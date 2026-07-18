@@ -66,6 +66,43 @@ class RoundTracker:
         """获取指定桌台的牌局历史"""
         return self.get_table(table_id).history
 
+    def feed_road_paper(self, table_id: int, road_paper: dict,
+                        round_id: int | None = None) -> int:
+        """从 10052/116 的 roadPaper 同步整靴历史到追踪器。
+
+        解码珠盘（beatPlateRoad）得到完整 B/P/T 序列，与现有 history
+        对齐后只追加新局（幂等，可处理增量路纸）。
+
+        Args:
+            table_id: 桌台 ID
+            road_paper: 快照/推送里的 roadPaper dict
+            round_id: 当前局 ID（可选，仅用于记录）
+
+        Returns:
+            新追加的局数
+        """
+        from hdata.protocol.roadpaper import decode_bead_plate
+
+        b64 = (road_paper or {}).get("beatPlateRoad") or ""
+        if not b64:
+            return 0
+        try:
+            flat = decode_bead_plate(b64)["flat"]
+        except Exception:
+            return 0
+
+        table = self.get_table(table_id)
+        known = len(table.history)
+        if len(flat) <= known:
+            return 0
+        added = 0
+        for result in flat[known:]:
+            # 珠盘序列无 round_id，用索引占位；B6 归为 B
+            side = "B" if result in ("B", "B6") else result
+            table.add_result(side, round_id or (known + added + 1))
+            added += 1
+        return added
+
     def reset(self, table_id: int | None = None):
         """重置指定桌台（或全部）的追踪状态"""
         if table_id is not None:

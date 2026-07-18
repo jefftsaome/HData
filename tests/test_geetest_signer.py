@@ -27,12 +27,13 @@ def test_build_e_obj_is_deterministic_with_injected_values():
     )
 
     assert obj["lot_number"] == LOAD_DATA["lot_number"]
-    assert obj["userresponse"] == [[10, 20], [30, 40], [50, 60]]
+    # userresponse 归一化到 0-10000（相对 300x200 底图）
+    assert obj["userresponse"] == [[333, 1000], [1000, 2000], [1667, 3000]]
     assert obj["passtime"] == 2345
     assert obj["pow_msg"].endswith("|0123456789abcdef")
     assert obj["pow_sign"] == __import__("hashlib").md5(obj["pow_msg"].encode()).hexdigest()
     assert set(obj) >= {
-        "pow_msg", "pow_sign", "biht", "em", "gee_guard", "geetest",
+        "pow_msg", "pow_sign", "device_id", "em", "geetest", "ep", "nqfq",
         "lang", "lot_number", "userresponse", "passtime",
     }
 

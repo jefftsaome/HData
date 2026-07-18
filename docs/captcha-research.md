@@ -1,97 +1,121 @@
-# GeeTest v4 验证码逆向研究（2026-06-28 最终版）
+# 验证码逆向研究记录
 
-## ✅ 纯 HTTP 登录链路已打通
+> 平台: 乐鱼 (leyu.me) → botion GeeTest v4 (点选文字)
+> captcha_id: `eaffad4f65a38a259ae369faf0c2f1a3`
 
-```
-fetch_captcha() → jfbym solve() → generate_w() → verify → captcha_output
-     纯 HTTP         纯 HTTP         纯 HTTP       ✅      纯 HTTP
-```
-
-## w 参数加密（已确认）
+## 流程概览
 
 ```
-w = hex(AES-CBC(full_e_obj, 16byte_random_key, zero_IV)) + hex(RSA-1024(random_key))
-     └─────────────── 656 bytes (1312 hex) ──────────────┘   └── 128 bytes (256 hex) ──┘
-     = 1568 hex chars total
+fetch_captcha() → load API (JSONP) → 获取lot_number/payload/pow_detail
+                                 ↓
+                            geepass/jfbym → 识别坐标
+                                 ↓
+                          generate_w() → RSA + AES-CBC 签名
+                                 ↓
+                          verify API → lot_number + w → result
 ```
 
-**参数**：
-- RSA: 1024-bit，PKCS1v1.5，**单次**加密（与标准 GeeTest/GeekedTest 一致）
-- AES: CBC 模式，零 IV（`b"0000000000000000"`），PKCS7 填充，16 字节随机 key
-- RSA 公钥与标准 GeeTest 相同（来自 GeekedTest 项目，bcaptcha.js 反混淆表条目 [305] 确认）
+## API 端点
 
-## 正确 e_obj 结构（~645 字节）
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `bcaptcha.botion.com/load` | JSONP | 获取验证码挑战 |
+| `bcaptcha.botion.com/verify` | JSONP | 提交验证结果 |
+
+## 研究成果
+
+### 1. W 参数结构 (已匹配)
+
+真实SDK生成的w参数经20+次对比确认：
+- **总长度**: 1216 hex (608 bytes) — 每次一致
+- **AES段**: 960 hex (480 bytes) — AES-128-CBC加密的e_obj JSON
+- **RSA段**: 256 hex (128 bytes) — RSA-1024加密的random_key
+- **AES IV**: random_key的前16字节
+- **AES Key**: random_key的后16字节
+- **PKCS7填充**: 真实SDK e_obj原文约476 bytes
+
+### 2. 我们的实现状态
+
+`geetest_signer.py`:
+- ✅ RSA-1024 PKCS1v1.5: GeekedTest公钥 (n=0xC1E3934D...)
+- ✅ AES-128-CBC: 使用random_key + IV
+- ✅ PoW: md5(pow_msg) → pow_sign
+- ✅ lot_parser: 从lot_number动态生成
+- ✅ W总长度匹配: 1216 hex
+- ⚠️ e_obj JSON比真实SDK少约76 bytes
+
+### 3. EKAI / ZAhG
+
+- botion使用 `EKAI: "y7R8"` (非标准GeeTest的 `ZAhG: "MwHu"`)
+- 来源: 从 `window.__BOTION__.ctStore` 提取
+- 该字段名为 `lot_parser` key的动态部分
+
+### 4. 打码平台对比
+
+| 平台 | API | type | 速度 | again_tag |
+|------|-----|------|------|-----------|
+| geepass | api.geepass.cn | 30104 | ~0.2s | 无 |
+| jfbym | api.jfbym.com | 31111 | ~0.5s | 常有=2 |
+
+geepass (30104) 返回边界框 `[[x1,y1,x2,y2],...]`，需转中心点 `[(x1+x2)//2, (y1+y2)//2]`。
+
+### 5. verify API 测试结果
+
+50+ 次测试，使用geepass和jfbym坐标 + 我们的w参数：
+- 结果: 始终 `result=fail, fail_count=1`
+- 服务器成功解密w (status=success)，但坐标判定失败
+- 根因: e_obj JSON字段差异，不是坐标精度问题
+
+### 6. Hook 方法实验
+
+| 方法 | 结果 |
+|------|------|
+| JSON.stringify patch | ❌ SDK不使用原生JSON.stringify |
+| crypto.subtle.encrypt patch | ❌ SDK使用自实现AES (非Web Crypto API) |
+| XHR open/send patch | ❌ SDK使用JSONP `<script>` 标签 |
+| fetch patch | ❌ SDK不使用fetch |
+| appendChild patch | ✅ 成功拦截verify URL，捕获w参数 |
+| route拦截 injection | ❌ URL pattern匹配不稳定 |
+| CDP Network 抓包 | ✅ 可捕获完整verify URL参数 |
+
+### 7. 未解决: e_obj 字段差异
+
+- 真实SDK e_obj: ~476 bytes
+- 我们的 e_obj: ~400 bytes  
+- 差异: 76 bytes
+
+botion SDK (704KB混淆，strins XOR编码) 无法通过静态分析确定e_obj的具体字段。
+无sourcemap。代码中所有字符串通过`udBgW.$_An` XOR解密器动态解码。
+
+### 8. e_obj 已知字段
 
 ```json
 {
-  "pow_msg": "1|0|md5|<datetime>|<captcha_id>|<lot>||<rand_hex>",
-  "pow_sign": "<md5(pow_msg)>",
-  "<lot_parser_key>": {"<subkey>": {"<lot_substr>": "<lot_res>"}},
-  "ZAhG": "MwHu",
-  "biht": "1426265548",
-  "device_id": "",
-  "em": {"cp":0,"ek":"11","nt":0,"ph":0,"sc":0,"si":0,"wd":1},
-  "gee_guard": {"roe":{"auh":"3","aup":"3","cdc":"3","egp":"3","res":"3","rew":"3","sep":"3","snh":"3"}},
-  "ep": "123",
-  "geetest": "captcha",
-  "lang": "zh",
-  "lot_number": "<from load API>",
-  "userresponse": [[x1,y1],[x2,y2],[x3,y3]],
-  "passtime": 600-1200
+    "pow_msg": "...md5 hash...",      // PoW消息
+    "pow_sign": "...md5 hash...",     // PoW签名  
+    "<lot_parser_key>": {             // 动态key名 (如"f20a")
+        "<subkey>": "<lot_res>"       // 如"40f7":"d299"
+    },
+    "EKAI": "y7R8",                   // botion特有,非标准ZAhG
+    "biht": "1426265548",
+    "em": {                           // 环境检测 (字段不确定)
+        "cp": 0,
+        "ek": "11"
+    },
+    "gee_guard": {"roe": {...}},      // 守卫字段
+    "geetest": "captcha",
+    "lang": "zh",
+    "lot_number": "...",
+    "userresponse": [[x,y],[x,y],[x,y]],  // 点选坐标
+    "passtime": 1500-3500             // 点击耗时ms
 }
 ```
 
-**关键点**：
-- `userresponse` 必须是二维数组 `[[x,y],...]`，不是字符串
-- `ZAhG: "MwHu"` 是标准 GeeTest 的动态键值对（来自 `window._lib`）
-- botion 不使用自己的 `_lib` 值（`EKAI: "y7R8"`），而是用标准 GeeTest 的 `ZAhG: "MwHu"`
-- **所有标准字段都必须包含**，精简版 e_obj 会导致 `-50000`/`-50002` 错误
+可能缺少的botion特定字段: `device_id`, `ep`, `rp`, `hw` 等。
 
-## 纯 HTTP 登录流程状态
+## 相关文件
 
-| 步骤 | 状态 | 模块 |
-|------|------|------|
-| GeeTest load | ✅ | `captcha.fetch_captcha()` |
-| jfbym 坐标识别 | ✅ | `captcha.solve()` type=31111, extra="je4_click" |
-| w 参数生成 | ✅ | `geetest_signer.generate_w()` |
-| GeeTest verify | ✅ | 返回 captcha_output |
-| validateGeeCheckV2 | ⏳ | 待对接 |
-| 登录 POST | ⏳ | 待对接 |
-
-## RSA 公钥（1024-bit）
-
-```
-n = 0x00C1E3934D1614465B33053E7F48EE4EC87B14B95EF88947713D25EECBFF7E74C7977D02DC1D9451F79DD5D1C10C29ACB6A9B4D6FB7D0A0279B6719E1772565F09AF627715919221AEF91899CAE08C0D686D748B20A3603BE2318CA6BC2B59706592A9219D0BF05C9F65023A21D2330807252AE0066D59CEEFA5F2748EA80BAB81
-e = 0x10001
-```
-
-来源：GeekedTest 项目，与标准 GeeTest 完全一致。
-
-## 错误码
-
-| 错误码 | 含义 |
-|--------|------|
-| `-50000` | 加密/解密失败（w 格式错误） |
-| `-50002` | 参数解密错误（e_obj 字段缺失或格式不对） |
-| `success` | 验证码通过 |
-
-## 验证码类型
-
-乐鱼使用 **GeeTest v4 "文字点选"（word click）**：
-- 背景图（300×200 JPG）：江城正君体中文字符
-- 3 张参考字图（64×65 RGBA PNG）
-- captcha_id: `eaffad4f65a38a259ae369faf0c2f1a3`
-- 域名: `bcaptcha.botion.com`
-
-## 代码文件
-
-| 文件 | 用途 |
-|------|------|
-| `hdt/auth/captcha.py` | fetch_captcha + solve (type=31111) |
-| `hdt/auth/geetest_signer.py` | generate_w (AES+RSA) |
-| `hdt/auth/http_login.py` | 纯 HTTP 登录流程 |
-
----
-
-> **更新日期:** 2026-06-28
-> **状态:** 验证码加密完全突破，verify 成功
+- `data/sdk_flow_captured.json` — 人工登录时SDK全链路数据 (参考值)
+- `scripts/capture_real_w.py` — 浏览器辅助获取真实w参数
+- `scripts/compare_coords.py` — 坐标对比分析
+- `hdata/auth/geetest_signer.py` — 我们的w参数生成实现

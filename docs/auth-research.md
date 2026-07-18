@@ -1,19 +1,22 @@
-# 乐鱼认证与 Token 获取研究（2026-06-28 最终版）
+# 乐鱼认证与 Token 获取研究（2026-07-17 最终版：纯 HTTP 全链路打通）
 
 ## 整体认证流程
 
 ```
-纯 HTTP 登录:
-  fetch_captcha() → jfbym solve() → generate_w() → verify → captcha_output
-       ✅               ✅              ✅           ✅     → validateGeeCheckV2  ⏳ 待对接
+纯 HTTP 登录（已全通）:
+  kaptchcate → fetch_captcha → geepass/jfbym solve → generate_w
+  → verify ✅ → validateGeeCheckV2 ✅ → login ✅ → member/jwt ✅
 
 获取 JWT（纯 HTTP）:
-  POST /game/api/v1/venue/launch (X-API-XXX 签名)
+  POST /game/api/v1/venue/launch (wasm 动态 X-API-XXX 签名)
   → 返回加密 URL (params + ttl)
-  → AES-ECB(key=ttl+"AES") 解密 → JWT
+  → AES-ECB(key=ttl+"AES") 解密 → JWT ✅
 
-WebSocket 连接:
-  wss://wsproxy.{host}:{port}/?playerId=...&jwtToken=...&deviceType=2&platform=6
+WebSocket 连接（2026-07-17 已打通，见 leyu-protocol-complete.md §9）:
+  wss://wsproxy.{backendDomainUrl}/?playerId=...&jwtToken=...&deviceId=...
+    &platformId=1&applicationId=5&version=v1.0.5
+  帧 = AES-128-CBC(gzip(JSON)), key=iv="ED7AA06BD8628B55"
+  登录 = protocolId 10000 (Fs.Login), serviceTypeId 7 (Ot.HALL), deviceType 15
 ```
 
 ## Token 获取方案状态
@@ -21,27 +24,25 @@ WebSocket 连接:
 | 方案 | 依赖 | 状态 |
 |:----|:----|:-----|
 | CDP 提取 session | Chrome 一次性 | ✅ |
-| BrowserAct stealth 提取 | BrowserAct CLI | ✅ |
-| 纯 HTTP 登录（验证码） | jfbym | ✅ verify 已通，待对接 validate |
-| 纯 HTTP JWT 刷新 | session 缓存 | ✅ `token_manager.get_token()` |
+| Playwright 手工辅助提取 | 本地浏览器 | ✅ |
+| 纯 HTTP 登录（验证码） | geepass/jfbym | ✅ **全链路打通（2026-07-17）** |
+| 纯 HTTP JWT 刷新 | session 缓存 | ✅ `refresh_game_token()`（wasm 动态签名） |
 
-## GeeTest 验证码加密（已突破）
+## 2026-07-17 三项突破
 
-详见 `captcha-research.md`。
+1. **X-API-XXX 动态签名**：算法在 wasm（`wasm_api_sign`）中，`sign(path前缀,"prod")` 每请求唯一。
+   `scripts/sign_wasm.cjs`（Node 直跑官方 wasm）+ `hdata/auth/api_sign.py` 封装。
+   服务端对 /game/api、login 等强制校验，假签名返回 6003。详见 `docs/login-api-capture-20260717.md`。
+2. **X-API-FINGER**：fingerprintjs2 `x64hash128`（MurmurHash3 x64，seed=31），
+   输入 = 色深+分辨率+时区+触摸+出口IP。`hdata/auth/fingerprint.py` 已对拍一致。
+3. **GeeTest w / e_obj**：hook Math.random 爆破 AES 密钥解密真实 e_obj，修正字段集
+   （删 biht/gee_guard，增 device_id/ep/nqfq/EKAI/em七键，userresponse 改 0-10000 归一化）。
+   详见 `docs/captcha-flow.md` 附录。
 
-- w = hex(AES-CBC) + hex(RSA-1024)（单次加密，1568 chars）
-- RSA 公钥与标准 GeeTest 一致
-- e_obj 包含全部标准字段（含 `ZAhG: "MwHu"`）
+## X-API-XXX 签名（旧静态表，仅作兜底）
 
-## X-API-XXX 签名
-
-签名表 AES-CBC 解密（key: `ZFRYCMdFYGf0i5HgO0oWvFV0terUABU0`, IV: `CbE3P3t1lY34Ns8F`）。新域名签名值为空——需要从浏览器网络请求中捕获真实签名，手动注入 session 缓存。
-
-**当前 session 可用签名**（从 BrowserAct 捕获）：
-- `/game/api`: `60358732c589e34b1211d173273e480d969f457adaa7cca735466145bb336634`
-- `/site/api`: `f756f9fa09856322a815c9b5ec2cbb7cdafa3979e65d9339f783b2dc8963aa08`
-
-`token_manager.py` 已支持 `signatures` 字段作为 uuidToBase64 解密失败的兜底方案。
+签名表 AES-CBC 解密（key: `ZFRYCMdFYGf0i5HgO0oWvFV0terUABU0`, IV: `CbE3P3t1lY34Ns8F`）——
+这是 wasm 加载失败时的浏览器兜底表，**动态 wasm 签名才是主路径**（见上）。
 
 ## 文件结构
 

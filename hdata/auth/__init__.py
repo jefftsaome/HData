@@ -42,7 +42,6 @@ from .session import get_login, LoginError, get_game_session
 _LEGACY_EXPORTS = {
     "TokenManager": (".token_manager", "TokenManager"),
     "TokenUnavailableError": (".token_manager", "TokenUnavailableError"),
-    "HeadlessLogin": (".headless_login", "HeadlessLogin"),
     "resolve_domain": (".domain", "resolve_domain"),
     "DomainCache": (".domain", "DomainCache"),
     "CaptchaSolver": (".captcha_solver", "CaptchaSolver"),

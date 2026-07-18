@@ -9,8 +9,8 @@
 降级链:
   L0: 缓存 game_token 有效 → 直接返回
   L1: session 有效 → venue/launch API 刷新
-  L2: 持久化 profile 有效 → headless 浏览器自动跳转截获
-  L3: 无缓存 → headless 完整登录（填表 + 验证码）
+    L2: 持久化 profile 有效 → Playwright 自动跳转截获
+    L3: 无缓存 → 纯 HTTP 登录（验证码）
   L4: 抛出 TokenUnavailableError
 
 用法:
@@ -29,7 +29,15 @@ import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
+from hdata.auth.params import (
+    decode_jwt as _decode_jwt,
+    decrypt_params as _decrypt_params,
+    validate_game_token as _validate_game_token,
+    token_remaining_hours as _token_remaining_hours,
+    extract_params_from_url as _extract_params_from_url,
+)
 from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -52,17 +60,8 @@ AES_IV = b"CbE3P3t1lY34Ns8F"
 
 
 def decode_jwt(token: str) -> dict | None:
-    """解码 JWT payload（不验证签名）。模块级函数，兼容旧引用。"""
-    if not token:
-        return None
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-        payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload_b64))
-    except Exception:
-        return None
+    """解码 JWT payload（不验证签名）。兼容旧引用，委托给 params.py。"""
+    return _decode_jwt(token)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -116,8 +115,16 @@ class TokenManager:
             solver = JfbymSolver(api_token=jfbym_token) if jfbym_token else None
         self._solver = solver
 
-        self._user = user or os.getenv("LEYU_USER", "")
-        self._pwd = pwd or os.getenv("LEYU_PWD", "")
+        if user:
+            self._user = user
+        else:
+            self._user = os.getenv("HDATA_USER", "")
+            logger.debug("HDATA_USER not provided, using environment variable")
+        if pwd:
+            self._pwd = pwd
+        else:
+            self._pwd = os.getenv("HDATA_PWD", "")
+            logger.debug("HDATA_PWD not provided, using environment variable")
 
         self._cache_path = CACHE_DIR / f"{account}.json"
         self._profile_dir = PROFILE_ROOT / account
@@ -143,55 +150,46 @@ class TokenManager:
         chain: list[tuple[str, str, str]] = []
 
         async with self._lock:
-            cache = self._load()
+            # 优先使用 session.py 的降级逻辑（L0 缓存 → L1 API）
+            from hdata.auth.session import get_game_session, SessionError
 
-            # ── L0: 缓存 game_token 有效 ──────────────────
-            if cache and self._game_token_valid(cache.get("game_token", "")):
-                logger.info(f"[{self.account}] L0 命中: 缓存 game_token 有效")
-                self._touch_cache(cache)
-                return cache["game_token"]
-            if not cache:
-                chain.append(("L0 缓存", "读缓存",
-                              f"跳过 — {self._cache_path} 不存在"))
-
-            # ── L1: session 有效 → API 刷新 game JWT ──────
-            if cache and cache.get("token") and cache.get("domain"):
-                try:
-                    token = await self._refresh_game_via_api(cache)
-                    if token:
-                        cache["game_token"] = token
-                        self._update_game_meta(cache, token)
-                        self._save(cache)
-                        logger.info(f"[{self.account}] L1 成功: API 刷新 game JWT")
-                        return token
-                    chain.append(("L1 API刷新", "venue/launch",
-                                  "返回空 token — 签名可能过期或域名变了"))
-                except Exception as e:
-                    chain.append(("L1 API刷新", "venue/launch", str(e)[:100]))
-            elif cache:
-                missing = []
-                if not cache.get("token"): missing.append("token")
-                if not cache.get("domain"): missing.append("domain")
-                chain.append(("L1 API刷新", "检查 session",
-                              f"跳过 — 缺少 {missing}"))
+            try:
+                session = await get_game_session(self.account)
+                game_token = session["game_token"]
+                # 回写到本地的 WS-only 缓存
+                cache = self._load() or {}
+                cache["game_token"] = game_token
+                cache["game_player_id"] = session.get("game_player_id", 0)
+                cache["game_backend"] = session.get("game_backend", "")
+                cache["game_exp"] = session.get("game_exp", 0)
+                self._save(cache)
+                return game_token
+            except SessionError:
+                chain.append(("L0/L1", "session.get_game_session",
+                              "缓存无效且无完整 session 可刷新"))
 
             # ── L2: 持久化 profile → 浏览器自动刷新 ────────
             try:
                 result = await self._refresh_via_headless(cache)
                 if result:
-                    token = result.get("token", "")
+                    token = result.get("game_token", "")
                     if token:
                         cache = cache or {}
                         cache["game_token"] = token
-                        cache["domain"] = result.get("domain", cache.get("domain", ""))
+                        cache["game_player_id"] = int(result.get("game_player_id", 0) or 0)
+                        cache["game_backend"] = result.get("game_backend", "")
+                        cache["game_exp"] = int(result.get("game_exp", 0) or 0)
+                        cache["source"] = result.get("source", "playwright")
                         self._update_game_meta(cache, token)
                         self._save(cache)
                         logger.info(f"[{self.account}] L2 成功: headless 自动刷新")
                         return token
-                chain.append(("L2 浏览器刷新", "Playwright 自动跳转",
+                chain.append(("L2 浏览器刷新", 
+                              "Playwright 自动跳转",
                               "无 params URL 截获 — browser profile 无有效 session"))
             except Exception as e:
-                chain.append(("L2 浏览器刷新", "Playwright",
+                chain.append(("L2 浏览器刷新", 
+                              "Playwright",
                               f"不可用: {str(e)[:100]}"))
 
             # ── L3a: 纯 HTTP 登录（无浏览器）──
@@ -211,50 +209,26 @@ class TokenManager:
                             self._save(cache)
                             logger.info(f"[{self.account}] L3a 成功: 纯 HTTP 登录")
                             return token
-                        chain.append(("L3a 纯HTTP登录", "venue/launch",
+                        chain.append(("L3a 纯HTTP登录", 
+                                      "venue/launch",
                                       "纯 HTTP 登录成功但 game JWT 获取失败"))
                     else:
-                        chain.append(("L3a 纯HTTP登录", "verify/validate/login",
+                        chain.append(("L3a 纯HTTP登录", 
+                                      "verify/validate/login",
                                       "verify 失败 — 坐标精度不足"))
                 except Exception as e:
-                    chain.append(("L3a 纯HTTP登录", "http_login", str(e)[:100]))
+                    chain.append(("L3a 纯HTTP登录", 
+                                  "http_login", 
+                                  str(e)[:100]))
             else:
-                chain.append(("L3a 纯HTTP登录", "检查凭据",
+                chain.append(("L3a 纯HTTP登录", 
+                              "检查凭据",
                               "跳过 — 缺 user/pwd/solver"))
 
-            # ── L3b: 完整 headless 登录 ────────────────────
-            if not _user or not _pwd:
-                chain.append(("L3b 完整登录", "检查凭据",
-                              f"跳过 — user={'***' if _user else '未设置'}, pwd={'***' if _pwd else '未设置'}"))
-                raise TokenUnavailableError(self.account, chain)
-            if not self._solver:
-                chain.append(("L3b 完整登录", "检查打码平台",
-                              "跳过 — 未配置 CaptchaSolver (设 JFBYM_TOKEN 或注入)"))
-                raise TokenUnavailableError(self.account, chain)
-
-            try:
-                session = await self._login_via_headless(_user, _pwd, self._solver)
-                cache = session.copy()
-                cache.setdefault("signatures", {
-                    "/game/api": "60358732c589e34b1211d173273e480d969f457adaa7cca735466145bb336634",
-                    "/site/api": "f756f9fa09856322a815c9b5ec2cbb7cdafa3979e65d9339f783b2dc8963aa08",
-                })
-                token = await self._refresh_game_via_api(cache)
-                if not token:
-                    chain.append(("L3b 完整登录", "venue/launch",
-                                  "登录成功但 game JWT 获取失败 — 签名可能过期"))
-                    raise TokenUnavailableError(self.account, chain)
-                cache["game_token"] = token
-                self._update_game_meta(cache, token)
-                self._save(cache)
-                logger.info(f"[{self.account}] L3b 成功: headless 完整登录")
-                return token
-            except TokenUnavailableError:
-                raise
-            except Exception as e:
-                chain.append(("L3b 完整登录", "headless login",
-                              str(e)[:150]))
-                raise TokenUnavailableError(self.account, chain) from e
+            chain.append(("L3b 浏览器登录", 
+                          "已移除",
+                          "browser-act 相关链路已移除，请使用 --manual-capture 人工辅助登录"))
+            raise TokenUnavailableError(self.account, chain)
 
     def diagnose(self) -> dict:
         """自诊断：检查所有依赖和状态，返回可操作的修复建议。"""
@@ -267,7 +241,7 @@ class TokenManager:
             "fixes": [],
         }
 
-        def check(name: str, ok: bool, detail: str, fix: str = ""):
+        def check(name: str, ok: bool | None, detail: str, fix: str = ""):
             result["checks"].append({"name": name, "ok": ok, "detail": detail})
             if not ok:
                 result["issues"].append(name)
@@ -278,8 +252,8 @@ class TokenManager:
         cache = self._load()
         if cache:
             game_token = cache.get("game_token", "")
-            if self._game_token_valid(game_token):
-                remaining = self._token_remaining_hours(game_token)
+            if _validate_game_token(game_token):
+                remaining = _token_remaining_hours(game_token)
                 check("game_token", True, f"有效 (剩余 {remaining:.1f}h)")
             elif cache.get("token"):
                 check("game_token", False, "已过期/不存在 — 但 session 可用",
@@ -299,24 +273,21 @@ class TokenManager:
                 domain = json.loads(domain_cache.read_text()).get("domain", "")
             except Exception:
                 pass
-        domain = domain or os.getenv("LEYU_DOMAIN", "")
+        domain = domain or os.getenv("HDATA_DOMAIN", "")
         if domain:
-            src = "缓存" if domain_cache.exists() else "环境变量 LEYU_DOMAIN"
+            src = "缓存" if domain_cache.exists() else "环境变量 HDATA_DOMAIN"
             check("域名", True, f"{domain} (来源: {src})")
         else:
-            check("域名", False, "未缓存且未设置 LEYU_DOMAIN",
-                  "打开 browser-act 浏览器并访问 leyu.me，或 export LEYU_DOMAIN=...")
+            check("域名", False, "未缓存且未设置 HDATA_DOMAIN",
+                  "访问 leyu.me 完成一次登录，或设置 HDATA_DOMAIN=https://...")
 
-        # 3. browser-act
+        # 3. Playwright
         try:
-            port = self._discover_cdp_port()
-            import urllib.request
-            resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=3)
-            ver = json.loads(resp.read()).get("Browser", "")
-            check("browser-act", True, f"{ver} @ port {port}")
+            from playwright.async_api import async_playwright  # noqa: F401
+            check("Playwright", True, "已安装")
         except Exception as e:
-            check("browser-act", False, f"不可用: {e}",
-                  f"运行: browser-act --session leyu2 browser open <id> --headed")
+            check("Playwright", False, f"不可用: {e}",
+                  "运行: uv run playwright install chromium")
 
         # 4. jfbym
         if self._solver:
@@ -368,25 +339,6 @@ class TokenManager:
 
         return result
 
-    @staticmethod
-    def _discover_cdp_port() -> int:
-        """从运行中的 browser-act 进程自动发现 CDP 端口。"""
-        import subprocess, re, os
-        port_env = os.getenv("LEYU_CDP_PORT", "")
-        if port_env and port_env.isdigit():
-            return int(port_env)
-        try:
-            result = subprocess.run(
-                ["ps", "aux"], capture_output=True, text=True, timeout=5)
-            for line in result.stdout.split('\n'):
-                if 'BrowserAct' in line and 'remote-debugging-port' in line:
-                    m = re.search(r'remote-debugging-port=(\d+)', line)
-                    if m:
-                        return int(m.group(1))
-        except Exception:
-            pass
-        return 57073
-
     def health(self) -> dict:
         """返回当前 token 状态（同步，不触发登录）。"""
         cache = self._load()
@@ -394,8 +346,8 @@ class TokenManager:
             return {"account": self.account, "state": "empty", "token_remaining": "0h"}
 
         game_token = cache.get("game_token", "")
-        if self._game_token_valid(game_token):
-            remaining = self._token_remaining_hours(game_token)
+        if _validate_game_token(game_token):
+            remaining = _token_remaining_hours(game_token)
             return {"account": self.account, "state": "ok",
                     "token_remaining": f"{remaining:.1f}h",
                     "login_method": cache.get("login_method", "unknown")}
@@ -409,90 +361,133 @@ class TokenManager:
     # ── L1: API 刷新 ─────────────────────────────────────
 
     async def _refresh_game_via_api(self, session: dict) -> str | None:
-        """调用 venue/launch API 获取游戏 JWT。"""
-        from curl_cffi import requests
-
-        domain = session.get("domain", "")
-        if not domain:
-            return None
-
-        url = f"{domain}/game/api/v1/venue/launch"
-        headers = self._api_headers(session, url)
-
-        resp = requests.post(url, headers=headers, json={"enName": "YBZR"},
-                             impersonate="chrome110", timeout=15)
-        if resp.status_code != 200:
-            logger.warning(f"[{self.account}] venue/launch 返回 {resp.status_code}: {resp.text[:200]}")
-            return None
+        """调用 venue/launch API 获取游戏 JWT。委托给 session.py。"""
+        from hdata.auth.session import refresh_game_token
 
         try:
-            data = resp.json()
-            game_url = data.get("data", {}).get("url", "")
+            token = await refresh_game_token(self.account, session)
+            return token
+        except Exception as e:
+            logger.warning(f"[{self.account}] _refresh_game_via_api 失败: {e}")
+            return None
+
+    # ── L2: Playwright 自动刷新 ─────────────────────────
+
+    async def _refresh_via_headless(self, cache: dict | None) -> dict | None:
+        """用持久化 browser profile 自动刷新 JWT（Playwright）。"""
+        domain = (cache or {}).get("domain", "")
+        entry = f"{domain}/" if domain else "https://leyu.me"
+        return await self._refresh_via_playwright(entry_url=entry, headless=True)
+
+    async def _refresh_via_playwright(self, entry_url: str, headless: bool = True) -> dict | None:
+        """使用 Playwright 持久化 profile 刷新 game token。"""
+        try:
+            from hdata.auth.browser_login import GameBrowserLogin
         except Exception:
             return None
 
-        if not game_url or "params=" not in game_url:
+        auth_cache_path = CACHE_DIR / f"{self.account}.auth_cache.json"
+
+        # 通过 GameBrowserLogin 封装的 Playwright 自动化登录流程获取 game token
+        bot = GameBrowserLogin(
+            entry_url=entry_url,
+            headless=headless,
+            profile_dir=self._profile_dir,
+            auth_cache_path=auth_cache_path,
+        )
+        decrypted = await bot.run()
+        if not decrypted:
             return None
 
-        # 提取 params 和 ttl
-        from urllib.parse import urlparse, unquote
-        parsed = urlparse(game_url)
-        qs = dict(p.split("=", 1) for p in parsed.query.split("&") if "=" in p)
-        params_b64 = qs.get("params", "")
-        ttl = qs.get("ttl", "")
-
-        if not params_b64 or not ttl:
-            return None
-
-        # AES-ECB 解密
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        key = (ttl + "AES").encode("ascii")
-        raw = unquote(params_b64)
-        raw = raw + "=" * (4 - len(raw) % 4)
-        ct = base64.b64decode(raw)
-        cipher = Cipher(algorithms.AES(key), modes.ECB())
-        padded = cipher.decryptor().update(ct) + cipher.decryptor().finalize()
-        decrypted = json.loads(padded[: -padded[-1]])
-
-        return decrypted.get("token", "")
-
-    # ── L2: headless 自动刷新 ────────────────────────────
-
-    async def _refresh_via_headless(self, cache: dict | None) -> dict | None:
-        """用持久化 browser profile 自动跳转截获 JWT。"""
-        from hdata.auth.headless_login import HeadlessLogin
-
-        hl = HeadlessLogin(account=self.account, profile_dir=self._profile_dir)
-        domain = (cache or {}).get("domain", "")
-        entry = f"{domain}/" if domain else "https://leyu.me"
-
-        result = await hl.refresh_jwt(entry_url=entry, timeout=45.0)
-        if not result:
-            return None
-
-        token = result.get("token", "")
+        token = decrypted.get("game_token", "")
         if not token:
             return None
 
-        backend = result.get("backendDomainUrl", "")
+        player_id = int(decrypted.get("game_player_id", 0) or 0)
+        backend = decrypted.get("game_backend", "")
         if not backend:
-            backend = result.get("backendDomainUrlList", "").split(",")[0].strip()
+            return None
+
+        game_exp = int(decrypted.get("game_exp") or 0)
+        if not game_exp:
+            jwt = _decode_jwt(token)
+            if jwt:
+                game_exp = int(jwt.get("exp", 0) or 0)
 
         return {
-            "token": token,
-            "player_id": result.get("playerId", 0),
-            "backend": backend,
-            "domain": domain or "",
+            "game_token": token,
+            "game_player_id": player_id,
+            "game_backend": backend,
+            "game_exp": game_exp,
+            "source": "playwright",
         }
 
-    # ── L3: headless 完整登录 ─────────────────────────────
+    async def manual_capture(self, entry_url: str = "https://leyu.me") -> str | None:
+        """打开可见浏览器，人工完成登录后抓取 game token。"""
+        result = await self._refresh_via_playwright(entry_url=entry_url, headless=False)
+        if not result or not result.get("game_token"):
+            return None
 
-    async def _login_via_headless(self, user: str, pwd: str, solver) -> dict:
-        """完整 headless 登录流程。"""
-        from hdata.auth.headless_login import HeadlessLogin
+        self._save(result)
+        return result["game_token"]
 
-        hl = HeadlessLogin(account=self.account, profile_dir=self._profile_dir)
-        return await hl.full_login(user=user, pwd=pwd, solver=solver)
+    def inject_tokens(
+        self,
+        game_token: str = "",
+        game_player_id: int = 0,
+        game_backend: str = "",
+        game_exp: int = 0,
+        source: str = "inject",
+    ) -> dict:
+        """注入当前最新认证快照。"""
+        if not game_token:
+            raise ValueError("game_token 不能为空")
+        cache: dict = {
+            "game_token": game_token,
+            "game_player_id": int(game_player_id or 0),
+            "game_backend": game_backend,
+            "game_exp": int(game_exp or 0),
+            "source": source,
+        }
+        if not cache["game_exp"]:
+            jwt = _decode_jwt(game_token)
+            if jwt:
+                cache["game_exp"] = int(jwt.get("exp", 0) or 0)
+        self._save(cache)
+        return cache
+
+    def import_token_file(self, file_path: str) -> dict:
+        """从外部 JSON 文件导入当前最新 WS-only 认证快照。"""
+        data = json.loads(Path(file_path).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("token 文件必须是 JSON object")
+
+        allowed = {
+            "game_token", "game_player_id", "game_backend",
+            "game_exp", "backend_domain_url_list", "device_id",
+            "domain", "token", "uuid", "uuidToBase64", "cookies",
+            "signatures", "source", "updated_at", "account",
+        }
+        unknown = set(data.keys()) - allowed
+        if unknown:
+            raise ValueError(f"不支持的字段: {sorted(unknown)}")
+
+        game_token = data.get("game_token", "")
+        if not game_token:
+            raise ValueError("token 文件缺少 game_token")
+
+        game_player_id = int(data.get("game_player_id", 0) or 0)
+        game_backend = data.get("game_backend", "")
+        game_exp = int(data.get("game_exp", 0) or 0)
+        source = data.get("source", "import")
+
+        return self.inject_tokens(
+            game_token=game_token,
+            game_player_id=game_player_id,
+            game_backend=game_backend,
+            game_exp=game_exp,
+            source=source,
+        )
 
     # ── L3a: 纯 HTTP 登录 ────────────────────────────────
 
@@ -515,7 +510,7 @@ class TokenManager:
         # 1. 获取验证码
         ld = fetch_captcha()
         if not ld:
-            logger.error(f"[{self.account}] fetch_captcha 失败")
+            logger.error(f"[{self.account}] fetch_captcha failed")
             return None
 
         # 2. 坐标识别
@@ -527,7 +522,7 @@ class TokenManager:
         try:
             solution = await solver.solve(challenge)
         except Exception as e:
-            logger.error(f"[{self.account}] solver 失败: {e}")
+            logger.error(f"[{self.account}] solver failed: {e}")
             return None
 
         # 3. 生成 w
@@ -549,11 +544,11 @@ class TokenManager:
 
         m = re.search(r"\((.*)\)$", text, re.DOTALL)
         if not m:
-            logger.error(f"[{self.account}] verify 响应解析失败")
+            logger.error(f"[{self.account}] verify response parsing failed")
             return None
         vdata = json.loads(m.group(1))
         if vdata.get("data", {}).get("result") != "success":
-            logger.warning(f"[{self.account}] verify 失败: {vdata.get('data', {}).get('result')}")
+            logger.warning(f"[{self.account}] verify failed: {vdata.get('data', {}).get('result')}")
             return None
 
         seccode = vdata.get("data", {}).get("seccode", {})
@@ -576,26 +571,29 @@ class TokenManager:
                        impersonate="chrome110", timeout=15)
         vresp = resp.json()
         if vresp.get("status_code") != 6000:
-            logger.error(f"[{self.account}] validateGeeCheckV2 失败: {vresp}")
+            logger.error(f"[{self.account}] validateGeeCheckV2 failed: {vresp}")
             return None
 
         # 6. login
         pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
         login_body = {
-            "name": user, "password": pwd_md5,
-            "Kaptchcate": 0, "codeId": ld["lot_number"],
+            "name": user,
+            "password": pwd_md5,
+            "Kaptchcate": 0,
+            "codeId": ld["lot_number"],
         }
-        resp = cr.post(f"{domain}/site/api/v1/user/login", json=login_body,
+        resp = cr.post(f"{domain}/site/api/v1/user/login",
+                       json=login_body,
                        headers={"Content-Type": "application/json",
                                 "Referer": f"{domain}/"},
                        impersonate="chrome110", timeout=15)
         lresp = resp.json()
         token = (lresp.get("data", {}) or {}).get("token", "")
         if lresp.get("status_code") == 6000 and token:
-            logger.info(f"[{self.account}] 纯 HTTP 登录成功")
+            logger.info(f"[{self.account}] HTTP login successful")
             return {"token": token, "domain": domain, "lot_number": ld["lot_number"]}
 
-        logger.error(f"[{self.account}] 登录失败: {lresp.get('message', '')}")
+        logger.error(f"[{self.account}] login failed: {lresp.get('message', '')}")
         return None
 
     async def _resolve_domain(self) -> str | None:
@@ -608,7 +606,7 @@ class TokenManager:
         domain = resolve_domain()
         if domain:
             return domain
-        return os.getenv("LEYU_DOMAIN", None)
+        return os.getenv("HDATA_DOMAIN", None)
 
     # ── 缓存管理 ──────────────────────────────────────────
 
@@ -633,17 +631,33 @@ class TokenManager:
             return None
 
     def _save(self, data: dict):
-        """写入缓存。自动注入已知 API 签名（新域名签名表为空时的兜底）。"""
+        """写入缓存。保存 game 字段 + session 字段。"""
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        data["updated_at"] = int(time.time())
-        data["account"] = self.account
-        # 注入已知签名（新域名签名表为空时的兜底，从 BrowserAct 网络捕获）
-        if not data.get("signatures"):
-            data["signatures"] = {
-                "/game/api": "60358732c589e34b1211d173273e480d969f457adaa7cca735466145bb336634",
-                "/site/api": "f756f9fa09856322a815c9b5ec2cbb7cdafa3979e65d9339f783b2dc8963aa08",
-            }
-        self._cache_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        token = data.get("game_token", "")
+        payload: dict = {
+            "game_token": token,
+            "game_player_id": int(data.get("game_player_id", 0) or 0),
+            "game_backend": data.get("game_backend", ""),
+            "game_exp": int(data.get("game_exp", 0) or 0),
+            "backend_domain_url_list": data.get("backend_domain_url_list", ""),
+            "device_id": data.get("device_id", ""),
+            "domain": data.get("domain", ""),
+            "token": data.get("token", ""),
+            "uuid": data.get("uuid", ""),
+            "uuidToBase64": data.get("uuidToBase64", ""),
+            "cookies": data.get("cookies", ""),
+            "signatures": data.get("signatures", {}),
+            "source": data.get("source", "manual_capture"),
+            "updated_at": int(time.time()),
+            "account": self.account,
+        }
+        if not payload["game_exp"] and token:
+            jwt = _decode_jwt(token)
+            if jwt:
+                payload["game_exp"] = int(jwt.get("exp", 0) or 0)
+        # 清理空值，保持文件干净
+        payload = {k: v for k, v in payload.items() if v or v == 0}
+        self._cache_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
 
     def _touch_cache(self, cache: dict):
         """更新缓存时间戳（不阻塞的轻量写入）。"""
@@ -655,48 +669,25 @@ class TokenManager:
 
     def _update_game_meta(self, cache: dict, token: str):
         """从 JWT 中提取 player_id 和 backend 写入缓存。"""
-        try:
-            parts = token.split(".")
-            if len(parts) >= 2:
-                pb = parts[1] + "=" * (4 - len(parts[1]) % 4)
-                payload = json.loads(base64.urlsafe_b64decode(pb))
-                sub = payload.get("sub", {})
-                if isinstance(sub, dict):
-                    cache["game_player_id"] = sub.get("playerId", 0)
-                cache["game_exp"] = payload.get("exp", 0)
-        except Exception:
-            pass
-        cache["login_method"] = "headless"
+        jwt = _decode_jwt(token)
+        if jwt:
+            sub = jwt.get("sub", {})
+            if isinstance(sub, dict):
+                cache["game_player_id"] = sub.get("playerId", 0)
+            cache["game_exp"] = jwt.get("exp", 0)
+        cache.setdefault("source", "headless")
 
-    # ── JWT 校验 ─────────────────────────────────────────
+    # ── JWT 校验（委托给 params.py）───────────────
 
     @staticmethod
     def _game_token_valid(token: str) -> bool:
-        """检查 game JWT 是否还有 >1h 有效期。"""
-        if not token:
-            return False
-        try:
-            parts = token.split(".")
-            if len(parts) < 2:
-                return False
-            pb = parts[1] + "=" * (4 - len(parts[1]) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(pb))
-            return payload.get("exp", 0) - time.time() > 3600
-        except Exception:
-            return False
+        """检查 game JWT 是否还有 >1h 有效期。委托给 params.py。"""
+        return _validate_game_token(token)
 
     @staticmethod
     def _token_remaining_hours(token: str) -> float:
-        """返回 token 剩余有效时间（小时）。"""
-        try:
-            parts = token.split(".")
-            if len(parts) < 2:
-                return 0.0
-            pb = parts[1] + "=" * (4 - len(parts[1]) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(pb))
-            return max(0.0, (payload.get("exp", 0) - time.time()) / 3600)
-        except Exception:
-            return 0.0
+        """返回 token 剩余有效时间（小时）。委托给 params.py。"""
+        return _token_remaining_hours(token)
 
     # ── API 签名头 ───────────────────────────────────────
 
@@ -753,7 +744,7 @@ class TokenManager:
 async def main():
     import argparse
 
-    p = argparse.ArgumentParser(description="乐鱼 Token 管理器")
+    p = argparse.ArgumentParser(description="游戏 Token 管理器")
     p.add_argument("--account", default="default", help="账号名")
     p.add_argument("--user", help="用户名")
     p.add_argument("--pwd", help="密码")
@@ -761,41 +752,53 @@ async def main():
     p.add_argument("--status", action="store_true", help="查看状态")
     p.add_argument("--health", action="store_true", help="健康检查")
     p.add_argument("--diagnose", action="store_true", help="自诊断")
-    p.add_argument("--recapture-signatures", action="store_true", help="重新捕获 API 签名")
-    p.add_argument("--resolve-domain", nargs="?", const="", help="获取真实域名并缓存。可选指定入口 URL")
+    p.add_argument("--manual-capture", nargs="?", const="", help="可见浏览器手动登录并抓取 game token，可选入口 URL")
+    p.add_argument("--import-token-file", help="从 JSON 文件导入外部提供的 token/session")
+    p.add_argument("--inject-game-token", help="直接注入 game JWT（外部提供）")
+    p.add_argument("--inject-player-id", type=int, help="注入 game_player_id")
+    p.add_argument("--inject-backend", help="注入 game_backend，例如 txdzbjc.com:18034")
+    p.add_argument("--inject-game-exp", type=int, help="注入 game_exp（Unix 时间戳）")
+    p.add_argument("--inject-source", default="inject", help="注入来源标记")
     args = p.parse_args()
 
     from hdata.auth.captcha_solver import JfbymSolver
 
     solver = JfbymSolver(api_token=args.jfbym_token) if args.jfbym_token else None
-    tm = TokenManager(account=args.account, solver=solver,
-                      user=args.user or "", pwd=args.pwd or "")
+    tm = TokenManager(account=args.account, 
+                      solver=solver,
+                      user=args.user or "", 
+                      pwd=args.pwd or "")
 
-    if args.resolve_domain is not None:
-        from hdata.auth.domain import resolve_domain as do_resolve
-        entry = args.resolve_domain if args.resolve_domain else ""
-        domain = do_resolve(entry)
-        if domain:
-            print(f"✅ 域名: {domain}")
-            return 0
-        else:
-            print(f"❌ 域名解析失败"
-                  + (f" (入口: {entry})" if entry else ""))
-            return 1
-
-    if args.recapture_signatures:
-        from hdata.auth.signature_recapture import recapture_signatures
+    if args.import_token_file:
         try:
-            sigs = await recapture_signatures(args.account)
-            if sigs:
-                print(f"✅ 捕获 {len(sigs)} 个签名: {list(sigs.keys())}")
-                return 0
-            else:
-                print("❌ 未捕获到签名 — browser-act 是否已打开且有已登录的页面?")
-                return 1
+            cache = tm.import_token_file(args.import_token_file)
+            print(f"✅ [{args.account}] 已导入 token 文件 -> {tm._cache_path}")
+            print(f"   game_token={'有' if cache.get('game_token') else '无'}; player_id={cache.get('game_player_id', 0)}")
+            return 0
         except Exception as e:
-            print(f"❌ {e}")
+            print(f"❌ 导入失败: {e}")
             return 1
+
+    if args.inject_game_token or args.inject_player_id is not None or args.inject_backend or args.inject_game_exp is not None:
+        cache = tm.inject_tokens(
+            game_token=args.inject_game_token or "",
+            game_player_id=args.inject_player_id or 0,
+            game_backend=args.inject_backend or "",
+            game_exp=args.inject_game_exp or 0,
+            source=args.inject_source,
+        )
+        print(f"✅ [{args.account}] 注入成功 -> {tm._cache_path}")
+        print(f"   game_token={'有' if cache.get('game_token') else '无'}; player_id={cache.get('game_player_id', 0)}")
+        return 0
+
+    if args.manual_capture is not None:
+        entry = args.manual_capture or "https://leyu.me"
+        token = await tm.manual_capture(entry_url=entry)
+        if token:
+            logger.info(f"[{args.account}] manual capture success: {token[:80]}...")
+            return 0
+        logger.error(f"[{args.account}] manual capture failed")
+        return 1
 
     if args.diagnose:
         d = tm.diagnose()

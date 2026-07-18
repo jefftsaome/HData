@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
+import re
 import time
 from pathlib import Path
 
@@ -38,8 +39,32 @@ logger = get_logger(__name__)
 _PROJ_ROOT = Path(__file__).resolve().parent.parent.parent
 CACHE_DIR = _PROJ_ROOT / ".cache"
 
-# WS 端口（当前写死，未来可能从 backendDomainUrlList 动态获取）
-DEFAULT_WS_PORT = 18026
+# WS 端口：不再写死。游戏前端（egret index release js）的拼接规则是
+#   socketServer = `wss://wsproxy.${params.backendDomainUrl.trim()}`
+# 即直接使用 venue/launch 下发的 backendDomainUrl（自带端口，如 6pwn4i.com:4999）。
+DEFAULT_WS_PORT = 18026  # 兼容旧引用，仅作兜底
+
+# 游戏前端 Q9.STATIC_KEY_PREFIX + Q9.KEY_VERSION：
+#   initServerUrl(e) => this._url = e + Q9.STATIC_KEY_PREFIX + Q9.KEY_VERSION
+# 其中 STATIC_KEY_PREFIX = "&platformId=1&applicationId=5&version=v"，KEY_VERSION = "1.0.5"。
+# wsproxy 校验该后缀，缺失时握手直接返回 HTTP 500。
+WS_STATIC_KEY_SUFFIX = "&platformId=1&applicationId=5&version=v1.0.5"
+
+
+def generate_device_id() -> str:
+    """生成与浏览器端一致格式的 deviceId。
+
+    浏览器逻辑（assets release js）:
+        fixedDeviceId = Date.now().toString() + Math.floor(1e5*(9*Math.random()+1))
+        DEVICE_ID = fixedDeviceId + "-" + Math.floor(1e7*(9*Math.random()+1))
+    即 "{13位毫秒时间戳}{6位随机数}-{8位随机数}"，例如 1783928954151253203-87228064。
+    """
+    import random
+    import time
+
+    fixed = f"{int(time.time() * 1000)}{random.randint(100000, 999999)}"
+    suffix = random.randint(10000000, 99999999)
+    return f"{fixed}-{suffix}"
 
 
 # ── 异常 ──────────────────────────────────────────────
@@ -77,7 +102,10 @@ def _refresh_error(
 def get_real_domain(entry_url: str = "") -> str:
     """从集团入口站获取真实主站域名。
 
-    缓存优先（.cache/domain.json），缓存未命中则从入口站 HTML 提取。
+    域名是动态资源（可能小时级轮换），因此：
+      1. 缓存带 TTL（DomainCache.DEFAULT_TTL，默认 30 分钟）
+      2. 命中缓存后先探活，死了自动 invalidate 并从入口站重解析
+      3. 解析失败回退环境变量 HDATA_DOMAIN
 
     Args:
         entry_url: 入口站 URL，如 "https://leyu.me"。为空时使用默认入口。
@@ -88,14 +116,8 @@ def get_real_domain(entry_url: str = "") -> str:
     Raises:
         DomainError: 所有入口均无法解析域名
     """
-    # 缓存优先
-    cache = DomainCache()
-    cached = cache.get(entry_url)
-    if cached:
-        return cached
-
-    # 从入口获取
-    domain = resolve_domain(entry_url)
+    # 从入口获取（带缓存 + 探活 + 自动重解析）
+    domain = resolve_domain(entry_url, validate=True)
     if domain:
         return domain
 
@@ -181,16 +203,33 @@ def save_session(account: str, data: dict) -> dict:
 
 
 def _api_headers(session: dict, url: str) -> dict:
-    """构造乐鱼 API 请求头（含 X-API-XXX 签名）。"""
-    xxx = ""
-    manual_sigs = session.get("signatures", {})
-    if manual_sigs:
-        for k in sorted(manual_sigs.keys(), key=lambda x: -len(x)):
-            if k in url:
-                xxx = manual_sigs[k]
-                break
+    """构造乐鱼 API 请求头（含 X-API-XXX 签名）。
 
-    # 兜底：从 uuidToBase64 解密签名表
+    优先使用 wasm 动态签名（api_sign.sign_path，2026-07-17 逆向落地）；
+    失败时回退旧的静态签名表（手动捕获 / uuidToBase64 解密）。
+    """
+    xxx = ""
+
+    # 首选：wasm 动态签名（每请求唯一，服务端对 /game/api 等强制校验）
+    try:
+        from hdata.auth.api_sign import sign_path
+
+        m = re.search(r"/(\w+)/api", url)
+        if m:
+            xxx = sign_path(f"/{m.group(1)}/api")
+    except Exception:
+        xxx = ""
+
+    # 兜底 1：缓存中的手动捕获签名
+    if not xxx:
+        manual_sigs = session.get("signatures", {})
+        if manual_sigs:
+            for k in sorted(manual_sigs.keys(), key=lambda x: -len(x)):
+                if k in url:
+                    xxx = manual_sigs[k]
+                    break
+
+    # 兜底 2：从 uuidToBase64 解密签名表
     if not xxx:
         uuid_b64 = session.get("uuidToBase64", "")
         if uuid_b64:
@@ -222,15 +261,11 @@ def _api_headers(session: dict, url: str) -> dict:
 # ── Token 刷新 ───────────────────────────────────────
 
 
-async def refresh_game_token(account: str, session: dict) -> str:
-    """调用 venue/launch API 获取并返回新的 game JWT。
-
-    Args:
-        account: 账号标识（仅用于日志）
-        session: 完整 session dict（必须包含 token, domain, signatures 等）
+async def refresh_game_session(account: str, session: dict) -> dict:
+    """调用 venue/launch API，返回解密后的完整游戏参数。
 
     Returns:
-        新的 game JWT 字符串
+        解密 params dict（含 token/backendDomainUrl/backendDomainUrlList/playerId 等）
 
     Raises:
         TokenRefreshError: API 调用或解密失败
@@ -287,12 +322,28 @@ async def refresh_game_token(account: str, session: dict) -> str:
     if not isinstance(decrypted, Mapping):
         raise _refresh_error("params_decrypt_parse")
 
-    token = decrypted.get("token", "")
-    if not token:
+    if not decrypted.get("token"):
         raise _refresh_error("params_token")
 
     logger.info(f"[{account}] game JWT refresh succeeded")
-    return token
+    return dict(decrypted)
+
+
+async def refresh_game_token(account: str, session: dict) -> str:
+    """调用 venue/launch API 获取并返回新的 game JWT。
+
+    Args:
+        account: 账号标识（仅用于日志）
+        session: 完整 session dict（必须包含 token, domain, signatures 等）
+
+    Returns:
+        新的 game JWT 字符串
+
+    Raises:
+        TokenRefreshError: API 调用或解密失败
+    """
+    params = await refresh_game_session(account, session)
+    return params["token"]
 
 
 # ── 完整游戏会话 ─────────────────────────────────────
@@ -340,7 +391,8 @@ async def get_game_session(account: str) -> dict:
 
     if full_session and full_session.get("token") and full_session.get("domain"):
         try:
-            new_token = await refresh_game_token(account, full_session)
+            params = await refresh_game_session(account, full_session)
+            new_token = params["token"]
             # 从 JWT 中提取 player_id
             jwt_info = decode_jwt(new_token)
             player_id = 0
@@ -352,8 +404,8 @@ async def get_game_session(account: str) -> dict:
             result = {
                 "game_token": new_token,
                 "game_player_id": player_id,
-                "game_backend": cache.get("game_backend", "") if cache else "",
-                "backend_domain_url_list": cache.get("backend_domain_url_list", "") if cache else "",
+                "game_backend": params.get("backendDomainUrl", ""),
+                "backend_domain_url_list": params.get("backendDomainUrlList", ""),
                 "game_exp": jwt_info.get("exp", 0) if jwt_info else 0,
             }
             # 回写到 WS-only 缓存
@@ -381,40 +433,46 @@ async def get_game_session(account: str) -> dict:
 def build_ws_config(game_session: dict) -> dict:
     """从游戏会话构造 WebSocket 连接配置。
 
+    与浏览器端（egret release js）完全一致的拼接规则：
+        wss://wsproxy.{backendDomainUrl}/?playerId=..&jwtToken=..&deviceId=..
+    backendDomainUrl 自带端口（如 6pwn4i.com:4999），不再额外覆盖端口。
+
     Args:
         game_session: get_game_session() 返回的 dict
 
     Returns:
         {
-            "ws_url": "wss://wsproxy.txdzbjc.com:18026/?playerId=...&jwtToken=...",
-            "host": "txdzbjc.com",
-            "port": 18026,
+            "ws_url": "wss://wsproxy.6pwn4i.com:4999/?playerId=...&jwtToken=...&deviceId=...",
+            "host": "wsproxy.6pwn4i.com",
+            "port": 4999,
             "player_id": 105452510,
             "jwt_token": "eyJhbG...",
+            "device_id": "1783928954151253203-87228064",
         }
     """
     token = game_session.get("game_token", "")
     player_id = game_session.get("game_player_id", 0)
-    backend = game_session.get("game_backend", "")
-    device_id = game_session.get("device_id", "")
+    backend = (game_session.get("game_backend", "") or "").strip()
+    device_id = game_session.get("device_id", "") or generate_device_id()
 
-    # 从 backend 提取 host（去掉端口部分）
-    host = backend.split(":")[0] if backend else ""
+    # backend 形如 "6pwn4i.com:4999"；wsproxy 子域 + 原端口
+    backend_host = backend.split(":")[0] if backend else ""
+    backend_port = int(backend.split(":")[1]) if ":" in backend else DEFAULT_WS_PORT
 
-    # 构造 WS URL
+    # 浏览器端 initServerUrl 会追加 STATIC_KEY_PREFIX + KEY_VERSION；
+    # 缺少这段时 wsproxy 直接拒绝握手（HTTP 500）。
     ws_url = (
-        f"wss://wsproxy.{host}:{DEFAULT_WS_PORT}/"
+        f"wss://wsproxy.{backend}/"
         f"?playerId={player_id}"
         f"&jwtToken={token}"
-        f"&deviceType=2&platform=6"
+        f"&deviceId={device_id}"
+        f"{WS_STATIC_KEY_SUFFIX}"
     )
-    if device_id:
-        ws_url += f"&deviceId={device_id}"
 
     return {
         "ws_url": ws_url,
-        "host": host,
-        "port": DEFAULT_WS_PORT,
+        "host": f"wsproxy.{backend_host}",
+        "port": backend_port,
         "player_id": player_id,
         "jwt_token": token,
         "device_id": device_id,
@@ -469,8 +527,13 @@ async def get_login(account: str, password: str = "",
             if game_token:
                 logger.info(f"[{account}] get_login: cached session valid, refreshing game_token")
                 try:
-                    new_token = await refresh_game_token(account, cache)
+                    params = await refresh_game_session(account, cache)
+                    new_token = params["token"]
                     cache["game_token"] = new_token
+                    if params.get("backendDomainUrl"):
+                        cache["game_backend"] = params["backendDomainUrl"]
+                    if params.get("backendDomainUrlList"):
+                        cache["backend_domain_url_list"] = params["backendDomainUrlList"]
                     jwt_info = decode_jwt(new_token)
                     if jwt_info:
                         cache["game_exp"] = jwt_info.get("exp", 0)
@@ -488,9 +551,9 @@ async def get_login(account: str, password: str = "",
     # ── 2. HTTP 打码登录（如果提供了平台 token）──
     if password and (geepass_token or legacy_jfbym_token):
         try:
-            from hdata.auth.http_login_v2 import login as http_login_v2
+            from hdata.auth.http_login import login as http_login
             logger.info(f"[{account}] get_login: trying HTTP login with captcha")
-            http_session = await http_login_v2(
+            http_session = await http_login(
                 account,
                 password,
                 geepass_token=geepass_token,
@@ -504,8 +567,13 @@ async def get_login(account: str, password: str = "",
                 # 补 game 字段：用 session 去刷新 game_token
                 game_token_ok = False
                 try:
-                    new_token = await refresh_game_token(account, result)
+                    params = await refresh_game_session(account, result)
+                    new_token = params["token"]
                     result["game_token"] = new_token
+                    if params.get("backendDomainUrl"):
+                        result["game_backend"] = params["backendDomainUrl"]
+                    if params.get("backendDomainUrlList"):
+                        result["backend_domain_url_list"] = params["backendDomainUrlList"]
                     jwt_info = decode_jwt(new_token)
                     if jwt_info:
                         result["game_exp"] = jwt_info.get("exp", 0)

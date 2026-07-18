@@ -1,11 +1,9 @@
 """WebSocket 直连采集客户端"""
 
 import asyncio
-import json
-import gzip
 from typing import Any, Callable
 
-from hdata.protocol.decoder import decode_frame
+from hdata.protocol.codec import decode_frame, encode_frame
 from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -14,7 +12,8 @@ logger = get_logger(__name__)
 class WSClient:
     """WS 直连客户端 — 连接 Leyu WS 代理，接收和发送协议帧。
 
-    帧格式: [0x04][3B payload_len][2B msg_id][payload]
+    帧格式（2026-07-17 实测验证）：整帧 = AES-128-CBC(gzip(JSON)) 密文，
+    key=iv="ED7AA06BD8628B55"，无任何明文协议头。
     """
 
     def __init__(self, ws_url: str):
@@ -24,19 +23,22 @@ class WSClient:
         self._on_message: Callable | None = None
 
     def on_message(self, callback: Callable):
-        """注册消息回调。callback(msg_id, data_dict)"""
+        """注册消息回调。callback(protocol_id, frame_dict)"""
         self._on_message = callback
 
     async def connect(self) -> bool:
         """连接到 WS 代理服务器。"""
         try:
             import websockets
-            self._ws = await websockets.connect(self._ws_url)
+            self._ws = await websockets.connect(
+                self._ws_url, open_timeout=12, close_timeout=3,
+                max_size=50 * 1024 * 1024,
+            )
             self._running = True
             logger.info("WS connected: {}", self._ws_url[:80])
             return True
         except Exception as e:
-            logger.error("WS connect failed: {}", e)
+            logger.error("WS connect failed: url={}, err={!r}", self._ws_url, e)
             return False
 
     async def listen(self):
@@ -52,40 +54,30 @@ class WSClient:
                     logger.error("WS recv error: {}", e)
                     await asyncio.sleep(1)
 
-    def _process_raw(self, raw: bytes):
+    def _process_raw(self, raw):
         """处理原始 WS 帧数据。"""
-        if not raw or raw[0] != 0x04:
+        if isinstance(raw, str) or not raw:
             return
-        payload_len = int.from_bytes(raw[1:4], "big")
-        msg_id = int.from_bytes(raw[4:6], "big")
-        payload = raw[6:6 + payload_len]
-
-        decoded = decode_frame(payload)
+        decoded = decode_frame(raw)
         if decoded and self._on_message:
-            self._on_message(msg_id, decoded)
+            self._on_message(decoded.get("protocolId"), decoded)
 
-    async def send_frame(self, msg_id: int, data: dict) -> bool:
-        """发送协议帧。"""
+    async def send_message(self, msg: dict) -> bool:
+        """发送一个完整签名的协议消息（见 hdata.protocol.codec.build_message）。"""
         if not self._ws:
             return False
-        payload = json.dumps(data, separators=(",", ":")).encode()
-        compressed = gzip.compress(payload)
-        frame = (
-            bytes([0x04])
-            + len(compressed).to_bytes(3, "big")
-            + msg_id.to_bytes(2, "big")
-            + compressed
-        )
         try:
-            await self._ws.send(frame)
+            await self._ws.send(encode_frame(msg))
             return True
         except Exception as e:
             logger.error("WS send error: {}", e)
             return False
 
     async def _send_heartbeat(self):
-        """发送心跳包（msgId=301）"""
-        await self.send_frame(301, {})
+        """发送心跳（q9.HEART_BEAT=1，游戏前端心跳为协议帧）。"""
+        from hdata.protocol.codec import build_message
+        # 心跳协议体很小；playerId 由外层在登录后注入更佳，这里发空参心跳
+        await self.send_message(build_message(1, {}, player_id=0))
 
     async def disconnect(self):
         """断开连接"""

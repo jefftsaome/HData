@@ -9,8 +9,9 @@
 TokenManager.get_token()
   ├─ L0: 缓存 game_token (>1h) → 0s       ✅ 可控
   ├─ L1: session → venue/launch API → ~2s  ⚠️ 半可控
-  ├─ L2: browser profile → 自动跳转 → ~5s  ❌ 当前不可用
-  └─ L3: raw CDP + jfbym 完整登录 → ~20s   ⚠️ 脆弱点最多
+  ├─ L2: browser profile → Playwright 自动跳转 → ~5s  ✅ 可用
+  ├─ L3a: 纯 HTTP + jfbym → ~10s           ⚠️ verify 精度敏感
+  └─ L3b: manual-capture 人工辅助登录 → ~30-120s ✅ 可用
 ```
 
 ## 不可控因素 & 可控措施
@@ -28,16 +29,15 @@ TokenManager.get_token()
 | 因素 | 可控? | 已做措施 | 残留风险 |
 |------|-------|---------|---------|
 | venue/launch 接口挂了 | ❌ | 失败原因链记录 | 乐鱼服务器不可控 |
-| X-API-XXX 签名过期 | ⚠️ | --recapture-signatures | 需 browser-act 在线 + 已登录页面 |
+| X-API-XXX 签名过期 | ⚠️ | --recapture-signatures | 需本地浏览器已登录并开放 CDP |
 | 域名变更 | ⚠️ | --diagnose 可发现 | 需人工介入获取新域名 |
 
-### L3 完整登录 — ❌ 脆弱点集中
+### L3 登录阶段 — ⚠️ 仍有脆弱点
 
 | 因素 | 可控? | 已做措施 | 残留风险 |
 |------|-------|---------|---------|
-| browser-act 在线 | ❌ | --diagnose 检测 + 提示 | 外部闭源商业产品 |
-| browser-act 反爬绕过 | ❌ | 无 | 乐鱼升级反爬可能穿透 |
-| CDP 端口 | ✅ | ps aux 自动发现 | — |
+| 本地浏览器可用性 | ⚠️ | manual-capture 兜底 | 浏览器版本升级可能影响行为 |
+| CDP 端口 | ✅ | 9222/9223 自动探测 + 环境变量 | 端口被占用需人工处理 |
 | jfbym 余额 | ⚠️ | --diagnose 显示余额 | jfbym 涨价/跑路/API 变更 |
 | jfbym 识别率 | ❌ | 3 次重试 | 验证码类型变更不兼容 |
 | CSS 选择器 | ⚠️ | selectors.py 快照 | 首次改版需人更新 |
@@ -50,7 +50,7 @@ TokenManager.get_token()
 
 ### 🔴 高危（随时可能挂，无自愈）
 
-1. **browser-act 依赖** — 外部闭源商业产品，版本升级可能改变行为，服务商跑路整个方案崩溃
+1. **验证码链路不稳定** — 纯 HTTP verify 对坐标/参数极敏感，失败率仍高
 2. **GeeTest/botion 升级** — captcha_id、验证码类型、SDK 检测算法均可单方面改变
 3. **CDP Input 黑盒** — 不知道为何工作、何时失效，无文档或社区支持
 
@@ -78,7 +78,7 @@ TokenManager.get_token()
 - [x] CSS 选择器快照 `selectors.py`
 - [x] jfbym 余额查询集成到 diagnose
 - [x] 域名解析模块 `domain.py` (leyu.com HTML urllib 提取)
-- [x] browser-act 进程管理 `browser_act.py`
+- [x] Playwright `manual-capture` 人工辅助登录
 - [x] CaptchaSolver 抽象 + JfbymSolver
 - [x] EKAI: "y7R8" 替换 ZAhG
 - [x] 动态 lot_parser (从 ctStore 提取)
@@ -90,14 +90,12 @@ TokenManager.get_token()
 ## 剩余问题 (P0)
 
 - [ ] **纯 HTTP verify 始终 result=fail** — 18+ 次尝试，坐标疑似不准确。需要对比人工通过的 w 参数 (data/sdk_flow_captured.json)
-- [ ] **browser-act Input 域被禁用** — 当前实例 Input.dispatchMouseEvent 无响应，需重启或换内核
 - [ ] **AB 测试 hook 可靠性** — addEventListener hook 仅成功一次，后续无法复现。CDP Network 抓包可替代
 
 ### 下一步 (P3 优先级)
 
 - [ ] `--health` 定时巡检 (cron 每 30min，余额<100 或 token<1h 告警)
 - [ ] 验证码类型检测 (弹窗出现时记录 captcha_type，类型变更即报错)
-- [ ] browser-act 替代方案调研 (rebrowser-patches / undetected-chromedriver)
 - [ ] 多打码平台备胎 (2captcha / capsolver)，jfbym 挂了自动切换
 - [ ] 域名轮换感知 (venue/launch 连续失败 3 次 → 自动 CDP 重解析)
 - [ ] Session 预热池 (预登录 2-3 账号，token 热备)
@@ -106,7 +104,6 @@ TokenManager.get_token()
 
 - [ ] CDP Input 方案白盒化 (搞清楚 GeeTest SDK 检测原理)
 - [ ] 真实鼠标轨迹模拟 (贝塞尔曲线 + 随机延迟，减少 raw CDP 依赖)
-- [ ] browser-act 进程生命周期自治 (启动/停止/健康检查自动化)
 
 ## 相关文件
 

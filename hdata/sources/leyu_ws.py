@@ -71,6 +71,7 @@ class WSSource(DataSource):
         self._token: str = ""
         self._ws_url: str = ""
         self._player_id: int = 0
+        self._game_session: dict = {}  # 完整游戏会话，用于备用域名轮询
 
     # ── DataSource 接口 ──────────────────────────────────
 
@@ -99,7 +100,7 @@ class WSSource(DataSource):
 
     # ── 启动 / 停止 ──────────────────────────────────────
 
-    async def start(self) -> AsyncIterator[MarketTick]:
+    async def start(self) -> AsyncIterator[MarketTick]:  # type: ignore[override]
         """启动采集：获取 JWT → 连接 WS → 接收帧 → 产出 MarketTick。"""
         setup_logging()
         self._emit_status("running")
@@ -109,11 +110,10 @@ class WSSource(DataSource):
                 # 1. 获取/刷新 JWT
                 await self._ensure_token()
 
-                # 2. 连接 WS
-                self._client = WSClient(self._ws_url)
-                if not await self._client.connect():
-                    logger.error("WS 连接失败，5s 后重试...")
-                    await asyncio.sleep(5)
+                # 2. 连接 WS（含备用域名轮询）
+                if not await self._try_connect_with_fallback():
+                    logger.error("所有 wsproxy 域名连接均失败，15s 后重试...")
+                    await asyncio.sleep(15)
                     continue
 
                 logger.info("WS 已连接: table_id={}, player_id={}",
@@ -171,32 +171,64 @@ class WSSource(DataSource):
     # ── Token 管理 ────────────────────────────────────────
 
     async def _ensure_token(self):
-        """确保有有效的游戏 JWT，通过 TokenManager 自动处理缓存和刷新。"""
-        from hdata.auth.token_manager import TokenManager
-        tm = TokenManager(self._account)
+        """确保有有效的游戏 JWT，通过 session.py 自动处理缓存和刷新。"""
+        from hdata.auth.session import get_game_session, build_ws_config, SessionError
 
-        token = await tm.get_token()
-        session = tm._load()
-        if not session:
-            raise RuntimeError(f"[{self._account}] 无缓存，请先 --init 或 --login")
+        try:
+            game_session = await get_game_session(self._account)
+        except SessionError as e:
+            raise RuntimeError(f"[{self._account}] {e}")
 
-        self._token = token
-        self._player_id = session.get("game_player_id", 0)
-        backend = session.get("game_backend", "")
-        if backend:
-            host = backend.split(":")[0] if ":" in backend else backend
-            self._ws_url = (
-                f"wss://wsproxy.{host}:18026/"
-                f"?playerId={self._player_id}"
-                f"&jwtToken={self._token}"
-                f"&deviceType=2&platform=6"
-            )
+        ws_cfg = build_ws_config(game_session)
+        self._token = ws_cfg["jwt_token"]
+        self._player_id = ws_cfg["player_id"]
+        self._ws_url = ws_cfg["ws_url"]
+        self._game_session = game_session  # 保存以备域名轮询用
+
+        logger.info("WS URL ready: player_id={}, host={}",
+                    self._player_id, ws_cfg["host"])
+
+    async def _try_connect_with_fallback(self) -> bool:
+        """尝试连接 WS，主域名失败时轮询备用域名。"""
+        from hdata.auth.session import WS_STATIC_KEY_SUFFIX, generate_device_id
+
+        # 收集所有待尝试的 WS URL
+        candidates = [self._ws_url]
+        backend_list = self._game_session.get("backend_domain_url_list", "")
+        device_id = self._game_session.get("device_id", "") or generate_device_id()
+        if backend_list:
+            for entry in backend_list.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                # 浏览器规则：wss://wsproxy.{backend(含端口)}/?playerId=..&jwtToken=..&deviceId=..
+                alt_url = (
+                    f"wss://wsproxy.{entry}/"
+                    f"?playerId={self._player_id}"
+                    f"&jwtToken={self._token}"
+                    f"&deviceId={device_id}"
+                    f"{WS_STATIC_KEY_SUFFIX}"
+                )
+                if alt_url and alt_url not in candidates:
+                    candidates.append(alt_url)
+
+        for i, url in enumerate(candidates):
+            if i > 0:
+                logger.info("尝试备用域名 ({}/{}): {}", i + 1, len(candidates), url[:80])
+            self._client = WSClient(url)
+            if await self._client.connect():
+                self._ws_url = url
+                logger.info("WS 连接成功: {}", url[:80])
+                return True
+            logger.warning("WS 连接失败: {} (尝试 {}/{})", url[:80], i + 1, len(candidates))
+
+        return False
 
     def _token_expiring(self) -> bool:
         """检查 JWT 是否将在 5 分钟内过期。"""
         if not self._token:
             return True
-        from hdata.auth.token_manager import decode_jwt
+        from hdata.auth.params import decode_jwt
         jwt_info = decode_jwt(self._token)
         if jwt_info:
             return jwt_info.get("exp", 0) - time.time() < 300
@@ -208,21 +240,22 @@ class WSSource(DataSource):
         """发送 401 进桌消息。"""
         if not self._client:
             return
+        from hdata.protocol.codec import (
+            DEVICE_TYPE_PC, OT_GAME, build_message)
         param = {
             "tableId": self._table_id,
-            "deviceType": 15,
+            "gameTypeId": self._game_type_id,
+            "identity": 1,
+            "joinTableMode": 2,
+            "gameCasinoId": 0,
+            "deviceType": DEVICE_TYPE_PC,
             "deviceId": "",
-            "identity": 0,
-            "vipMode": 0,
-            "joinTableMode": 1,
         }
-        data = {
-            "id": 401,
-            "data": {},
-            "param": json.dumps(param, separators=(",", ":")),
-            "protocolId": 401,
-        }
-        ok = await self._client.send_frame(401, data)
+        msg = build_message(
+            401, param, player_id=self._player_id,
+            game_type_id=self._game_type_id, table_id=self._table_id,
+            service_type_id=OT_GAME)
+        ok = await self._client.send_message(msg)
         logger.info("进桌 401: table_id={}, ok={}", self._table_id, ok)
 
     # ── 消息转换 ──────────────────────────────────────────

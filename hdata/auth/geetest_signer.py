@@ -34,7 +34,7 @@ def extract_rsa_key_from_browser(cdp_port: int | None = None) -> tuple[int, int]
     """
     try:
         with open(Path(__file__).resolve().parent.parent.parent
-                  / "data" / "botion_js" / "bcaptcha.js") as f:
+                  / ".cache" / "bcaptcha.js") as f:
             js = f.read()
 
         # 256-byte 数组: n = [214, 144, 233, 254, ...]
@@ -101,7 +101,7 @@ class LotParser:
         for p in parsed:
             current = []
             for s in p:
-                start, end = s[0], (s[1] + 1) if len(s) > 1 else (start + 1)
+                start, end = s[0], (s[1] + 1) if len(s) > 1 else (s[0] + 1)
                 current.append(num[start:end])
             result.append("".join(current))
         return ".".join(result)
@@ -173,6 +173,23 @@ def _generate_pow(lot_number, captcha_id, hash_func, version, bits, date, nonce=
             return {"pow_msg": pow_string + h, "pow_sign": hashed}
 
 
+# 浏览器真实 e_obj 结构（2026-07-17 运行时解密实测，见 docs/login-api-capture-20260717.md）
+# 字段顺序与浏览器 SDK 保持一致。ep/nqfq/EKAI 为 gct4 构建常量
+# （当前构建: gct4.614b49d4a6f9b9c251919ce8a63098bd，换构建需重新提取）。
+GCT4_STATIC = {
+    "ep": "123",
+    "nqfq": "622265669",
+    "EKAI": "y7R8",
+}
+
+# 环境指纹，浏览器固定这 7 个键（顺序一致）
+EM_OBJ = {"ph": 0, "cp": 0, "ek": "11", "wd": 1, "nt": 0, "si": 0, "sc": 0}
+
+# 验证码底图自然尺寸（jfbym 坐标基于此），userresponse 归一化到 10000
+_BG_W = 300
+_BG_H = 200
+
+
 def build_e_obj(
     load_data: dict,
     captcha_id: str,
@@ -193,8 +210,19 @@ def build_e_obj(
     if len(coords_array) != 3 or any(len(point) != 2 for point in coords_array):
         raise ValueError("coords must contain exactly three x,y integer pairs")
 
+    # 浏览器实测: userresponse 是点击位置相对显示图片归一化到 0-10000 的值，
+    # 等价于自然图坐标 (x/300*10000, y/200*10000)，四舍五入取整。
+    userresponse = [
+        [round(x / _BG_W * 10000), round(y / _BG_H * 10000)]
+        for x, y in coords_array
+    ]
+
     lot_number = load_data["lot_number"]
     return {
+        "passtime": passtime if passtime is not None else random.randint(1500, 3500),
+        "userresponse": userresponse,
+        "device_id": "",
+        "lot_number": lot_number,
         **_generate_pow(
             lot_number,
             captcha_id,
@@ -204,16 +232,11 @@ def build_e_obj(
             pow_detail["datetime"],
             pow_nonce,
         ),
-        **_lot_parser.get_dict(lot_number),
-        "biht": "1426265548",
-        "em": {"cp": 0, "ek": "11"},
-        "gee_guard": {"auh": "3", "aup": "3", "cdc": "3", "egp": "3",
-                      "res": "3", "rew": "3", "sep": "3", "snh": "3"},
         "geetest": "captcha",
         "lang": "zh",
-        "lot_number": lot_number,
-        "userresponse": coords_array,
-        "passtime": passtime if passtime is not None else random.randint(1500, 3500),
+        **GCT4_STATIC,
+        **_lot_parser.get_dict(lot_number),
+        "em": dict(EM_OBJ),
     }
 
 

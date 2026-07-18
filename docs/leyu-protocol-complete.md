@@ -46,7 +46,7 @@
 | 主站 | `nhfspi.vip:4697` / `rzhsir.vip:9037` | ✅ 实际已验证 `ll18mm.vip:6506` 可用 |
 | 游戏大厅 | `pc.lisxdc.com:2083/egret/hall` | ✅ 已验证可访问 |
 | 游戏桌台 | `pc.lisxdc.com:2083/egret/game/{gameType}/{tableId}` | ✅ 已验证 |
-| WS 代理 | `wsproxy.{domain}:{port}` | ❌ curl_cffi 返回 HTTP 500（Cloudflare） |
+| WS 代理 | `wsproxy.{domain}:{port}` | ✅ 直连已打通（2026-07-17，需完整签名后缀，见 §9） |
 | WS 备用 | `pc.lisxdc.com:2083/ws` | ❌ 返回 HTTP 404（已失效） |
 | CDN | `vadp.nz318.com` | ✅ 实际使用 `vadp.irwrek.com` |
 
@@ -469,44 +469,202 @@ JWT 中的 `exp` 字段（Unix 时间戳），约 24 小时。
 
 ---
 
-## 9. WebSocket 连接
+## 9. WebSocket 连接（2026-07-17 静态分析 + 实测验证 ✅）
 
-### 9.1 WS URL 格式
+### 9.1 WS URL 格式（已与浏览器逐字节对齐）
+
+游戏前端（egret release js）的拼接规则：
+
+```js
+// index release js:
+socketServer = `wss://wsproxy.${params.backendDomainUrl.trim()}`   // backend 自带端口！
+// assets release js initServerUrl:
+url = socketServer + "/?playerId=" + playerId + "&jwtToken=" + jwtToken
+      + "&deviceId=" + getDeviceID()
+      + STATIC_KEY_PREFIX + KEY_VERSION
+```
+
+即：
 
 ```
-wss://wsproxy.{host}:{port}/
+wss://wsproxy.{backendDomainUrl}/
   ?playerId={player_id}
-  &jwtToken={token}
+  &jwtToken={game_token}
   &deviceId={device_id}
-  &deviceType=2&platform=6
+  &platformId=1&applicationId=5&version=v1.0.5
 ```
 
-### 9.2 可用 backendDomain（来自解密 params）
+关键点（全部实测过）：
 
-| 域名 | 端口 | 测试结果 |
+| 要素 | 规则 | 缺失后果 |
 |:----|:----|:--------|
-| `1j2cdazl.com` | 21027 | ❌ curl_cffi HTTP 500 |
-| `64vlwlq.com` | 18026 | ❌ curl_cffi HTTP 500 |
-| `2umtefe.com` | 19026 | ❌ curl_cffi HTTP 500 |
-| `pc.lisxdc.com` | 2083 (备份 WS) | ❌ HTTP 404 |
+| host | `wsproxy.` + backendDomainUrl **原样**（含端口，如 `6pwn4i.com:4999`） | 写死端口 18026 → TCP 超时/RST |
+| `deviceId` | `{13位ms时间戳}{6位随机}-{8位随机}`（`Date.now()+Math.floor(1e5*(9*Math.random()+1))` + `"-"` + `Math.floor(1e7*(9*Math.random()+1))`） | 旧版无 deviceId → 拒连 |
+| `platformId=1&applicationId=5&version=v1.0.5` | `Q9.STATIC_KEY_PREFIX + Q9.KEY_VERSION` 常量 | **缺失 → 握手 HTTP 500** |
+| ~~`deviceType=2&platform=6`~~ | 旧文档写法，浏览器实际不发 | 多余但无害 |
+
+> 注意：HTTP 500 是 wsproxy 对"签名后缀缺失/参数不全"的统一拒绝，**不是** Cloudflare 指纹拦截
+> （curl_cffi chrome 指纹、原生 websockets 均能连通，只要 URL 完整）。
+
+### 9.2 协议帧格式（发送 + 接收双向已验证）
+
+整帧为二进制密文，**无明文协议头**（旧的 `[0x04][3B len][2B msg_id]` 假设已废弃）：
+
+```
+发送: wire = AES-128-CBC( gzip( JSON.stringify(msg) ), key=iv="ED7AA06BD8628B55", PKCS7 )
+接收: msg  = JSON ← gunzip ← AES-128-CBC 解密(同 key/iv)
+```
+
+发送消息结构（`p3.send`，含签名）：
+
+```json
+{
+  "jsonData": "{\"id\":10000,\"param\":\"{...}\"}",   // 内层 param 也是 JSON 字符串
+  "nonce": 123456789,                                  // Math.round(Math.random()*2^31)
+  "protocolId": 10000,
+  "gameTypeId": 2013,
+  "sign": "Base64(HmacSHA1(jsonData+nonce+timestamp, KEY))",
+  "timestamp": 1784356780704,
+  "playerId": 105452510,
+  "tableId": 0,
+  "serviceTypeId": 7
+}
+```
+
+关键协议号 / 枚举（assets release js）：
+
+| 名称 | 值 | 说明 |
+|:----|:--|:----|
+| `Fs.Login` | 10000 | 登录请求/响应 |
+| 登录失败踢出 | 10026 | kickType=2 = token 失效 |
+| `Ot.HALL` | 7 | serviceTypeId 大厅 |
+| `Ot.GAME` | 3 | serviceTypeId 游戏 |
+| `_t.EGRET2_PC` | 15 | deviceType（PC 网页端） |
+
+登录请求体（`_sendLogin`）：
+
+```json
+{"jwtToken": "...", "deviceType": 15, "deviceId": "...",
+ "timeZoneArea": "Asia/Shanghai", "offsetMinutes": 480,
+ "protocolCodecConfig": {}, "version": "1.1.1"}
+```
+
+登录成功响应（protocolId=10000, status=1）后，服务器会陆续推大厅数据
+（10028 活动、10011 公告、10040 活动列表等）。
 
 ### 9.3 连接方式
 
 | 方式 | 工具 | 状态 | 说明 |
 |:----|:-----|:----|:-----|
-| 直连 | curl_cffi + chrome124 | ❌ Cloudflare 拦截 | `wsproxy.*` 全部返回 500 |
-| 直连 | websockets | ❌ TLS 握手失败 | 未伪装指纹 |
+| **直连** | websockets（原生） | ✅ **已打通** | URL 完整即可，无需 TLS 指纹伪装 |
+| 直连 | curl_cffi + chrome 指纹 | ✅ 可用 | 同样需要完整 URL |
 | CDP 桥接 | CDP WebSocket Frame 拦截 | ✅ harvester 已实现 | 需 Chrome，截取浏览器 WS 帧 |
-| CDP 桥接 | `DataHandle.decryptWsData` | ✅ harvester 已实现 | 同 WS 密钥解密 |
 
-### 9.4 Cloudflare 绕过尝试
+冒烟脚本：`scripts/smoke_ws_login.py`（刷新 token → 连接 → Login → 验证响应），
+已实现 **PASS**（收到 10000 登录成功 + 大厅推送共 4 帧）。
 
-| 方法 | 结果 |
+### 9.4 代码位置
+
+| 功能 | 位置 |
 |:----|:----|
-| curl_cffi chrome124 指纹 | ❌ HTTP 500 |
-| curl_cffi chrome131 指纹 | ❌ HTTP 500 |
-| 备份端点 pc.lisxdc.com:2083/ws | ❌ HTTP 404 |
-| Playwright + anti-detection | ⚠️ 验证码被拒 |
+| WS URL 构造 | `hdata/auth/session.py::build_ws_config()`（含 `WS_STATIC_KEY_SUFFIX`、`generate_device_id()`） |
+| 帧编解码/签名/登录构造 | `hdata/protocol/codec.py`（`encode_frame`/`decode_frame`/`build_message`/`build_login_msg`） |
+| WS 客户端 | `hdata/capture/direct_client.py::WSClient` |
+| 进桌冒烟 | `scripts/smoke_ws_table.py`（login→10052快照→进桌→牌局帧，PASS） |
+
+### 9.5 进桌与桌台级协议（2026-07-18 实测 ✅）
+
+**进桌完整时序**（`scripts/smoke_ws_table.py` 已验证）：
+
+```
+Login(10000) → 大厅推送
+  → 发 TABLE_LIST_ALL(10089){labelTypeId:1}
+  → 收 10052 (gameTableMap 快照，含每桌 gameTypeId/gameStatus/roadPaper/roundNo...)
+  → 发 NEW_INTER_GAME(401) 进桌
+  → 收 401 响应(gameTableInfo 全量) + 持续牌局帧
+```
+
+**关键协议号**：
+
+| 协议号 | 名称 | 方向 | 说明 |
+|------:|:-----|:----|:-----|
+| 10089 | TABLE_LIST_ALL | 请求 | `{labelTypeId:1}`，serviceTypeId=7(HALL) |
+| 10052 | 大厅桌台快照 | 推送 | `gameTableMap{tableId:{gameTypeId,gameStatus,roadPaper,...}}` |
+| 401 | NEW_INTER_GAME | 请求/响应 | 普通百家乐进桌，serviceTypeId=3(GAME) |
+| 101 | INTER_GAME | 请求/响应 | VIP/竞价等(notForceExitArr)进桌 |
+| 102 | OUT_GAME | 请求 | 离桌 |
+| **123** | **KICK_OUT_GAME** | 推送 | **桌台级踢出（连续5局未投注触发，实测 ~240s 被踢 1 次）** |
+| 10026 | KICK_NOTICE | 推送 | 会话级踢出（token 失效，需重新登录） |
+| 116 | ROAD_PAPER | 推送 | 路纸数据（bigRoad 等 base64 位图） |
+| 110 | 桌台动态 | 推送 | roundId/在线人数/投注额/奖池 |
+| 104 | 局状态 | 推送 | roundNo/countdownEndTime/bootIndex |
+| 106/107 | 牌局事件 | 推送 | 发牌/结算等 |
+| 160/161 | 路纸更新 | 推送 | 增量路纸 |
+
+**进桌请求体**（401，普通百家乐 gameTypeId=2001）：
+
+```json
+{"tableId": 2751, "gameTypeId": 2001, "identity": 1, "joinTableMode": 2,
+ "gameCasinoId": 0, "deviceType": 15, "deviceId": "..."}
+```
+
+**5局未投注踢出应对**（用户实测规则 + 本框架验证）：
+
+- 纯监听不下注时，服务器约每 ~4-5 局发 `KICK_OUT_GAME(123)` 踢出桌台；
+- **会话不断**：123 只踢桌台，WS 连接与登录态保持；
+- 策略：**收 123 → 立即重发 401 进同一张桌**（`smoke_ws_table.py` 已实现并验证，重进后牌局帧继续）；
+- 与 10026 区分：10026 是 token 级踢出，必须走 `refresh_game_session` 重新登录。
+
+### 9.6 域名动态化（2026-07-18 加固 ✅）
+
+域名/端口是**动态资源**（小时~天级轮换），只有入口种子（leyu.com / leyu.me）稳定。
+解析链路与加固点（`hdata/auth/domain.py`）：
+
+```
+入口种子(leyu.com/.me) ──code.js/mappings──▶ 主站域名(www.xxx.vip:port)
+      │                                          │ venue/launch
+      │                                          ▼
+      │                                    游戏后端(6pwn4i.com:4999 + 备用列表)
+      │                                          │ wsproxy.{backend}
+      ▼                                          ▼
+   DomainCache(TTL 30min) ──探活失败──▶ invalidate → 重新解析
+```
+
+- `DomainCache` 加 **TTL（30 分钟）**，过期自动重解析；
+- `resolve_domain(validate=True)`：缓存命中后**先探活**，死了自动 invalidate 再解析；
+- 入口站适配两种映射格式：旧版 `mappings.set(...)` 与新版 `/code.js` 的 `lypcurls='...'`（PC 端）；
+- 自签证书降级：`_fetch`/`probe_domain` 自动跳过证书校验；
+- 游戏后端/WS 地址**每次进游戏由 venue/launch 重新下发**，本就动态，无需缓存。
+
+### 9.7 路纸位图解码（2026-07-18 实测 ✅）
+
+`roadPaper` 里各路（bigRoad / beatPlateRoad / bigEyeBoy / smallRoad / cockroachPig 等 21 个键）
+都是 **base64 位图**，编码规则（对应 JS `parseBaccaratSingleBootRoadPaper` + `_i` 位读取器）：
+
+```
+base64 解码 → 字节按 MSB-first 拼成位串 → 游标顺序读位
+头部:  version = read(8) + 1
+       n = read(8) * read(8)          # 单元格总数
+每格:  flag = read(1)
+       大路(BIG_ROAD): flag=1 → result=read(2), tieNumber=read(4)
+       珠盘(MAIN_ROAD): flag=1 → result=read(2), pair=read(2)
+分列:  每 6 格一列
+```
+
+结果枚举（Pa）：`0=闲(P)` `1=庄(B)` `2=和(T)` `3=庄六(B6)`
+
+已实现（`hdata/protocol/roadpaper.py`）：
+
+| 函数 | 用途 |
+|:----|:----|
+| `BitReader` | MSB-first 位读取器（对齐 JS `_i`） |
+| `decode_big_road(b64)` | 大路 → 列网格 + 平坦序列 |
+| `decode_bead_plate(b64)` | 珠盘 → 列网格 + 平坦序列（B/P/T/B6） |
+| `decode_road_paper(dict)` | 整包 roadPaper 批量解码（未知键跳过） |
+
+`RoundTracker.feed_road_paper(table_id, road_paper)`：解码珠盘序列并**幂等增量**
+同步进追踪器（B6 归一为 B），实测多桌正确还原 18~64 局/靴。
+测试：`tests/test_roadpaper.py`（6 例，含真实快照回归）。
 
 ---
 
@@ -525,11 +683,11 @@ wss://wsproxy.{host}:{port}/
 | DOM 解析 | `capture/dom_parser.py` | ✅ 已迁移 |
 | 浏览器管理 | `auth/chrome_manager.py` | ✅ 已迁移 |
 | JWT 管理 | `auth/auth_manager.py` | ✅ 已迁移 |
-| WSSource | `sources/leyu_ws.py` | ⚠️ 占位桩，直连不可用 |
-| 帧编码/发送 | — | ❌ 未迁移 |
+| WSSource | `sources/leyu_ws.py` | ✅ 直连可用（2026-07-17 打通） |
+| 帧编码/发送 | `protocol/codec.py` | ✅ 已实现 + 实测 |
+| 协议握手 | `protocol/codec.py::build_login_msg` | ✅ 已实现 + 实测 |
 | 消息路由 | — | ❌ 未迁移（CDP 替代） |
-| 协议握手 | — | ❌ 未迁移 |
-| 心跳 | — | ❌ 未迁移 |
+| 心跳 | — | ⚠️ 占位（协议号 1，未实测） |
 | CDP 桥接模式 | — | ❌ 未迁移（harvester 已有） |
 
 ### 10.2 迁移优先级
@@ -564,12 +722,54 @@ wss://wsproxy.{host}:{port}/
 | `scripts/extract_token.py` | 从 Chrome CDP 提取 token | `uv run python scripts/extract_token.py` |
 | `scripts/decrypt_params.py` | AES-ECB 解密 params | `uv run python scripts/decrypt_params.py` |
 
-### 11.2 已知限制
+### 11.2 已知限制（2026-07-18 更新）
 
-- WS 直连因 Cloudflare 不可行
+- ~~WS 直连因 Cloudflare 不可行~~ — **已推翻**：`wss://wsproxy.{backend}/?playerId=..&jwtToken=..&deviceId=..&platformId=1&applicationId=5&version=v1.0.5` 可直连，现为**主数据通道**（见 §12）
 - 备份 WS 端点已失效 (404)
-- CDP 桥接模式需 Chrome 运行
-- Playwright 自动登录被反自动化检测拦截
+- CDP 桥接模式需 Chrome 运行（仅作调试用）
+- Playwright 自动登录被反自动化检测拦截（纯 HTTP 打码登录已替代）
+
+---
+
+## 12. 2026-07 新研究发现归档
+
+### 12.1 WS 直连已打通（取代 CDP 桥接成为主通道）
+
+- 连接 URL：`wss://wsproxy.{backend(含端口)}/?playerId=..&jwtToken=..&deviceId=..&platformId=1&applicationId=5&version=v1.0.5`，query 参数缺一不可（缺后缀握手返回 500）
+- 登录帧：protocolId=10000 (Fs.Login)，serviceTypeId=7 (HALL)；响应 status==1 为成功
+- 全流程冒烟脚本：`scripts/client_e2e_smoke.py`（login → 桌台列表 → 进桌 → 事件流）
+
+### 12.2 game_token 的 jti 会话语义（重要）
+
+- 服务端按 JWT 的 **jti** 做会话管理：**同一账号同时只允许一条游戏连接**
+- 浏览器/旧连接持有的 token，被新登录或服务端刷新后**即刻作废**（旧连接收 10026 踢出）
+- 因此：**每次新建 WS 连接前必须先调 `refresh_game_session` 刷新 token**，
+  不可信任缓存里的旧 token。`hdata/client.py` 的 `_WSConnection.on_before_connect` 钩子已内置此行为
+- token 本身**非一次性**：有效期内可多次使用（冒烟脚本多次复用验证），但必须是服务端当前认可的那张
+
+### 12.3 域名动态轮换的应对（已落地于 `hdata/auth/domain.py`）
+
+- 种子站固定（leyu.com / leyu.me），实际域名与端口**动态轮换**（小时/天级）
+- 解析方式：种子站 `/code.js` 中的 `lypcurls='...'` 为 PC 端真实域名列表
+- 加固策略：TTL 30 分钟缓存 + 探活 + 失效自动重解析；调用方只提供种子站
+
+### 12.4 桌台数据的两个层级
+
+- **大厅快照**（10052 推送的 gameTableMap）：有 gameTypeId/gameStatus/bootNo/roadPaper/在线人数，但**没有 tableName**
+- **进桌快照**（401 响应的 gameTableInfo）：60+ 字段，含 tableName/dealerName/roundNo/cardResult/限额等，样例存 `.cache/gametableinfo.json`
+- 进桌协议号选择：普通百家乐用 401 (NEW_INTER_GAME)；VIP/竞价等（2003/2004/2014/2020）用 101 (INTER_GAME)
+
+### 12.5 踢出机制（实测）
+
+| protocolId | 级别 | 含义 | 处理 |
+|:-----------|:-----|:-----|:-----|
+| 123 | 桌台级 | 连续 5 局未投注被踢出该桌 | 自动重进即可，会话不受影响 |
+| 10026 | 会话级 | token 失效/被顶替 | 必须 `refresh_game_session` 后重登 |
+
+### 12.6 对外公共 API（`hdata/client.py`）
+
+- `GameClient.login() → get_tables() → enter_table()` 三步门面（平台中性命名），端到端已冒烟通过
+- 接口契约文档：`docs/对外接口文档.md`；打包说明：`docs/打包说明.md`；机制总览：`docs/平台接入机制.md`
 
 ### 11.3 外部依赖
 
@@ -589,3 +789,5 @@ wss://wsproxy.{host}:{port}/
 > - 2026-06-27: 修正为 AES-ECB（ttl+AES 密钥），解密成功
 > - 2026-06-27: 验证所有 WS 直连端点不可用
 > - 2026-06-27: 合并原始文档 + hdt 验证到本文档
+> - 2026-07-18: WS 直连打通（推翻 Cloudflare 结论）；归档 jti 会话语义、域名轮换应对、
+>   桌台数据层级、踢出机制；新增对外公共 API（hdata/client.py）与打包说明
