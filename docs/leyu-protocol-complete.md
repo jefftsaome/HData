@@ -795,9 +795,59 @@ base64 解码 → 字节按 MSB-first 拼成位串 → 游标顺序读位
    （全量帧）与状态字段，前端自己算"好路"再过滤显示；
 3. **对 HData 的意义：无需复刻该接口**。`GameClient.get_tables()` 拿到全量
    桌台+路纸后，调用方本地筛选即可（`scripts/demo_road_monitor.py` 即此模式）；
-4. `updatePlayerSetting` 载荷加密：96B 密文，非 venue 的 `ttl+"AES"` ECB、
-   非 WS 帧格式；如需复刻（程序化改设置）需先从 egret JS 逆出加密函数
-   （缓存 JS 已清理，需重新抓取，暂搁置）。
+4. ~~`updatePlayerSetting` 载荷加密未解~~ → **已逆向，见 §12.8**。
+
+### 12.8 gateway HTTP 载荷加密（2026-07-18 逆向完成）
+
+来源：大厅 iframe 页 `https://pc.{资源域名}/egret/hall` 内联的 `dataHandle` webpack bundle。
+
+```js
+// 前端原始实现（minified 还原）
+dataHandle.encrypt = function(t, e) {
+    if (typeof t !== "string") t = JSON.stringify(t);
+    e = CryptoJS.enc.Utf8.parse(e);
+    return aesEncrypt(zip(t), e);          // zip = pako.gzip
+};
+function aesEncrypt(t, e) {                // e 同时作 key 和 iv
+    return CryptoJS.AES.encrypt(t, e, {iv: e, mode: CBC, padding: Pkcs7}).toString();
+}
+```
+
+**算法**：`base64( AES-128-CBC( gzip(JSON), key=iv ) )`——与 WS 帧同结构，但**密钥不同**。
+
+密钥按环境硬编码在 bundle 里（`{dev/test/.../release: ...}[ENV]`）：
+
+| 环境 | key=iv（16 ASCII） |
+|:-----|:-----|
+| release（生产） | `015CCB80A680E129` |
+| dev/training | `AA4194657AD89A56` |
+
+> 注意 bundle 里还有另一组按 ENV 选的字符串（`probinpjms7rfm26` 等），
+> 实测**不是** gateway 载荷密钥；正确的是 `015CCB80A680E129`（已用 6 条真实
+> updatePlayerSetting 载荷验证）。
+
+**updatePlayerSetting 解密实测**（玩家 105452510 操作路纸筛选）：
+
+```json
+{"playerId":105452510,"settingType":"4","settingObject":"23","deviceType":"6","value":"2,1"}
+{"playerId":105452510,"settingType":"4","settingObject":"22","deviceType":"6","value":"2002,2001"}
+{"playerId":105452510,"settingType":"4","settingObject":"22","deviceType":"6","value":"2002"}
+{"playerId":105452510,"settingType":"4","settingObject":"22","deviceType":"6","value":"2001"}
+{"playerId":105452510,"settingType":"4","settingObject":"23","deviceType":"6","value":"2,1,3,5,6,4,9,10,7,8,11"}
+{"playerId":105452510,"settingType":"4","settingObject":"22","deviceType":"6","value":"2002,2001,2030,2034,2003,2005,2004,2038"}
+```
+
+字段语义：
+
+| 字段 | 含义 |
+|:-----|:-----|
+| settingType | 设置大类，`"4"` = 大厅筛选 |
+| settingObject | 子项：`"22"` = 游戏类型过滤（value 为 gameTypeId 列表，2001/2002/2030…）；`"23"` = **路纸类型过滤**（value 为好路类型 id 列表，如 `2,1` / `2,1,3,5,6,4,9,10,7,8,11`） |
+| deviceType | `"6"` = PC 网页 |
+| value | 选中的 id 列表，逗号分隔；路纸 id 与游戏内"好路"分类对应（长庄/长闲/单跳等） |
+
+配套的读取接口：`GET https://gateway.{backend}/game-http/player/getPlayerSetting?playerId={id}`
+（响应载荷同算法加密）。如需程序化改设置，用同算法加密 POST 即可。
 
 ### 11.3 外部依赖
 

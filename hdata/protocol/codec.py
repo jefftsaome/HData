@@ -63,6 +63,36 @@ def aes_decrypt(data: bytes) -> bytes:
     return padded[:-padded[-1]]
 
 
+# ── gateway HTTP 载荷（game-http/* 接口） ─────────────
+# 算法同 WS 帧：base64(AES-128-CBC(gzip(JSON), key=iv))，但密钥独立。
+# 来源：大厅 iframe 内联 dataHandle bundle（见 docs §12.8）。
+
+GATEWAY_KEY = b"015CCB80A680E129"      # release 环境
+GATEWAY_KEY_DEV = b"AA4194657AD89A56"  # dev/training 环境
+
+
+def gateway_encrypt(payload: dict, key: bytes = GATEWAY_KEY) -> str:
+    """gateway HTTP 请求载荷加密：dict → base64(AES-CBC(gzip(JSON)))。"""
+    import base64 as _b64
+    plaintext = gzip.compress(
+        json.dumps(payload, separators=(",", ":")).encode())
+    pad = 16 - len(plaintext) % 16
+    padded = plaintext + bytes([pad]) * pad
+    c = Cipher(algorithms.AES(key), modes.CBC(key))
+    enc = c.encryptor()
+    return _b64.b64encode(enc.update(padded) + enc.finalize()).decode()
+
+
+def gateway_decrypt(b64: str, key: bytes = GATEWAY_KEY) -> dict:
+    """gateway HTTP 载荷解密：base64 → AES-CBC → gunzip → dict。"""
+    import base64 as _b64
+    ct = _b64.b64decode(b64 + "=" * ((4 - len(b64) % 4) % 4))
+    c = Cipher(algorithms.AES(key), modes.CBC(key))
+    dec = c.decryptor()
+    padded = dec.update(ct) + dec.finalize()
+    return json.loads(gzip.decompress(padded[:-padded[-1]]).decode())
+
+
 # ── 帧编解码 ──────────────────────────────────────────
 
 
