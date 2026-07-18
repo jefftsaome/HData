@@ -335,6 +335,71 @@ class GameClient:
             str(i) for i in road_ids)
         return await self.set_setting("23", value)
 
+    # ── 5. 多桌监控（单连接） ─────────────────────────
+
+    async def enter_tables(self, tables: list[dict]) -> "MultiTableSession":
+        """同时进入多张桌台监控（共享一条 WS 连接）。
+
+        实测确认：同一账号在**一条连接**上可同时进多桌（服务端按连接
+        限制而非按桌限制），事件流按 table_id 区分。**不需要多账号**。
+
+        Args:
+            tables: 桌台列表，每项至少含 {"table_id": int,
+                    "game_type_id": int}（即 get_tables() 的返回项）
+
+        Returns:
+            MultiTableSession — `async with` 进入后:
+                .snapshots    {table_id: 进桌快照 dict}
+                .events()     异步迭代器，事件 dict 含 table_id 字段
+
+        Example:
+            picked = [t for t in await client.get_tables() if ...]
+            async with await client.enter_tables(picked) as mts:
+                async for ev in mts.events():
+                    if ev["type"] == "road":
+                        side, n = road_streak(mts.road_flat(ev["table_id"]))
+        """
+        session = self._require_session()
+        conn = _WSConnection(session, on_before_connect=self._refresh_cb)
+        return MultiTableSession(conn, tables)
+
+
+# ── 连胜计算 ──────────────────────────────────────────
+
+
+def road_streak(road: str) -> tuple[str, int]:
+    """计算路纸末尾连胜（对齐口径）。
+
+    规则:
+      - `T`(和) 归属于之前最近一局非和局的胜方，**不打断连胜也不计数**；
+      - `B6`(幸运6庄) 视为 `B`；
+      - 连胜 = 末尾同一胜方的连续非和局数（中间允许夹 T）。
+
+    Returns:
+        (side, count): side 为 "B"/"P"（无连胜为空串），count 为连胜局数。
+
+    Examples:
+        >>> road_streak("PTBBB")
+        ('B', 3)
+        >>> road_streak("BTTBB")   # 中间2局T视为庄和不占局数
+        ('B', 3)
+        >>> road_streak("BTBBT")   # 末尾T归庄
+        ('B', 3)
+    """
+    seq = road.replace("B6", "B").rstrip("T")
+    if not seq:
+        return ("", 0)
+    side = seq[-1]
+    count = 0
+    for ch in reversed(seq):
+        if ch == side:
+            count += 1
+        elif ch == "T":
+            continue
+        else:
+            break
+    return (side, count)
+
 
 # ── WS 连接（内部） ──────────────────────────────────
 
@@ -595,6 +660,150 @@ class TableSession:
             }
 
 
+# ── MultiTableSession ────────────────────────────────
+
+
+class MultiTableSession:
+    """多桌监控会话（共享一条 WS 连接）。
+
+    用 `async with` 进入；退出时自动离全部桌。
+    某张桌被踢（5局未投注）时该桌自动重进，其他桌不受影响。
+    """
+
+    def __init__(self, conn: "_WSConnection", tables: list[dict]):
+        self._conn = conn
+        self._tables: list[dict] = [
+            {"table_id": int(t["table_id"]),
+             "game_type_id": int(t.get("game_type_id", 2001))}
+            for t in tables
+        ]
+        self.snapshots: dict[int, dict] = {}
+        self._entered: set[int] = set()
+
+    async def __aenter__(self) -> "MultiTableSession":
+        await self._conn.__aenter__()
+        for t in self._tables:
+            await self._enter_one(t)
+        return self
+
+    async def __aexit__(self, *exc):
+        for t in self._tables:
+            await self._leave_one(t)
+        await self._conn.__aexit__(*exc)
+
+    def _enter_proto(self, game_type_id: int) -> int:
+        return (_QS_INTER_GAME if game_type_id in _FORCE_101_GAME_TYPES
+                else _QS_NEW_INTER_GAME)
+
+    async def _enter_one(self, t: dict):
+        proto = self._enter_proto(t["game_type_id"])
+        data = {
+            "tableId": t["table_id"],
+            "gameTypeId": t["game_type_id"],
+            "identity": _HT_SEAT,
+            "joinTableMode": _PT_BASE,
+            "gameCasinoId": 0,
+            "deviceType": DEVICE_TYPE_PC,
+            "deviceId": self._conn.device_id,
+        }
+        await self._conn.send(build_message(
+            proto, data, player_id=self._conn._player_id,
+            game_type_id=t["game_type_id"], table_id=t["table_id"],
+            service_type_id=OT_GAME))
+        self._entered.add(t["table_id"])
+        # 快照通过事件循环里的 401 响应异步填充（见 events/_fill_snapshot）
+
+    async def _leave_one(self, t: dict):
+        if t["table_id"] not in self._entered:
+            return
+        try:
+            await self._conn.send(build_message(
+                _QS_OUT_GAME, {}, player_id=self._conn._player_id,
+                game_type_id=t["game_type_id"], table_id=t["table_id"],
+                service_type_id=OT_GAME))
+        except Exception:
+            pass
+        self._entered.discard(t["table_id"])
+
+    def _fill_snapshot(self, payload: dict) -> int:
+        """从 401/101 响应提取快照，返回 table_id（无则 0）。"""
+        gti = (payload or {}).get("gameTableInfo") or {}
+        tid = gti.get("tableId", 0)
+        if tid:
+            self.snapshots[tid] = gti
+        return tid
+
+    def road_flat(self, table_id: int) -> str:
+        """指定桌当前珠盘 B/P/T 序列。"""
+        rp = (self.snapshots.get(table_id) or {}).get("roadPaper") or {}
+        b64 = rp.get("beatPlateRoad") or ""
+        if not b64:
+            return ""
+        try:
+            return "".join(decode_bead_plate(b64)["flat"])
+        except Exception:
+            return ""
+
+    async def events(self) -> AsyncIterator[dict]:
+        """持续产出所有监控桌的事件（异步迭代器）。
+
+        事件结构与 TableSession.events() 相同，table_id 标识来源桌。
+        某桌被踢时自动重进该桌并产出 type="kick" 事件。
+        """
+        import json as _json
+        while True:
+            try:
+                frame = await self._conn.recv()
+            except Exception:
+                return
+            if not frame:
+                continue
+            pid = frame.get("protocolId")
+            info = extract_param(frame) or {}
+            payload = info.get("param") or info.get("data")
+            if isinstance(payload, str):
+                try:
+                    payload = _json.loads(payload)
+                except Exception:
+                    pass
+
+            if pid == 10026:
+                raise LoginError("会话被踢（token 失效），请重新 login()")
+
+            # 进桌响应：填快照
+            if pid in (_QS_NEW_INTER_GAME, _QS_INTER_GAME) \
+                    and isinstance(payload, dict):
+                self._fill_snapshot(payload)
+                continue
+
+            table_id = (payload.get("tableId", 0)
+                        if isinstance(payload, dict) else 0)
+
+            if pid == _KICK_OUT_GAME:
+                # 桌台级踢出：重进该桌
+                t = next((x for x in self._tables
+                          if x["table_id"] == table_id), None)
+                if t:
+                    await self._enter_one(t)
+                yield {"type": "kick", "protocol_id": pid,
+                       "table_id": table_id,
+                       "data": {"action": "auto_reenter"}}
+                continue
+
+            # 路纸事件：同步该桌快照
+            if pid in (116, 160, 161) and isinstance(payload, dict):
+                rp = payload.get("roadPaper")
+                if rp and table_id in self.snapshots:
+                    self.snapshots[table_id]["roadPaper"] = rp
+
+            yield {
+                "type": _classify_event(pid),
+                "protocol_id": pid,
+                "table_id": table_id,
+                "data": payload if isinstance(payload, dict) else {"raw": payload},
+            }
+
+
 # ── 内部工具 ──────────────────────────────────────────
 
 
@@ -704,5 +913,7 @@ __all__ = [
     "GameClient",
     "TableInfo",
     "TableSession",
+    "MultiTableSession",
+    "road_streak",
     "LoginError",
 ]
