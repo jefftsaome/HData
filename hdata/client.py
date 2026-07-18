@@ -61,7 +61,7 @@ _QS_TABLE_LIST_ALL = 10089
 _QS_NEW_INTER_GAME = 401
 _QS_INTER_GAME = 101
 _QS_OUT_GAME = 102
-_KICK_OUT_GAME = 123
+_QS_NOTICE = 123      # 系统通知推送（含连续3局未下注预警 noticeId=21002）
 _FORCE_101_GAME_TYPES = {2003, 2004, 2014, 2020}
 
 _HT_SEAT = 1
@@ -337,7 +337,8 @@ class GameClient:
 
     # ── 5. 多桌监控（单连接） ─────────────────────────
 
-    async def enter_tables(self, tables: list[dict]) -> "MultiTableSession":
+    async def enter_tables(self, tables: list[dict],
+                           kick_policy: str = "stay") -> "MultiTableSession":
         """同时进入多张桌台监控（共享一条 WS 连接）。
 
         实测确认：同一账号在**一条连接**上可同时进多桌（服务端按连接
@@ -346,6 +347,9 @@ class GameClient:
         Args:
             tables: 桌台列表，每项至少含 {"table_id": int,
                     "game_type_id": int}（即 get_tables() 的返回项）
+            kick_policy: 被系统踢出（连续5局未下注）时的策略——
+                "stay"（默认）：被踢后自动重进该桌，监控不中断；
+                "follow_system"：遵循系统踢出，该桌停止监控。
 
         Returns:
             MultiTableSession — `async with` 进入后:
@@ -361,12 +365,13 @@ class GameClient:
         """
         session = self._require_session()
         conn = _WSConnection(session, on_before_connect=self._refresh_cb)
-        return MultiTableSession(conn, tables)
+        return MultiTableSession(conn, tables, kick_policy=kick_policy)
 
     # ── 6. 持续监控（单/多账号兼容） ──────────────────
 
     async def monitor_tables(self, tables: list[dict],
-                             accounts: list[dict] | None = None
+                             accounts: list[dict] | None = None,
+                             kick_policy: str = "stay"
                              ) -> "TableMonitor":
         """创建持续桌台监控（人为主动控制退出，无自动超时）。
 
@@ -381,6 +386,9 @@ class GameClient:
             tables: 桌台列表（get_tables() 返回项，至少含 table_id）
             accounts: 可选，额外账号 [{"account":..,"password":..}, ...]
                       当前登录账号自动算第一个，无需重复传
+            kick_policy: 被系统踢出（连续5局未下注）时的策略——
+                "stay"（默认）：被踢后自动重进该桌，监控不中断；
+                "follow_system"：遵循系统踢出，该桌停止监控。
 
         Returns:
             TableMonitor — `async with` 进入后持续运行:
@@ -425,7 +433,7 @@ class GameClient:
             if not ts:
                 continue
             conn = _WSConnection(sess, on_before_connect=self._make_refresh_cb())
-            shards.append(MultiTableSession(conn, ts))
+            shards.append(MultiTableSession(conn, ts, kick_policy=kick_policy))
         return TableMonitor(shards, self._make_refresh_cb)
 
     def _make_refresh_cb(self):
@@ -607,6 +615,7 @@ class TableSession:
         self.game_type_id = game_type_id
         self.snapshot: dict = {}
         self._entered = False
+        self._leaving = False   # 主动离桌中（防把离桌确认误判为被踢）
 
     async def __aenter__(self) -> "TableSession":
         await self._conn.__aenter__()
@@ -653,6 +662,7 @@ class TableSession:
     async def _leave(self):
         if not self._entered:
             return
+        self._leaving = True
         try:
             await self._conn.send(build_message(
                 _QS_OUT_GAME, {}, player_id=self._conn._player_id,
@@ -661,6 +671,7 @@ class TableSession:
         except Exception:
             pass
         self._entered = False
+        self._leaving = False
 
     # ── 公开读取接口 ──
 
@@ -708,13 +719,20 @@ class TableSession:
 
             if pid == 10026:
                 raise LoginError("会话被踢（token 失效），请重新 login()")
-            if pid == _KICK_OUT_GAME:
-                # 桌台级踢出：自动重进后继续
-                await self._enter()
-                yield {"type": "kick", "protocol_id": pid,
-                       "table_id": self.table_id,
-                       "data": {"action": "auto_reenter"}}
-                continue
+            if pid == _QS_OUT_GAME and isinstance(payload, dict):
+                # 服务器离桌推送：本桌且非主动离桌 = 被系统踢出 → 自动重进
+                try:
+                    leave_tid = int(payload.get("tableId", 0))
+                except (TypeError, ValueError):
+                    leave_tid = 0
+                if leave_tid == self.table_id and not self._leaving \
+                        and payload.get("leaveTableType") != 1:
+                    await self._enter()
+                    yield {"type": "kick", "protocol_id": pid,
+                           "table_id": self.table_id,
+                           "data": {"action": "auto_reenter",
+                                    "dropped": False, "raw": payload}}
+                    continue
 
             # 路纸事件(116/160/161)：同步更新快照里的 roadPaper，
             # 保证 road_flat() 始终反映最新牌路
@@ -738,18 +756,25 @@ class MultiTableSession:
     """多桌监控会话（共享一条 WS 连接）。
 
     用 `async with` 进入；退出时自动离全部桌。
-    某张桌被踢（5局未投注）时该桌自动重进，其他桌不受影响。
+    某张桌被踢（5局未投注）时按 kick_policy 处理：
+      - "stay"（默认）：该桌自动重进，其他桌不受影响；
+      - "follow_system"：遵循系统踢出，该桌停止监控。
     """
 
-    def __init__(self, conn: "_WSConnection", tables: list[dict]):
+    def __init__(self, conn: "_WSConnection", tables: list[dict],
+                 kick_policy: str = "stay"):
         self._conn = conn
         self._tables: list[dict] = [
             {"table_id": int(t["table_id"]),
              "game_type_id": int(t.get("game_type_id", 2001))}
             for t in tables
         ]
+        if kick_policy not in ("stay", "follow_system"):
+            raise ValueError("kick_policy 只能是 'stay' 或 'follow_system'")
+        self.kick_policy = kick_policy
         self.snapshots: dict[int, dict] = {}
         self._entered: set[int] = set()
+        self._leaving: set[int] = set()   # 主动离桌中的桌（防误判为被踢）
 
     async def __aenter__(self) -> "MultiTableSession":
         await self._conn.__aenter__()
@@ -787,6 +812,7 @@ class MultiTableSession:
     async def _leave_one(self, t: dict):
         if t["table_id"] not in self._entered:
             return
+        self._leaving.add(t["table_id"])
         try:
             await self._conn.send(build_message(
                 _QS_OUT_GAME, {}, player_id=self._conn._player_id,
@@ -795,6 +821,7 @@ class MultiTableSession:
         except Exception:
             pass
         self._entered.discard(t["table_id"])
+        self._leaving.discard(t["table_id"])
 
     def _fill_snapshot(self, payload: dict) -> int:
         """从 401/101 响应提取快照，返回 table_id（无则 0）。"""
@@ -819,7 +846,16 @@ class MultiTableSession:
         """持续产出所有监控桌的事件（异步迭代器）。
 
         事件结构与 TableSession.events() 相同，table_id 标识来源桌。
-        某桌被踢时自动重进该桌并产出 type="kick" 事件。
+
+        实测踢出机制：连续未下注满 3 局服务器推 123 预警（notice 事件，
+        不踢人）；满 5 局推 102 离桌通知（leaveTableType 区分主动/被踢），
+        连接保持不断。已实测：被踢前重发进桌指令(401)**不能**避免踢出，
+        只能在被踢后重新进桌。
+
+        kick_policy="stay"（默认）：被踢（102 推送）后自动重进该桌，
+        产出 type="kick" 事件（data.dropped=False）。
+        kick_policy="follow_system"：被踢即停止监控该桌，产出
+        type="kick" 事件（data.dropped=True）；全部桌被踢后迭代结束。
         """
         import json as _json
         while True:
@@ -850,15 +886,36 @@ class MultiTableSession:
             table_id = (payload.get("tableId", 0)
                         if isinstance(payload, dict) else 0)
 
-            if pid == _KICK_OUT_GAME:
-                # 桌台级踢出：重进该桌
+            # 服务器离桌推送（102）：主动离桌的确认 或 被系统踢出
+            # 实测：leaveTableType=1 主动离桌(noticeId=21001)，
+            #       leaveTableType=2 长时间未下注被踢(noticeId=21003)
+            if pid == _QS_OUT_GAME and isinstance(payload, dict):
+                if table_id in self._leaving \
+                        or table_id not in self._entered \
+                        or payload.get("leaveTableType") == 1:
+                    continue            # 自己主动离桌的确认/无关桌，忽略
+                if self.kick_policy == "follow_system":
+                    # 遵循系统踢出：停止监控该桌
+                    self._tables = [x for x in self._tables
+                                    if x["table_id"] != table_id]
+                    self._entered.discard(table_id)
+                    yield {"type": "kick", "protocol_id": pid,
+                           "table_id": table_id,
+                           "data": {"action": "dropped", "dropped": True,
+                                    "raw": payload}}
+                    if not self._tables:
+                        return
+                    continue
+                # stay：自动重进该桌
+                self._entered.discard(table_id)
                 t = next((x for x in self._tables
                           if x["table_id"] == table_id), None)
                 if t:
                     await self._enter_one(t)
                 yield {"type": "kick", "protocol_id": pid,
                        "table_id": table_id,
-                       "data": {"action": "auto_reenter"}}
+                       "data": {"action": "auto_reenter", "dropped": False,
+                                "raw": payload}}
                 continue
 
             # 路纸事件：同步该桌快照
@@ -1052,11 +1109,13 @@ def _json_loads(s: str):
 def _classify_event(protocol_id: int) -> str:
     """协议号 → 事件类型名。"""
     return {
+        102: "leave",      # 离桌推送（主动/被踢，leaveTableType 区分）
         104: "round",      # 局状态（roundNo/countdown/bootIndex）
         106: "card",       # 发牌
         107: "card",       # 牌局事件
         110: "bet",        # 桌台动态（在线/投注/奖池）
         116: "road",       # 路纸
+        123: "notice",     # 系统通知（如连续3局未下注预警 noticeId=21002）
         160: "road",       # 路纸更新
         161: "road",       # 路纸更新
         171: "status",     # 桌台状态
