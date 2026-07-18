@@ -161,7 +161,13 @@ class GameClient:
         )
         # 确保 game_token 是服务端当前认可的最新一张：
         # 缓存里的旧 token 可能已被服务端作废（jti 踢出），先刷新一次。
-        session = await self._refresh_game_token(account, session)
+        # 刷新失败不致命：_session_login 返回的会话本身可能仍可用。
+        try:
+            session = await self._refresh_game_token(account, session)
+        except Exception:
+            pass
+        self._account = account
+        self._password = password
         self._session = session
         return {
             "account": account,
@@ -173,13 +179,10 @@ class GameClient:
         }
 
     async def _refresh_game_token(self, account: str, session: dict) -> dict:
-        """用站点会话刷新 game_token 并写回缓存。"""
+        """用站点会话刷新 game_token 并写回缓存。失败抛异常。"""
         from hdata.auth.params import decode_jwt
         from hdata.auth.session import refresh_game_session, save_session
-        try:
-            params = await refresh_game_session(account, session)
-        except Exception:
-            return session  # 刷新失败则沿用原 token（可能仍有效）
+        params = await refresh_game_session(account, session)
         new_token = params.get("token")
         if new_token:
             session["game_token"] = new_token
@@ -255,9 +258,24 @@ class GameClient:
         return ts
 
     async def _refresh_cb(self, session: dict) -> dict:
-        """每次新建 WS 连接前刷新 game_token（服务端不允许同 token 重连）。"""
+        """每次新建 WS 连接前刷新 game_token（服务端按 jti 单连接）。
+
+        刷新失败（站点会话也失效）时，若有密码则完整重登兜底。
+        """
         account = session.get("account", "")
-        return await self._refresh_game_token(account, session)
+        try:
+            return await self._refresh_game_token(account, session)
+        except Exception:
+            if not self._password:
+                raise
+            # 站点会话整体失效 → 完整重新登录（可能走打码）
+            fresh = await _session_login(
+                self._account, self._password,
+                entry_url=self._entry_url, force_refresh=True,
+                geepass_token=self._geepass_token,
+                jfbym_token=self._jfbym_token)
+            self._session = fresh
+            return fresh
 
 
 # ── WS 连接（内部） ──────────────────────────────────
@@ -503,6 +521,13 @@ class TableSession:
                        "table_id": self.table_id,
                        "data": {"action": "auto_reenter"}}
                 continue
+
+            # 路纸事件(116/160/161)：同步更新快照里的 roadPaper，
+            # 保证 road_flat() 始终反映最新牌路
+            if pid in (116, 160, 161) and isinstance(payload, dict):
+                rp = payload.get("roadPaper")
+                if rp:
+                    self.snapshot["roadPaper"] = rp
 
             yield {
                 "type": _classify_event(pid),

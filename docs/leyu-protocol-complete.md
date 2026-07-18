@@ -771,6 +771,34 @@ base64 解码 → 字节按 MSB-first 拼成位串 → 游标顺序读位
 - `GameClient.login() → get_tables() → enter_table()` 三步门面（平台中性命名），端到端已冒烟通过
 - 接口契约文档：`docs/对外接口文档.md`；打包说明：`docs/打包说明.md`；机制总览：`docs/平台接入机制.md`
 
+### 12.7 路纸筛选设置的请求机制（2026-07-18 浏览器嗅探确认）
+
+**结论：保存走 HTTP，过滤在前端，服务端推送内容不受设置影响。**
+
+嗅探方法：CDP Network 域同时抓 HTTP 与 WS 帧（`scripts/sniff_filter_setting.py`），
+人工在大厅操作路纸筛选设置。注意：大厅游戏逻辑在 **iframe**
+（`https://pc.{资源域名}/egret/hall?params=...`）里，必须盯 iframe target，
+外层页面只有 `{"msgId":0,"msgData":{}}` 文本心跳。
+
+设置操作时的流量：
+
+| 通道 | 观察 | 判定 |
+|:-----|:-----|:-----|
+| HTTP | `POST https://gateway.{backend}/game-http/player/updatePlayerSetting?t={毫秒时间戳}`，载荷为 96 字节加密体（6 次操作 6 条，前 64 base64 字符相同 = 同密钥同 IV + 相同明文头） | ✅ 设置保存接口 |
+| WS 发送 | 仅 pid=3 心跳（`{clientTime, deviceType, deviceId}`），无任何业务帧 | 设置不走 WS |
+| WS 接收 | 10052 大厅快照恒定 ~1.4s 一帧，设置前后节奏与内容无变化 | 服务端**不按设置过滤推送**，始终推全量 |
+
+推论：
+
+1. `updatePlayerSetting` 只是把筛选偏好**持久化到服务端**（换设备/刷新后同步）；
+2. 实际的桌台过滤是**前端本地做**的——10052 推送里每张桌已带 roadPaper
+   （全量帧）与状态字段，前端自己算"好路"再过滤显示；
+3. **对 HData 的意义：无需复刻该接口**。`GameClient.get_tables()` 拿到全量
+   桌台+路纸后，调用方本地筛选即可（`scripts/demo_road_monitor.py` 即此模式）；
+4. `updatePlayerSetting` 载荷加密：96B 密文，非 venue 的 `ttl+"AES"` ECB、
+   非 WS 帧格式；如需复刻（程序化改设置）需先从 egret JS 逆出加密函数
+   （缓存 JS 已清理，需重新抓取，暂搁置）。
+
 ### 11.3 外部依赖
 
 | 依赖 | 用途 | 版本 |
