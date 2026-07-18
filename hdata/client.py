@@ -277,6 +277,64 @@ class GameClient:
             self._session = fresh
             return fresh
 
+    # ── 4. 玩家设置（gateway HTTP） ───────────────────
+
+    async def get_settings(self) -> list[dict]:
+        """读取当前玩家的全部设置（含路纸筛选偏好）。
+
+        Returns:
+            设置项列表，每项:
+              {playerId, settingType, settingObject, deviceType, value, defaultValue}
+            其中 settingType="4" 为大厅筛选：
+              settingObject="22" → 游戏类型过滤（value=gameTypeId 列表）
+              settingObject="23" → 路纸类型过滤（value=好路 id 列表）
+        """
+        session = self._require_session()
+        pid = session.get("game_player_id", 0)
+        url = (f"https://gateway.{session['game_backend']}"
+               f"/game-http/player/getPlayerSetting?playerId={pid}")
+        r = await asyncio.to_thread(
+            _gateway_request, "GET", url, None, session)
+        data = r.get("data") or []
+        return data if isinstance(data, list) else []
+
+    async def set_setting(self, setting_object: str, value: str,
+                          setting_type: str = "4") -> bool:
+        """修改一项玩家设置（持久化到服务端）。
+
+        Args:
+            setting_object: 子项 id。"22"=游戏类型过滤 "23"=路纸类型过滤
+            value: 选中的 id 列表，逗号分隔（如 "2,1,3"）
+            setting_type: 设置大类，默认 "4"=大厅筛选
+
+        Returns:
+            True = 写入成功
+        """
+        session = self._require_session()
+        pid = session.get("game_player_id", 0)
+        ts = int(time.time() * 1000)
+        payload = {"playerId": pid, "settingType": setting_type,
+                   "settingObject": setting_object,
+                   "deviceType": "6", "value": value}
+        url = (f"https://gateway.{session['game_backend']}"
+               f"/game-http/player/updatePlayerSetting?t={ts}")
+        r = await asyncio.to_thread(
+            _gateway_request, "POST", url, payload, session, ts)
+        return bool(r.get("code") == 200 and r.get("data"))
+
+    async def set_road_filter(self, road_ids: list[int] | str) -> bool:
+        """修改路纸筛选偏好（settingObject=23 的便捷封装）。
+
+        Args:
+            road_ids: 好路类型 id 列表（如 [2,1,3]）或逗号分隔字符串
+
+        Example:
+            await client.set_road_filter([2, 1])   # 只看长庄+长闲
+        """
+        value = road_ids if isinstance(road_ids, str) else ",".join(
+            str(i) for i in road_ids)
+        return await self.set_setting("23", value)
+
 
 # ── WS 连接（内部） ──────────────────────────────────
 
@@ -538,6 +596,60 @@ class TableSession:
 
 
 # ── 内部工具 ──────────────────────────────────────────
+
+
+def _gateway_request(method: str, url: str, payload: dict | None,
+                     session: dict, timestamp: int = 0) -> dict:
+    """game-http gateway 请求（内部）。
+
+    GET: 响应为明文 JSON；
+    POST: 请求体 gateway_encrypt(payload)，另需加签的 token 头，
+          响应为 gateway_encrypt 加密体，解密后返回。
+    """
+    import base64 as _b64
+    import hashlib as _hash
+    import hmac as _hmac
+    from curl_cffi import requests
+    from hdata.protocol.codec import (
+        GATEWAY_KEY, gateway_decrypt, gateway_encrypt)
+
+    keyid = "probinpjms7rfm26"  # release keyid（大厅 bundle 硬编码）
+    headers = {
+        "deviceType": "15",
+        "model": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/149.0.0.0 Safari/537.36"),
+        "deviceId": session.get("device_id", "") or f"{int(time.time()*1000)}-1",
+        "X-Request-Token": session.get("game_token", ""),
+        "keyid": keyid,
+        "Content-Type": "application/json;charset=UTF-8",
+    }
+    body: bytes | None = None
+    if method == "POST" and payload is not None:
+        enc = gateway_encrypt(payload)
+        sign = _b64.b64encode(_hmac.new(
+            GATEWAY_KEY, (enc + "0" + str(timestamp)).encode(),
+            _hash.sha1).digest()).decode()
+        meta = {"encrypted": True, "gzipped": True, "platform": "h5",
+                "version": "1.2.2", "application": "game_http",
+                "timestamp": timestamp, "nonce": 0,
+                "sign": sign, "keyid": keyid}
+        headers["token"] = gateway_encrypt(meta)
+        body = enc.encode()
+
+    resp = requests.request(method, url, data=body, headers=headers,
+                            impersonate="chrome110", timeout=15)
+    resp.raise_for_status()
+    text = resp.text
+    try:
+        return _json_loads(text)
+    except Exception:
+        return gateway_decrypt(text)
+
+
+def _json_loads(s: str):
+    import json as _j
+    return _j.loads(s)
 
 
 def _classify_event(protocol_id: int) -> str:
