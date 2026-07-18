@@ -363,6 +363,77 @@ class GameClient:
         conn = _WSConnection(session, on_before_connect=self._refresh_cb)
         return MultiTableSession(conn, tables)
 
+    # ── 6. 持续监控（单/多账号兼容） ──────────────────
+
+    async def monitor_tables(self, tables: list[dict],
+                             accounts: list[dict] | None = None
+                             ) -> "TableMonitor":
+        """创建持续桌台监控（人为主动控制退出，无自动超时）。
+
+        账号策略（自动兼容两种模式）:
+          - **单账号多桌**（默认）：不传 accounts，全部桌台压在当前登录
+            账号的一条连接上（已实测可行）；
+          - **多账号多桌**：传入 accounts，桌台轮询分配到各账号，
+            每账号一条连接（每账号仍可同时多桌）。若平台日后限制
+            单账号多桌，只需补账号即可无缝切换。
+
+        Args:
+            tables: 桌台列表（get_tables() 返回项，至少含 table_id）
+            accounts: 可选，额外账号 [{"account":..,"password":..}, ...]
+                      当前登录账号自动算第一个，无需重复传
+
+        Returns:
+            TableMonitor — `async with` 进入后持续运行:
+                .snapshots            {table_id: 快照}
+                .road_flat(tid)       指定桌当前珠盘路
+                .events()             统一事件流（含 table_id）
+                .add_table(t)         动态加桌
+                .leave_table(tid)     主动退出某桌
+                .aclose()             停止全部（退出 async with 也会调）
+
+        Example:
+            async with await client.monitor_tables(picked) as mon:
+                async for ev in mon.events():
+                    side, n = road_streak(mon.road_flat(ev["table_id"]))
+                    if n < 5:
+                        await mon.leave_table(ev["table_id"])  # 断龙主动退
+        """
+        first = self._require_session()
+
+        # 1. 收集所有账号会话（第一个复用当前登录）
+        sessions: list[dict] = [first]
+        for c in (accounts or []):
+            if c.get("account") == self._account:
+                continue
+            s = await _session_login(
+                c["account"], c.get("password", ""),
+                entry_url=self._entry_url,
+                geepass_token=self._geepass_token,
+                jfbym_token=self._jfbym_token)
+            s["account"] = c["account"]
+            sessions.append(s)
+
+        # 2. 桌台轮询分配到各账号
+        n = len(sessions)
+        groups: list[list[dict]] = [[] for _ in range(n)]
+        for i, t in enumerate(tables):
+            groups[i % n].append(t)
+
+        # 3. 每账号一条连接 + 一个 MultiTableSession
+        shards: list[MultiTableSession] = []
+        for sess, ts in zip(sessions, groups):
+            if not ts:
+                continue
+            conn = _WSConnection(sess, on_before_connect=self._make_refresh_cb())
+            shards.append(MultiTableSession(conn, ts))
+        return TableMonitor(shards, self._make_refresh_cb)
+
+    def _make_refresh_cb(self):
+        """生成与账号无关的刷新回调（复用 _refresh_cb 的兜底逻辑）。"""
+        async def _cb(session: dict) -> dict:
+            return await self._refresh_cb(session)
+        return _cb
+
 
 # ── 连胜计算 ──────────────────────────────────────────
 
@@ -804,6 +875,123 @@ class MultiTableSession:
             }
 
 
+# ── TableMonitor ─────────────────────────────────────
+
+
+class TableMonitor:
+    """持续多桌监控器（单/多账号统一门面）。
+
+    内部分片：每个账号一条连接一个 MultiTableSession；
+    对外表现为单一事件流 + 统一快照表。
+    **不内置任何自动退出**——leave_table()/aclose() 由调用方控制。
+    """
+
+    def __init__(self, shards: list[MultiTableSession], refresh_cb_factory):
+        self._shards = shards
+        self._refresh_cb_factory = refresh_cb_factory
+        self._closed = False
+
+    # ── 生命周期 ──
+
+    async def __aenter__(self) -> "TableMonitor":
+        for shard in self._shards:
+            await shard.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.aclose()
+
+    async def aclose(self):
+        """停止全部监控（离所有桌、断所有连接）。幂等。"""
+        if self._closed:
+            return
+        self._closed = True
+        for shard in self._shards:
+            try:
+                await shard.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    # ── 数据访问 ──
+
+    @property
+    def snapshots(self) -> dict[int, dict]:
+        """全部监控桌的快照 {table_id: snapshot}。"""
+        merged: dict[int, dict] = {}
+        for shard in self._shards:
+            merged.update(shard.snapshots)
+        return merged
+
+    def road_flat(self, table_id: int) -> str:
+        """指定桌当前珠盘路。"""
+        for shard in self._shards:
+            if table_id in shard.snapshots:
+                return shard.road_flat(table_id)
+        return ""
+
+    @property
+    def table_ids(self) -> list[int]:
+        """当前监控中的桌台 id 列表。"""
+        return [t["table_id"] for s in self._shards for t in s._tables]
+
+    # ── 动态控制 ──
+
+    async def add_table(self, table: dict):
+        """动态加入一张桌（分配到负载最小的分片）。"""
+        shard = min(self._shards, key=lambda s: len(s._tables))
+        t = {"table_id": int(table["table_id"]),
+             "game_type_id": int(table.get("game_type_id", 2001))}
+        shard._tables.append(t)
+        await shard._enter_one(t)
+
+    async def leave_table(self, table_id: int):
+        """主动退出某桌（其他桌不受影响）。"""
+        for shard in self._shards:
+            t = next((x for x in shard._tables
+                      if x["table_id"] == table_id), None)
+            if t:
+                await shard._leave_one(t)
+                shard._tables.remove(t)
+                shard.snapshots.pop(table_id, None)
+                return
+
+    # ── 事件流 ──
+
+    async def events(self) -> AsyncIterator[dict]:
+        """全部分片合并的统一事件流。
+
+        每个分片一个转发任务汇入队列；aclose() 后迭代自然结束。
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        done = asyncio.Event()
+
+        async def pump(shard: MultiTableSession):
+            try:
+                async for ev in shard.events():
+                    await queue.put(ev)
+                    if self._closed:
+                        return
+            except Exception as e:
+                await queue.put({"type": "error", "protocol_id": 0,
+                                 "table_id": 0, "data": {"error": str(e)}})
+            finally:
+                done.set()
+
+        tasks = [asyncio.create_task(pump(s)) for s in self._shards]
+        try:
+            while not self._closed:
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    if self._closed or (done.is_set() and queue.empty()):
+                        break
+                    continue
+                yield ev
+        finally:
+            for task in tasks:
+                task.cancel()
+
+
 # ── 内部工具 ──────────────────────────────────────────
 
 
@@ -914,6 +1102,7 @@ __all__ = [
     "TableInfo",
     "TableSession",
     "MultiTableSession",
+    "TableMonitor",
     "road_streak",
     "LoginError",
 ]
