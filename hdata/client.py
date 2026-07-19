@@ -88,6 +88,7 @@ class TableInfo:
     boot_no: str                # 靴号
     road_flat: str              # 珠盘 B/P/T 序列（如 "BBPTPBPB"）
     road_count: int             # 本靴已开局的局数
+    good_roads: list[str]       # 服务端标记的生效好路名（如 ["长庄","逢闲连"]）
 
     def to_dict(self) -> dict:
         return {
@@ -100,6 +101,7 @@ class TableInfo:
             "boot_no": self.boot_no,
             "road_flat": self.road_flat,
             "road_count": self.road_count,
+            "good_roads": list(self.good_roads),
         }
 
 
@@ -1414,6 +1416,12 @@ def _table_info_from_snapshot(table_id: str, t: dict,
     ton = t.get("tableOnline")
     if isinstance(ton, dict):
         online = ton.get("onlineNumber", 0) or 0
+    good_roads = [
+        GOOD_ROAD_NAMES.get(p.get("goodRoadType"),
+                            f"类型{p.get('goodRoadType')}")
+        for p in (t.get("goodRoadPoints") or [])
+        if isinstance(p, dict) and p.get("goodRoadFlag")
+    ]
     return TableInfo(
         table_id=tid,
         game_type_id=gt,
@@ -1425,6 +1433,7 @@ def _table_info_from_snapshot(table_id: str, t: dict,
         boot_no=t.get("bootNo", "") or m.get("bootNo", "") or "",
         road_flat=flat,
         road_count=len(flat),
+        good_roads=good_roads,
     )
 
 
