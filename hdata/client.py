@@ -60,6 +60,8 @@ from hdata.protocol.schemacodec import schema_decode
 # ── 协议常量（内部使用，不导出） ──
 _QS_TABLE_LIST_ALL = 10089
 _QS_TABLE_LIST_LIMIT = 10053   # 分页桌台元数据（二进制 schema 帧）
+_QS_HEARTBEAT = 3              # 协议心跳（pid=3，与官方前端一致）
+_HEARTBEAT_INTERVAL = 10       # 秒
 _QS_NEW_INTER_GAME = 401
 _QS_INTER_GAME = 101
 _QS_OUT_GAME = 102
@@ -578,12 +580,37 @@ class _WSConnection:
             self._cfg["ws_url"], open_timeout=12, close_timeout=3,
             max_size=50 * 1024 * 1024)
         await self._login()
+        self._hb_task = asyncio.create_task(self._heartbeat_loop())
         return self
 
     async def __aexit__(self, *exc):
+        task = getattr(self, "_hb_task", None)
+        if task:
+            task.cancel()
+            self._hb_task = None
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+    async def _heartbeat_loop(self):
+        """协议级心跳保活（pid=3，与官方前端一致）。
+
+        无心跳时服务端约 40~60s 主动断连（实测）。
+        """
+        try:
+            while True:
+                await asyncio.sleep(_HEARTBEAT_INTERVAL)
+                await self.send(build_message(
+                    _QS_HEARTBEAT,
+                    {"clientTime": int(time.time() * 1000),
+                     "deviceType": DEVICE_TYPE_PC,
+                     "deviceId": self._device_id},
+                    player_id=self._player_id, game_type_id=2013,
+                    service_type_id=OT_HALL))
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return  # 发送失败说明连接已坏，交由接收侧感知
 
     async def _login(self):
         token = self._session["game_token"]
