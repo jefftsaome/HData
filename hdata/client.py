@@ -38,6 +38,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
+from loguru import logger
+
 from hdata.auth.session import (
     LoginError,
     build_ws_config,
@@ -70,6 +72,12 @@ _FORCE_101_GAME_TYPES = {2003, 2004, 2014, 2020}
 
 _HT_SEAT = 1
 _PT_BASE = 2
+
+# TableMonitor 分片建连控制（实测同 IP 密集建连会被 WAF 403/短封；
+# 3s 间隔实测可稳定建 11 条并发连接）
+_SHARD_CONNECT_INTERVAL_S = 3.0   # 分片建连间隔（秒）
+_SHARD_CONNECT_RETRIES = 3        # 单分片失败重试次数
+_SHARD_RETRY_BACKOFF_S = 5.0      # 退避基数（第 n 次失败睡 n×base 秒）
 
 
 # ── 公开数据结构 ──────────────────────────────────────
@@ -409,6 +417,8 @@ class GameClient:
           - **多账号多桌**：传入 accounts，桌台轮询分配到各账号，
             每账号一条连接（每账号仍可同时多桌）。若平台日后限制
             单账号多桌，只需补账号即可无缝切换。
+            每个账号都会建立自己的分片连接——即使初始没有分到桌，
+            以便后续 add_table() 动态均衡到全部账号。
 
         Args:
             tables: 桌台列表（get_tables() 返回项，至少含 table_id）
@@ -455,11 +465,11 @@ class GameClient:
         for i, t in enumerate(tables):
             groups[i % n].append(t)
 
-        # 3. 每账号一条连接 + 一个 MultiTableSession
+        # 3. 每账号一条连接 + 一个 MultiTableSession。
+        #    空组同样建分片：tables 可为空列表，后续通过
+        #    TableMonitor.add_table() 把桌台均衡到各账号分片。
         shards: list[MultiTableSession] = []
         for sess, ts in zip(sessions, groups):
-            if not ts:
-                continue
             conn = _WSConnection(sess, on_before_connect=self._make_refresh_cb())
             shards.append(MultiTableSession(conn, ts, kick_policy=kick_policy))
         return TableMonitor(shards, self._make_refresh_cb)
@@ -1221,8 +1231,45 @@ class TableMonitor:
     # ── 生命周期 ──
 
     async def __aenter__(self) -> "TableMonitor":
-        for shard in self._shards:
-            await shard.__aenter__()
+        """逐分片建连：限速 + 重试 + 失败降级（防 WAF 连接风暴）。
+
+        实测平台对同 IP 的 WS 新建连有速率/并发限制（密集建连会
+        收到 HTTP 403 并可能触发短时封禁）。因此分片间间隔
+        _SHARD_CONNECT_INTERVAL_S 秒，失败按指数退避重试
+        _SHARD_CONNECT_RETRIES 次；仍失败的分片剔除出列表降级运行
+        （其初始桌会丢失，日志告警）。全部分片失败才抛 LoginError。
+        """
+        live: list[MultiTableSession] = []
+        for i, shard in enumerate(self._shards):
+            if i:
+                await asyncio.sleep(_SHARD_CONNECT_INTERVAL_S)
+            err: Exception | None = None
+            for attempt in range(_SHARD_CONNECT_RETRIES):
+                try:
+                    await shard.__aenter__()
+                    err = None
+                    break
+                except Exception as e:      # 含 403 握手拒绝等
+                    err = e
+                    await asyncio.sleep(
+                        _SHARD_RETRY_BACKOFF_S * (attempt + 1))
+            if err is None:
+                live.append(shard)
+            else:
+                logger.warning(
+                    f"[TableMonitor] 分片连接失败已剔除: {err}"
+                    f"（损失 {len(shard._tables)} 张初始桌）")
+                try:                        # 可能半连接，兜底关闭防泄漏
+                    await shard.__aexit__(None, None, None)
+                except Exception:
+                    pass
+        if not live:
+            raise LoginError("TableMonitor: 所有分片连接均失败")
+        if len(live) < len(self._shards):
+            logger.warning(
+                f"[TableMonitor] {len(self._shards) - len(live)} 个分片"
+                f"被剔除，以 {len(live)} 个分片降级运行")
+        self._shards = live
         return self
 
     async def __aexit__(self, *exc):
