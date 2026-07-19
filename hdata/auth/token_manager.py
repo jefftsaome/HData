@@ -29,7 +29,6 @@ import json
 import os
 import time
 from pathlib import Path
-from urllib.parse import urlparse, unquote
 
 from hdata.auth.params import (
     decode_jwt as _decode_jwt,

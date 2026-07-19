@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 from hdata.auth.session import (
