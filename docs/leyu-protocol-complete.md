@@ -59,15 +59,32 @@
 | 3 | 已封盘 |
 | 4 | 开牌中 |
 
-### 1.3 游戏类型
+### 1.3 游戏类型（2026-07-19 逆向大厅前端 JS 校准）
 
-| gameTypeId | 类型 |
-|-----------|------|
-| 2001 | 迷你百家乐 |
-| 2002 | 普通百家乐 |
-| 2003 | 线下百家乐 |
-| 2004 | 高级百家乐 |
-| 2013 | 测试牌桌 |
+权威来源：大厅资源 `egret/js/assets-*.js` 中的枚举 `It`（gameTypeId 数值）
+与 `_gameNameMap`（id→官方中文名）。与网页大厅显示的 8 个分类逐一对上：
+
+| gameTypeId | 官方名称 | 前端枚举名 |
+|-----------:|---------|-----------|
+| 2001 | 经典百家乐 | BACCARAT |
+| 2002 | 极速百家乐 | BACCARAT_FAST |
+| 2003 | 竞咪百家乐 | BACCARAT_BID |
+| 2004 | 包桌百家乐 | BACCARAT_VIP |
+| 2005 | 共咪百家乐 | BACCARAT_REVEAL |
+| 2030 | 主播百家乐 | BACCARAT_ZHUBO |
+| 2034 | 闪电百家乐 | LIGHTNING_BACC |
+| 2038 | 电投百家乐 | BACCARAT_DT |
+
+> 交叉验证：玩家设置接口实测的"游戏类型过滤"值 `2002,2001,2030,2034,2003,2005,2004,2038`
+> 与网页分类栏顺序（极速/经典/主播/闪电/竞咪/共咪/包桌/电投）完全一致。
+
+其余已知 id：2006 龙虎、2007 轮盘、2008 骰宝、2009 牛牛、2010 炸金花、
+2011 三公、2012 21点、2013 多台、2014 高额百家乐、2015 斗牛、
+2016 保险百家乐、2018 百家乐大赛、2020 番摊、2027 劲舞百家乐。
+代码内映射见 `hdata/client.py::_GAME_TYPE_NAMES`。
+
+⚠️ 注意：服务端大厅快照 10052 **不下发玩法名称**（只有 gameTypeId），
+名称表是前端本地资源；官方玩法名+桌名的服务端来源是 10053，见 §12.4。
 
 ### 1.4 桌台命名规则
 
@@ -755,7 +772,12 @@ base64 解码 → 字节按 MSB-first 拼成位串 → 游标顺序读位
 
 ### 12.4 桌台数据的两个层级
 
-- **大厅快照**（10052 推送的 gameTableMap）：有 gameTypeId/gameStatus/bootNo/roadPaper/在线人数，但**没有 tableName**
+- **大厅快照**（10052 推送的 gameTableMap）：有 gameTypeId/gameStatus/bootNo/roadPaper/在线人数/goodRoadPoints，但**没有 tableName/gameTypeName**
+- **桌名与官方玩法名**（10053 = TABLE_LIST_LIMIT）：前端流程为先发 10089 `{labelTypeId:1}`
+  拿到桌台 id 全集，再分页发 10053 `{groupId:7(ALL_GAME), tableIds:[...], allFlag:0}`，
+  响应 gameTableMap 每张桌含 tableName/gameTypeName/physicsTableNo/gameCasinoName 等
+  （JS 中 schema id `10053_7`）。⚠️ 10089/10053 的载荷是**自定义二进制 schema 编码**
+  （非 JSON），HData 尚未实现解码，目前桌名只能从 401 进桌快照拿
 - **进桌快照**（401 响应的 gameTableInfo）：60+ 字段，含 tableName/dealerName/roundNo/cardResult/限额等，样例存 `.cache/gametableinfo.json`
 - 进桌协议号选择：普通百家乐用 401 (NEW_INTER_GAME)；VIP/竞价等（2003/2004/2014/2020）用 101 (INTER_GAME)
 
