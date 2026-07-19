@@ -102,3 +102,35 @@ def test_round_tracker_feed_road_paper():
     assert hist[0]["result"] == "B"
     # 幂等：再喂一次不增加
     assert tracker.feed_road_paper(2659, rp) == 0
+
+# ── round_result_token（107 roundResult "庄点;闲点" → 路纸 token）──
+
+from hdata.client import round_result_token
+
+
+def test_round_result_token_banker_win():
+    assert round_result_token("9;5") == "B"    # 庄9闲5
+    assert round_result_token("5;3") == "B"
+
+
+def test_round_result_token_banker_six():
+    assert round_result_token("6;4") == "B6"   # 庄6闲4 → 幸运6庄
+    assert round_result_token("6;0") == "B6"
+
+
+def test_round_result_token_player_win():
+    assert round_result_token("4;6") == "P"
+    assert round_result_token("0;9") == "P"
+
+
+def test_round_result_token_tie():
+    assert round_result_token("5;5") == "T"
+    assert round_result_token("0;0") == "T"
+
+
+def test_round_result_token_garbage():
+    assert round_result_token("") == ""
+    assert round_result_token(None) == ""
+    assert round_result_token("abc") == ""
+    assert round_result_token("1:2") == ""
+    assert round_result_token(123) == ""

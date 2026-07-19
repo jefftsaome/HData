@@ -446,6 +446,40 @@ class GameClient:
 # ── 连胜计算 ──────────────────────────────────────────
 
 
+def round_result_token(round_result) -> str:
+    """把 107 牌局事件的 roundResult 解析为路纸 token。
+
+    实测格式：`"{庄点};{闲点}"`（**庄在前**），
+    如 "9;5"=庄9闲5、"6;4"=庄6闲4。判定：
+      - 庄点 > 闲点 → "B"；庄点 == 6 且庄赢 → "B6"（幸运6庄）
+      - 庄点 < 闲点 → "P"
+      - 相等 → "T"
+      - 无法解析 → ""
+
+    Examples:
+        >>> round_result_token("9;5")
+        'B'
+        >>> round_result_token("6;4")
+        'B6'
+        >>> round_result_token("4;6")
+        'P'
+        >>> round_result_token("5;5")
+        'T'
+    """
+    if not isinstance(round_result, str) or ";" not in round_result:
+        return ""
+    try:
+        b_s, p_s = round_result.split(";", 1)
+        banker, player = int(b_s.strip()), int(p_s.strip())
+    except (ValueError, AttributeError):
+        return ""
+    if banker > player:
+        return "B6" if banker == 6 else "B"
+    if banker < player:
+        return "P"
+    return "T"
+
+
 def road_streak(road: str) -> tuple[str, int]:
     """计算路纸末尾连胜（对齐口径）。
 
@@ -616,6 +650,8 @@ class TableSession:
         self.snapshot: dict = {}
         self._entered = False
         self._leaving = False   # 主动离桌中（防把离桌确认误判为被踢）
+        self._road_accum: list = []   # 珠盘累积（116全长重置 / 107逐局追加）
+        self._last_round_id = 0       # 已入路的最大 roundId（107去重）
 
     async def __aenter__(self) -> "TableSession":
         await self._conn.__aenter__()
@@ -647,17 +683,75 @@ class TableSession:
             proto, data, player_id=self._conn._player_id,
             game_type_id=self.game_type_id, table_id=self.table_id,
             service_type_id=OT_GAME))
-        # 等 401 响应（全量快照）
-        frame = await self._conn.recv_until(
-            lambda f: f.get("protocolId") == proto, timeout=15)
+        # 等 proto 响应（全量快照）。期间的路纸帧(116/160/161)会被
+        # recv_until 式等待丢弃——116 是全长路纸的唯一来源，必须暂存消化。
+        import json as _json
+        stashed: list[dict] = []
+        frame = None
+        end = time.time() + 15
+        while time.time() < end:
+            try:
+                f = await asyncio.wait_for(
+                    self._conn.recv(), timeout=max(0.1, end - time.time()))
+            except asyncio.TimeoutError:
+                break
+            if not f:
+                continue
+            if f.get("protocolId") == proto:
+                frame = f
+                break
+            if f.get("protocolId") in (116, 160, 161):
+                stashed.append(f)
         if frame:
             info = extract_param(frame) or {}
             payload = info.get("param") or info.get("data")
-            import json as _json
             if isinstance(payload, str):
                 payload = _json.loads(payload)
             self.snapshot = (payload or {}).get("gameTableInfo") or {}
         self._entered = True
+        for f in stashed:
+            info = extract_param(f) or {}
+            payload = info.get("param") or info.get("data")
+            if isinstance(payload, str):
+                try:
+                    payload = _json.loads(payload)
+                except Exception:
+                    continue
+            self._apply_road(f.get("protocolId"), payload)
+
+    def _apply_road(self, pid: int, payload):
+        """消化路纸事件：仅 116=全长路纸（置换快照并重置累积）。
+
+        160 不带 roadPaper；161 是增量短串（0~5 个 token 不等，语义
+        不可靠），**不参与累积**——逐局结果由 107.roundResult 权威供给
+        （见 events() 的 107 分支）。"""
+        if pid != 116 or not isinstance(payload, dict):
+            return
+        rp = payload.get("roadPaper")
+        if not rp:
+            return
+        self.snapshot["roadPaper"] = rp
+        b64 = rp.get("beatPlateRoad") or ""
+        if b64:
+            try:
+                flat = decode_bead_plate(b64)["flat"]
+                if flat:
+                    self._road_accum = flat
+            except Exception:
+                pass
+
+    def _append_round_result(self, payload):
+        """107 牌局事件：从 roundResult（"庄点;闲点"）取结果追加进路纸累积。"""
+        if not isinstance(payload, dict):
+            return
+        rid = payload.get("roundId") or 0
+        if rid and rid == self._last_round_id:
+            return                      # 同局重复推送，去重
+        token = round_result_token(payload.get("roundResult"))
+        if not token:
+            return
+        self._last_round_id = rid or self._last_round_id
+        self._road_accum.append(token)
 
     async def _leave(self):
         if not self._entered:
@@ -676,7 +770,9 @@ class TableSession:
     # ── 公开读取接口 ──
 
     def road_flat(self) -> str:
-        """当前珠盘 B/P/T 序列（从快照路纸解码）。"""
+        """当前珠盘 B/P/T 序列（116 全长 + 161 增量合并后的最新牌路）。"""
+        if self._road_accum:
+            return "".join(self._road_accum)
         rp = self.snapshot.get("roadPaper") or {}
         b64 = rp.get("beatPlateRoad") or ""
         if not b64:
@@ -734,12 +830,13 @@ class TableSession:
                                     "dropped": False, "raw": payload}}
                     continue
 
-            # 路纸事件(116/160/161)：同步更新快照里的 roadPaper，
-            # 保证 road_flat() 始终反映最新牌路
-            if pid in (116, 160, 161) and isinstance(payload, dict):
-                rp = payload.get("roadPaper")
-                if rp:
-                    self.snapshot["roadPaper"] = rp
+            # 路纸事件：116 全长置换（160/161 不参与累积）
+            if pid in (116, 160, 161):
+                self._apply_road(pid, payload)
+
+            # 牌局事件：107 携带 roundResult（"庄点;闲点"），逐局追加路纸
+            if pid == 107:
+                self._append_round_result(payload)
 
             yield {
                 "type": _classify_event(pid),
@@ -775,6 +872,8 @@ class MultiTableSession:
         self.snapshots: dict[int, dict] = {}
         self._entered: set[int] = set()
         self._leaving: set[int] = set()   # 主动离桌中的桌（防误判为被踢）
+        self._road_accum: dict[int, list] = {}   # 每桌珠盘累积（116重置/107追加）
+        self._last_round_id: dict[int, int] = {}   # 每桌已入路的最大 roundId
 
     async def __aenter__(self) -> "MultiTableSession":
         await self._conn.__aenter__()
@@ -832,7 +931,10 @@ class MultiTableSession:
         return tid
 
     def road_flat(self, table_id: int) -> str:
-        """指定桌当前珠盘 B/P/T 序列。"""
+        """指定桌当前珠盘 B/P/T 序列（116 全长 + 161 增量合并）。"""
+        accum = self._road_accum.get(table_id)
+        if accum:
+            return "".join(accum)
         rp = (self.snapshots.get(table_id) or {}).get("roadPaper") or {}
         b64 = rp.get("beatPlateRoad") or ""
         if not b64:
@@ -899,6 +1001,7 @@ class MultiTableSession:
                     self._tables = [x for x in self._tables
                                     if x["table_id"] != table_id]
                     self._entered.discard(table_id)
+                    self._road_accum.pop(table_id, None)
                     yield {"type": "kick", "protocol_id": pid,
                            "table_id": table_id,
                            "data": {"action": "dropped", "dropped": True,
@@ -918,11 +1021,35 @@ class MultiTableSession:
                                 "raw": payload}}
                 continue
 
-            # 路纸事件：同步该桌快照
+            # 路纸事件：仅 116=全长（置换快照并重置累积）。
+            # 161 是语义不可靠的增量短串，不参与累积；
+            # 逐局结果由 107.roundResult 权威供给。
             if pid in (116, 160, 161) and isinstance(payload, dict):
                 rp = payload.get("roadPaper")
-                if rp and table_id in self.snapshots:
-                    self.snapshots[table_id]["roadPaper"] = rp
+                if rp and table_id and pid == 116:
+                    if table_id in self.snapshots:
+                        self.snapshots[table_id]["roadPaper"] = rp
+                    b64 = rp.get("beatPlateRoad") or ""
+                    if b64:
+                        try:
+                            flat = decode_bead_plate(b64)["flat"]
+                            if flat:
+                                self._road_accum[table_id] = flat
+                        except Exception:
+                            pass
+
+            # 牌局事件：107 携带 roundResult（"庄点;闲点"），逐局追加路纸
+            if pid == 107 and isinstance(payload, dict) and table_id:
+                rid = payload.get("roundId") or 0
+                if rid and rid == self._last_round_id.get(table_id):
+                    pass                        # 同局重复推送，去重
+                else:
+                    token = round_result_token(payload.get("roundResult"))
+                    if token:
+                        if rid:
+                            self._last_round_id[table_id] = rid
+                        self._road_accum.setdefault(
+                            table_id, []).append(token)
 
             yield {
                 "type": _classify_event(pid),
@@ -1010,6 +1137,7 @@ class TableMonitor:
                 await shard._leave_one(t)
                 shard._tables.remove(t)
                 shard.snapshots.pop(table_id, None)
+                shard._road_accum.pop(table_id, None)
                 return
 
     # ── 事件流 ──
