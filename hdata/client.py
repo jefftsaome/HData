@@ -55,9 +55,11 @@ from hdata.protocol.codec import (
     extract_param,
 )
 from hdata.protocol.roadpaper import decode_road_paper, decode_bead_plate
+from hdata.protocol.schemacodec import schema_decode
 
 # ── 协议常量（内部使用，不导出） ──
 _QS_TABLE_LIST_ALL = 10089
+_QS_TABLE_LIST_LIMIT = 10053   # 分页桌台元数据（二进制 schema 帧）
 _QS_NEW_INTER_GAME = 401
 _QS_INTER_GAME = 101
 _QS_OUT_GAME = 102
@@ -237,7 +239,13 @@ class GameClient:
         session = self._require_session()
         async with _WSConnection(session, on_before_connect=self._refresh_cb) as conn:
             raw = await conn.fetch_table_map()
-        tables = [_table_info_from_snapshot(tid, t)
+            try:
+                ids = [int(k) for k in raw
+                       if str(k).lstrip("-").isdigit()]
+                meta = await conn.fetch_table_meta(ids or None)
+            except Exception:
+                meta = {}
+        tables = [_table_info_from_snapshot(tid, t, meta)
                   for tid, t in raw.items()]
         tables = [t for t in tables if t]
         if game_type_id is not None:
@@ -647,6 +655,96 @@ class _WSConnection:
                 gtm.update(new)
                 last_new = time.time()
         return gtm
+
+    async def fetch_table_meta(self, table_ids: list[int] | None = None,
+                               page_size: int = 60) -> dict:
+        """拉取大厅桌台元数据（10089 → 10053，二进制 schema 帧）。
+
+        与官方前端同流程：先发 10089 拿桌台 id 全集，再分页发 10053
+        取每张桌的 tableName/gameTypeName/gameCasinoName/dealerName 等。
+
+        Args:
+            table_ids: 只取这些桌的元数据；None = 先走 10089 拿全集
+            page_size: 10053 每页桌数
+
+        Returns:
+            {table_id(int): 10053 GameTable dict}
+        """
+        import json as _json
+
+        def _payload(frame):
+            info = extract_param(frame) or {}
+            data = info.get("data")
+            if isinstance(data, str):
+                if frame.get("codecFlag"):
+                    try:
+                        return schema_decode(
+                            f"{frame['protocolId']}_"
+                            f"{frame.get('serviceTypeId', 7)}", data)
+                    except Exception:
+                        return None
+                try:
+                    return _json.loads(data)
+                except Exception:
+                    return None
+            return data if isinstance(data, dict) else None
+
+        ids: list[int] = list(table_ids or [])
+        if not ids:
+            # 1) 10089：桌台 id 全集
+            await self.send(build_message(
+                _QS_TABLE_LIST_ALL, {"labelTypeId": 1},
+                player_id=self._player_id, game_type_id=2013,
+                service_type_id=OT_HALL))
+            end = time.time() + 12
+            while time.time() < end and not ids:
+                try:
+                    frame = await asyncio.wait_for(
+                        self.recv(), timeout=max(0.1, end - time.time()))
+                except asyncio.TimeoutError:
+                    break
+                if not frame or frame.get("protocolId") != _QS_TABLE_LIST_ALL:
+                    continue
+                data = _payload(frame) or {}
+                for t in data.get("hallGameTable") or []:
+                    tid = t.get("tableId")
+                    if tid and tid not in ids:
+                        ids.append(tid)
+        if not ids:
+            return {}
+
+        # 2) 10053：分页取元数据（无新数据 3s 即收尾）
+        meta: dict = {}
+        want = set(ids)
+        for i in range(0, len(ids), page_size):
+            await self.send(build_message(
+                _QS_TABLE_LIST_LIMIT,
+                {"groupId": 7, "tableIds": ids[i:i + page_size],
+                 "allFlag": 0},
+                player_id=self._player_id, game_type_id=2013,
+                service_type_id=OT_HALL))
+            end = time.time() + 15
+            last_new = time.time()
+            while time.time() < end and not want <= set(meta):
+                try:
+                    frame = await asyncio.wait_for(
+                        self.recv(), timeout=max(0.1, min(3.0, end - time.time())))
+                except asyncio.TimeoutError:
+                    if time.time() - last_new > 3:
+                        break
+                    continue
+                if not frame or frame.get("protocolId") != _QS_TABLE_LIST_LIMIT:
+                    continue
+                data = _payload(frame) or {}
+                new = data.get("gameTableMap") or {}
+                if new:
+                    last_new = time.time()
+                for k, v in new.items():
+                    try:
+                        meta[int(k)] = v
+                    except (TypeError, ValueError):
+                        continue
+        return meta
 
 
 # ── TableSession ─────────────────────────────────────
@@ -1267,8 +1365,9 @@ def _classify_event(protocol_id: int) -> str:
     }.get(protocol_id, "other")
 
 
-def _table_info_from_snapshot(table_id: str, t: dict) -> Optional[TableInfo]:
-    """从 10052 快照构造 TableInfo。"""
+def _table_info_from_snapshot(table_id: str, t: dict,
+                              meta: dict | None = None) -> Optional[TableInfo]:
+    """从 10052 快照构造 TableInfo；meta（10053）提供桌名与官方玩法名。"""
     gt = t.get("gameTypeId")
     if not gt:
         return None
@@ -1276,6 +1375,7 @@ def _table_info_from_snapshot(table_id: str, t: dict) -> Optional[TableInfo]:
         tid = int(table_id)
     except (TypeError, ValueError):
         return None
+    m = (meta or {}).get(tid) or {}
     rp = t.get("roadPaper") or {}
     flat = ""
     if rp.get("beatPlateRoad"):
@@ -1290,11 +1390,12 @@ def _table_info_from_snapshot(table_id: str, t: dict) -> Optional[TableInfo]:
     return TableInfo(
         table_id=tid,
         game_type_id=gt,
-        game_type_name=_GAME_TYPE_NAMES.get(gt, f"类型{gt}"),
-        table_name=t.get("tableName", "") or "",
+        game_type_name=m.get("gameTypeName")
+        or _GAME_TYPE_NAMES.get(gt, f"类型{gt}"),
+        table_name=m.get("tableName") or t.get("tableName", "") or "",
         status=t.get("gameStatus", 0) or 0,
         online=online,
-        boot_no=t.get("bootNo", "") or "",
+        boot_no=t.get("bootNo", "") or m.get("bootNo", "") or "",
         road_flat=flat,
         road_count=len(flat),
     )

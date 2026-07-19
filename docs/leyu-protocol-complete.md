@@ -185,6 +185,45 @@ def decrypt_params(params_b64: str, ttl: str) -> dict:
 | 填充 | PKCS7 |
 | 输出 | 纯 JSON（无压缩） |
 
+### 2.6 二进制 schema 帧（codecFlag=1，10053/10089 等）
+
+部分大厅/游戏帧的 `data` 字段不是 JSON，而是**自定义二进制 schema 编码**
+（帧级 `codecFlag=true` 时启用；schema key 格式 `{protocolId}_{serviceTypeId}`，
+大厅 serviceTypeId=7）。逆向自前端 JS（assets-*.js 的 U3/Z3/Y3/J3/W3/K3/Q3/X3），
+Python 解码器：`hdata/protocol/schemacodec.py`，schema 配置：
+`hdata/protocol/_schema_data.py`（前端 H3 常量原样移植，含 10053_7/10089_7/
+10073_7/10075_7/301_2/302_2 共 6 个协议）。
+
+**载荷封装**：`data` 为标准 base64 → 字节流三段式：
+
+```
+varint bits_len | varint pool_len | varint body_len
+bits[bits_len]   位段：strategy=BIT 的标量字段（MSB-first 连读）
+pool[pool_len]   常量池：varint n_str + n_str×string + varint n_num + n_num×signedVarNumber
+body[body_len]   主体段
+```
+
+**schema 读取（每个消息/子消息递归）**：
+
+1. 先读 `ceil(非BIT标量字段数/8)` 字节**存在掩码**（MSB-first，BIT 标量字段不占位）；
+2. 按 schema 声明顺序遍历字段：
+   - BIT 标量（strategy=1 且类型 INT/NUMBER/BOOLEAN）→ 位段读 `bit` 位；
+   - 其余字段掩码位为 1 → 主体段读值。
+
+**字段类型 S3**：INT=1 BOOLEAN=2 NUMBER=3 STRING=4 MESSAGE=5 ARRAY=6 MAP=7
+**策略 B3**：BODY=0（直接读值）/ BIT=1（位段）/ CONST_POOL=2（varint 索引查常量池）
+**原语**：varint=LEB128；signedVarInt/Number=zigzag；string=varint 长度+UTF-8；
+double=8 字节小端；Map 缺省 value 为动态类型（1 字节类型标记 + 值）。
+
+已知协议：
+
+| key | 含义 |
+|-----|------|
+| 10089_7 | 大厅桌台 id 全集（hallGameTable：tableId/gameStatus/置顶排序等） |
+| 10053_7 | 分页桌台元数据（gameTableMap：tableName/gameTypeName/gameCasinoName/dealerName/bootNo/videoUrl 等 80 字段） |
+| 10073_7 / 10075_7 | 桌台限红缓存 / 版本映射 |
+| 301_2 / 302_2 | 游戏内桌台缓存 / 好路桌台（serviceTypeId=2） |
+
 ---
 
 ## 3. 消息帧结构
@@ -776,8 +815,9 @@ base64 解码 → 字节按 MSB-first 拼成位串 → 游标顺序读位
 - **桌名与官方玩法名**（10053 = TABLE_LIST_LIMIT）：前端流程为先发 10089 `{labelTypeId:1}`
   拿到桌台 id 全集，再分页发 10053 `{groupId:7(ALL_GAME), tableIds:[...], allFlag:0}`，
   响应 gameTableMap 每张桌含 tableName/gameTypeName/physicsTableNo/gameCasinoName 等
-  （JS 中 schema id `10053_7`）。⚠️ 10089/10053 的载荷是**自定义二进制 schema 编码**
-  （非 JSON），HData 尚未实现解码，目前桌名只能从 401 进桌快照拿
+  （JS 中 schema id `10053_7`）。10089/10053 的载荷是**自定义二进制 schema 编码**
+  （非 JSON），解码器已实现：`hdata/protocol/schemacodec.py`（格式见 §2.6），
+  `get_tables()` 自动补拉，大厅层即可拿到官方桌名/玩法名
 - **进桌快照**（401 响应的 gameTableInfo）：60+ 字段，含 tableName/dealerName/roundNo/cardResult/限额等，样例存 `.cache/gametableinfo.json`
 - 进桌协议号选择：普通百家乐用 401 (NEW_INTER_GAME)；VIP/竞价等（2003/2004/2014/2020）用 101 (INTER_GAME)
 
