@@ -152,8 +152,13 @@ class Store:
 
     def insert_bet_points(self, round_id: int,
                           pools: list[dict] | None,
-                          boot_report) -> int:
-        """110 押注分布 + 107 派彩按 betPointId 合并落库。"""
+                          boot_report,
+                          win_points: dict | None = None) -> int:
+        """110 押注分布 + 107 派彩按 betPointId 合并落库。
+
+        winCount 在 107 bootReport 内；winPoints（实际派彩赔率）是
+        107 的顶层字段（与 bootReport 平级），由调用方一并传入。
+        """
         bet: dict[int, dict] = {}
         for p in (pools or []):
             bpid = p.get("betPointId")
@@ -173,8 +178,15 @@ class Store:
             except (TypeError, ValueError):
                 continue
             if isinstance(v, dict):
-                win[bpid] = {"win_count": v.get("winCount"),
-                             "win_points": v.get("winPoints")}
+                win.setdefault(bpid, {})["win_count"] = v.get("winCount")
+        # winPoints: 107 顶层字段 {betPointId: 实际派彩赔率}
+        for k, v in (win_points or {}).items():
+            try:
+                bpid = int(k)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(v, (int, float)):
+                win.setdefault(bpid, {})["win_points"] = v
         n = 0
         for bpid in set(bet) | set(win):
             b, w = bet.get(bpid, {}), win.get(bpid, {})

@@ -446,7 +446,8 @@ class StreakMonitor:
             "casino_id": snap.get("gameCasinoId")})
         if is_new:
             self.stats["rounds"] += 1
-        self._store.insert_bet_points(rid, pools, boot)
+        self._store.insert_bet_points(rid, pools, boot,
+                                      d.get("winPoints"))
         # 连胜状态机
         ep = self.episodes.get(tid)
         if not ep:
