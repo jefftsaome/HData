@@ -34,6 +34,7 @@ import hdata.client as hc
 from hdata.client import GameClient, road_streak, round_result_token
 from hdata.protocol.codec import build_message, extract_param
 from hdata.protocol.roadpaper import decode_bead_plate
+from hdata.proxy import ProxyPool
 from scripts.streak_store import Store, now_ms
 
 # ── 配置 ────────────────────────────────────────────────
@@ -95,7 +96,8 @@ class LobbyWatcher:
 
     async def _run_once(self):
         client = GameClient(entry_url=ENTRY_URL,
-                            geepass_token=GEEPASS, jfbym_token=JFBYM)
+                            geepass_token=GEEPASS, jfbym_token=JFBYM,
+                            proxy=self._cred.get("proxy"))
         await client.login(self._cred["account"], self._cred["password"])
         logger.info(f"[发现] {self._cred['account']} 登录成功，订阅大厅")
         async with hc._WSConnection(client._session,
@@ -241,9 +243,10 @@ class StreakMonitor:
             return
         logger.info(f"[监控] 首个候选到达，登录 {len(self._creds)} "
                     "个监控账号（首次需打码，约1分钟）…")
-        self._client = GameClient(entry_url=ENTRY_URL,
-                                  geepass_token=GEEPASS, jfbym_token=JFBYM)
         first, rest = self._creds[0], self._creds[1:]
+        self._client = GameClient(entry_url=ENTRY_URL,
+                                  geepass_token=GEEPASS, jfbym_token=JFBYM,
+                                  proxy=first.get("proxy"))
         await self._client.login(first["account"], first["password"])
         self.mon = await self._client.monitor_tables(
             [], accounts=rest, kick_policy="stay")
@@ -518,17 +521,55 @@ class StreakMonitor:
 # ── 主入口 ──────────────────────────────────────────────
 
 
-async def amain(min_streak: int, db_path: str, max_accounts: int = 0):
+def _mask_proxy(url: str) -> str:
+    """日志用代理脱敏（隐藏账密，只留 host:port）。"""
+    return url.split("@")[-1] if "@" in url else url
+
+
+async def amain(min_streak: int, db_path: str, max_accounts: int = 0,
+                proxies_path: str = "", proxy_cap: int = 10):
     store = Store(db_path)
     store.purge_raw(30)
     stale = store.close_stale_episodes()
     if stale:
         logger.info(f"[启动] 清理上次遗留未完结 episode {stale} 条"
                     "（记 censored_disconnect）")
+
+    # ── 账号准备（拷贝，避免污染全局 ACCOUNTS）──
+    creds = [dict(a) for a in ACCOUNTS]
+
+    # ── 代理分配：提供了代理就只用代理（不混用本机直连）──
+    if proxies_path:
+        pool = ProxyPool.from_file(proxies_path, cap_per_proxy=proxy_cap)
+        await pool.health_check()
+        if not pool.alive:
+            logger.error("[代理] 全部出口探测失败；规则为'提供了代理就只用"
+                         "代理'，不回落直连，退出")
+            return
+        wanted = [c["account"] for c in creds]      # [0] 发现层优先分配
+        mapping = pool.assign(wanted)
+        used: list[dict] = []
+        for c in creds:
+            p = mapping.get(c["account"])
+            if p:
+                c["proxy"] = p
+                used.append(c)
+            else:
+                logger.warning(f"[代理] 出口容量不足，账号弃用: "
+                               f"{c['account']}（可加代理或调大 --proxy-cap）")
+        if not mapping.get(creds[0]["account"]):
+            logger.error("[代理] 发现层账号未分到出口，退出")
+            return
+        creds = used
+        for c in creds:
+            logger.info(f"[代理] {c['account']} → {_mask_proxy(c['proxy'])}")
+    else:
+        logger.info("[代理] 未配置，全部账号走本机直连出口")
+
     candidates: asyncio.Queue = asyncio.Queue()
-    watcher = LobbyWatcher(ACCOUNTS[0], store, candidates, min_streak)
-    mon_creds = (ACCOUNTS[1:1 + max_accounts] if max_accounts > 0
-                 else ACCOUNTS[1:])
+    watcher = LobbyWatcher(creds[0], store, candidates, min_streak)
+    mon_creds = (creds[1:1 + max_accounts] if max_accounts > 0
+                 else creds[1:])
     monitor = StreakMonitor(mon_creds, store, watcher, min_streak)
     watch_task = asyncio.create_task(watcher.run())
     mon_task = asyncio.create_task(monitor.run(candidates))
@@ -566,6 +607,11 @@ def main():
     ap.add_argument("--max-accounts", type=int, default=0,
                     help="监控账号使用上限（默认 0=全部）；同 IP 有 WS "
                          "并发上限，遇到 403 时调小（如 5）")
+    ap.add_argument("--proxies", default="",
+                    help="代理列表 JSON 文件（如 data/proxies.json）；"
+                         "提供后账号粘性绑定代理出口、不再使用本机直连")
+    ap.add_argument("--proxy-cap", type=int, default=10,
+                    help="每代理出口连接预算（默认 10，实测安全工作点）")
     args = ap.parse_args()
     logger.remove()
     logger.add(sys.stderr, level="INFO",
@@ -575,9 +621,11 @@ def main():
              if args.max_accounts > 0 else len(ACCOUNTS) - 1)
     logger.info(f"StreakHunter 启动：连胜阈值 {args.min_streak}，"
                 f"发现账号 {ACCOUNTS[0]['account']}，"
-                f"监控账号 {n_mon} 个，库 {args.db}")
+                f"监控账号 {n_mon} 个，库 {args.db}，"
+                f"代理 {'有(' + args.proxies + ')' if args.proxies else '无(直连)'}")
     try:
-        asyncio.run(amain(args.min_streak, args.db, args.max_accounts))
+        asyncio.run(amain(args.min_streak, args.db, args.max_accounts,
+                          args.proxies, args.proxy_cap))
     except KeyboardInterrupt:
         pass
 

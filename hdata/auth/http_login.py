@@ -65,6 +65,16 @@ class VerifyError(RuntimeError):
         super().__init__(f"verify {result}: {reason}; fail_count={fail_count}")
 
 
+def _px(proxy: str) -> dict | None:
+    """构造 curl_cffi proxies 参数（空串→None 直连，行为不变）。
+
+    登录链路的所有平台请求必须走同一出口：token 绑定登录 IP
+    （见 docs/代理接入.md），validateGeeCheckV2 返回的 user_ip
+    也参与 X-API-FINGER 计算，混用出口会导致登录失败。
+    """
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
 def _get_domain() -> str:
     """获取乐鱼真实域名（缓存 + 探活 + 自动重解析）。"""
     domain = _resolve_domain(validate=True)
@@ -103,7 +113,8 @@ async def _solve_captcha(
     raise CaptchaSolveError("solver-chain", "all solvers failed", "; ".join(failures))
 
 
-async def _verify_captcha(load_data: dict, coords: str) -> dict:
+async def _verify_captcha(load_data: dict, coords: str,
+                          proxy: str = "") -> dict:
     """Return a complete verify seccode or raise a typed failure."""
     diagnostics = {}
     w = generate_w(load_data, CAPTCHA_ID, coords, diagnostics=diagnostics)
@@ -136,7 +147,8 @@ async def _verify_captcha(load_data: dict, coords: str) -> dict:
 
     network_error = ""
     try:
-        text = cr.get(url, impersonate="chrome110", headers=headers, timeout=30).text
+        text = cr.get(url, impersonate="chrome110", headers=headers,
+                      timeout=30, proxies=_px(proxy)).text
     except Exception as exc:
         network_error = type(exc).__name__
     if network_error:
@@ -195,7 +207,7 @@ def _safe_status_code(value: object) -> int | str:
     return value if type(value) is int else "unexpected_status"
 
 
-def _kaptchcate(domain: str) -> bool:
+def _kaptchcate(domain: str, proxy: str = "") -> bool:
     """验证码预注册（浏览器在每次弹验证码前必调，status_code 6022 为成功）。"""
     try:
         resp = cr.post(
@@ -205,6 +217,7 @@ def _kaptchcate(domain: str) -> bool:
                                    domain=domain),
             impersonate="chrome110",
             timeout=15,
+            proxies=_px(proxy),
         )
         body = resp.json()
         ok = isinstance(body, Mapping) and body.get("status_code") == 6022
@@ -224,7 +237,8 @@ def _local_tz_offset() -> int:
     return -int(seconds // 60)
 
 
-def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> str:
+def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
+                       proxy: str = "") -> str:
     """调用 validateGeeCheckV2 API 验证验证码。成功返回 user_ip，失败返回 ''。"""
     validate_url = f"{domain}/site/api/v1/user/member/validateGeeCheckV2"
     validate_body = {
@@ -244,6 +258,7 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> str:
             ),
             impersonate="chrome110",
             timeout=15,
+            proxies=_px(proxy),
         )
     except Exception as exc:
         print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
@@ -269,7 +284,7 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict) -> str:
     return ""
 
 
-def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: str = "") -> Optional[str]:
+def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: str = "", proxy: str = "") -> Optional[str]:
     """调用 login API 获取 X-API-TOKEN。"""
     login_url = f"{domain}/site/api/v1/user/login"
     login_body = {
@@ -296,6 +311,7 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
             ),
             impersonate="chrome110",
             timeout=15,
+            proxies=_px(proxy),
         )
     except Exception as exc:
         print(f"  login: failed stage=login exception={type(exc).__name__}")
@@ -323,7 +339,7 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
     return token
 
 
-def _get_uuid(domain: str, api_token: str) -> str:
+def _get_uuid(domain: str, api_token: str, proxy: str = "") -> str:
     """从 JWT API 获取 UUID。"""
     try:
         resp = cr.post(
@@ -335,6 +351,7 @@ def _get_uuid(domain: str, api_token: str) -> str:
             json={},
             impersonate="chrome110",
             timeout=15,
+            proxies=_px(proxy),
         )
         if resp.status_code == 200:
             site_jwt = resp.json().get("data", "")
@@ -359,6 +376,7 @@ async def login(
     geepass_token: str = "",
     jfbym_token: str = "",
     max_retries: int = 3,
+    proxy: str = "",
 ) -> Optional[dict]:
     """纯 HTTP 乐鱼登录。
 
@@ -375,6 +393,9 @@ async def login(
         geepass_token: geepass 专用 token
         jfbym_token: jfbym 专用 token
         max_retries: 最大重试次数
+        proxy: 代理 URL（如 http://user:pass@host:port），
+               整条登录链路（验证码/校验/登录/JWT）走同一出口；
+               空串走直连（默认，行为与之前一致）
 
     Returns:
         {"token": ..., "uuid": ..., "domain": ..., "lot_number": ...} 或 None
@@ -407,11 +428,11 @@ async def login(
 
         # 0. 验证码预注册（浏览器每次弹验证码前必调）
         print("[0/6] kaptchcate 预注册...")
-        _kaptchcate(domain)  # 失败不阻断，与浏览器容错行为一致
+        _kaptchcate(domain, proxy)  # 失败不阻断，与浏览器容错行为一致
 
         # 1. 获取验证码
         print("[1/6] 获取验证码...")
-        load_data = _fetch_captcha()
+        load_data = _fetch_captcha(proxy=proxy)
         if not load_data:
             print("  ❌ fetch_captcha 失败")
             continue
@@ -446,7 +467,7 @@ async def login(
         # 3. Verify
         print("[3/6] 验证验证码...")
         try:
-            seccode = await _verify_captcha(load_data, coords)
+            seccode = await _verify_captcha(load_data, coords, proxy)
         except VerifyError as exc:
             fields = ",".join(exc.diagnostics.get("e_obj_fields", []))
             size = exc.diagnostics.get("e_obj_bytes", 0)
@@ -464,7 +485,8 @@ async def login(
 
         # 4. Validate（返回 user_ip 用于计算 X-API-FINGER）
         print("[4/6] 校验验证码...")
-        user_ip = _validate_geecheck(domain, load_data["lot_number"], seccode)
+        user_ip = _validate_geecheck(
+            domain, load_data["lot_number"], seccode, proxy)
         if not user_ip:
             print("  ❌ validateGeeCheckV2 失败")
             continue
@@ -474,6 +496,7 @@ async def login(
         api_token = _do_login(
             domain, user, pwd_md5, load_data["lot_number"],
             user_ip=user_ip if "." in user_ip else "",
+            proxy=proxy,
         )
         if not api_token:
             print("  ❌ 登录失败")
@@ -481,7 +504,7 @@ async def login(
 
         # 6. 获取 UUID
         print("[6/6] 获取 UUID...")
-        uuid_val = _get_uuid(domain, api_token)
+        uuid_val = _get_uuid(domain, api_token, proxy)
 
         result = {
             "token": api_token,

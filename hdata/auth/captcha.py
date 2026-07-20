@@ -27,7 +27,7 @@ def _get_domain() -> str:
     return m.group(0) if m else ""
 
 
-def fetch_captcha(page_url: str = "") -> dict | None:
+def fetch_captcha(page_url: str = "", proxy: str = "") -> dict | None:
     if not page_url:
         domain = _get_domain()
         if not domain: return None
@@ -38,7 +38,9 @@ def fetch_captcha(page_url: str = "") -> dict | None:
     risk_type = "word"
     url = f"{BOTION_LOAD}?captcha_id={CAPTCHA_ID}&challenge={challenge}&client_type=web&risk_type={risk_type}&lang=zh-cn&callback={cb}"
 
-    resp = cr.get(url, impersonate="chrome110", headers={"Referer": page_url}, timeout=15)
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    resp = cr.get(url, impersonate="chrome110", headers={"Referer": page_url},
+                  timeout=15, proxies=proxies)
     if resp.status_code != 200: return None
     m = re.search(r"\((.*)\)$", resp.text, re.DOTALL)
     if not m: return None

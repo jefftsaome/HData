@@ -276,6 +276,9 @@ async def refresh_game_session(account: str, session: dict) -> dict:
 
     url = f"{domain}/game/api/v1/venue/launch"
     headers = _api_headers(session, url)
+    # token 绑定登录 IP：刷新必须走会话绑定的同一出口
+    proxy = session.get("proxy") or ""
+    proxies = {"http": proxy, "https": proxy} if proxy else None
 
     request_error = None
     try:
@@ -285,6 +288,7 @@ async def refresh_game_session(account: str, session: dict) -> dict:
             json={"enName": "YBZR"},
             impersonate="chrome110",
             timeout=15,
+            proxies=proxies,
         )
     except Exception as exc:
         request_error = _refresh_error("venue_launch", exc=exc)
@@ -491,7 +495,8 @@ class LoginError(SessionError):
 async def get_login(account: str, password: str = "",
                     entry_url: str = "", force_refresh: bool = False,
                     captcha_token: str = "", geepass_token: str = "",
-                    jfbym_token: str = "") -> dict:
+                    jfbym_token: str = "",
+                    proxy: str | None = None) -> dict:
     """统一登录接口：提供账号密码，返回所有登录参数。
 
     内部自动处理: 缓存 → HTTP 打码登录 → 浏览器辅助登录。
@@ -505,11 +510,14 @@ async def get_login(account: str, password: str = "",
         captcha_token: 兼容旧参数，映射到 jfbym_token
         geepass_token: geepass API token，传入则优先尝试纯 HTTP 登录
         jfbym_token: jfbym API token，传入则优先尝试纯 HTTP 登录
+        proxy: 代理 URL（可选）。token 绑定登录 IP——传入后登录、
+               刷新、后续 WS 连接必须使用同一代理出口；proxy 作为
+               会话属性写入返回的 session["proxy"]，由下游自动继承
 
     Returns:
         {"account","domain","token","uuid","uuidToBase64","cookies",
          "game_token","game_player_id","game_backend","game_exp",
-         "backend_domain_url_list","device_id","signatures"}
+         "backend_domain_url_list","device_id","signatures","proxy"}
 
     Raises:
         LoginError: 所有登录方式均失败
@@ -518,6 +526,7 @@ async def get_login(account: str, password: str = "",
     if not force_refresh:
         cache = get_cached_session(account)
         if cache and cache.get("domain") and cache.get("token"):
+            cache["proxy"] = proxy or ""     # 运行时属性，不落盘
             game_token = cache.get("game_token", "")
             if game_token and validate_game_token(game_token):
                 logger.info(f"[{account}] get_login: cache hit")
@@ -558,12 +567,14 @@ async def get_login(account: str, password: str = "",
                 password,
                 geepass_token=geepass_token,
                 jfbym_token=legacy_jfbym_token,
+                proxy=proxy or "",
             )
             if http_session and http_session.get("token"):
                 # HTTP login 返回的是 session-level 数据，需要补 game 字段
                 result = dict(http_session)
                 result["account"] = account
                 result["source"] = "http_login"
+                result["proxy"] = proxy or ""
                 # 补 game 字段：用 session 去刷新 game_token
                 game_token_ok = False
                 try:
@@ -600,6 +611,15 @@ async def get_login(account: str, password: str = "",
         raise LoginError(
             f"[{account}] 缓存无效且未提供密码。"
             f"请调用 get_login(account, password='your_pwd') 或先手动登录一次。"
+        )
+
+    if proxy:
+        # 浏览器走直连：登录产物会绑定本机 IP，与代理出口不一致，
+        # 后续 WS 必然被 10026 拒绝——直接报错而不是产出不可用的会话
+        raise LoginError(
+            f"[{account}] 浏览器兜底登录不支持代理（token 绑定登录 IP，"
+            f"浏览器走直连会得到与代理不匹配的会话）。"
+            f"请确认打码 token 有效、使用纯 HTTP 登录通道。"
         )
 
     # 获取真实域名

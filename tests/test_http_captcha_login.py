@@ -150,6 +150,7 @@ async def test_session_forwards_platform_tokens_as_explicit_http_keywords(monkey
         "password": "password",
         "geepass_token": "gp-secret",
         "jfbym_token": "jf-secret",
+        "proxy": "",
     }
 
 
@@ -269,7 +270,7 @@ async def test_login_solves_each_challenge_once_after_verify_failure(monkeypatch
     fetched_lots = iter(["lot-a-0123456789", "lot-b-0123456789"])
     solved_lots = []
 
-    def fake_fetch():
+    def fake_fetch(page_url: str = "", proxy: str = ""):
         lot = next(fetched_lots)
         return {
             "lot_number": lot,
@@ -288,7 +289,7 @@ async def test_login_solves_each_challenge_once_after_verify_failure(monkeypatch
             solver_name="geepass",
         )
 
-    async def fake_verify(load_data, coords):
+    async def fake_verify(load_data, coords, proxy=""):
         raise http_login.VerifyError("fail", fail_count=1)
 
     monkeypatch.setattr(http_login, "_get_domain", lambda: "https://example.invalid")
@@ -581,7 +582,7 @@ async def test_login_verify_diagnostics_redact_server_response(monkeypatch, caps
     monkeypatch.setattr(
         http_login,
         "_fetch_captcha",
-        lambda: {
+        lambda **kwargs: {
             "lot_number": "challenge-prefix",
             "payload": "payload",
             "process_token": "process",

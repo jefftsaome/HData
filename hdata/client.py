@@ -145,25 +145,33 @@ class GameClient:
         entry_url: 平台入口种子站（由调用者提供，如平台官网域名）
         geepass_token: geepass 打码平台 token（纯 HTTP 登录用）
         jfbym_token: jfbym 打码平台 token（纯 HTTP 登录用）
+        proxy: 默认代理 URL（可选）。token 绑定登录 IP——传入后
+               login/refresh/WS 全部走该出口；login() 的 proxy
+               参数可逐次覆盖
     """
 
     def __init__(self, entry_url: str,
-                 geepass_token: str = "", jfbym_token: str = ""):
+                 geepass_token: str = "", jfbym_token: str = "",
+                 proxy: str | None = None):
         self._entry_url = entry_url
         self._geepass_token = geepass_token
         self._jfbym_token = jfbym_token
+        self._proxy = proxy
         self._session: dict | None = None
 
     # ── 1. 登录 ───────────────────────────────────────
 
     async def login(self, account: str, password: str = "",
-                    force_refresh: bool = False) -> dict:
+                    force_refresh: bool = False,
+                    proxy: str | None = None) -> dict:
         """登录，返回会话凭证 dict。
 
         Args:
             account: 平台账号
             password: 密码（有有效缓存时可为空）
             force_refresh: 跳过缓存强制重新登录
+            proxy: 本次登录使用的代理 URL；None 时用构造参数里的
+                   默认 proxy。登录/刷新/WS 全程同一出口（token 绑 IP）
 
         Returns:
             {
@@ -185,6 +193,7 @@ class GameClient:
             force_refresh=force_refresh,
             geepass_token=self._geepass_token,
             jfbym_token=self._jfbym_token,
+            proxy=proxy if proxy is not None else self._proxy,
         )
         # 确保 game_token 是服务端当前认可的最新一张：
         # 缓存里的旧 token 可能已被服务端作废（jti 踢出），先刷新一次。
@@ -423,7 +432,9 @@ class GameClient:
         Args:
             tables: 桌台列表（get_tables() 返回项，至少含 table_id）
             accounts: 可选，额外账号 [{"account":..,"password":..}, ...]
-                      当前登录账号自动算第一个，无需重复传
+                      当前登录账号自动算第一个，无需重复传。
+                      每项可带 "proxy" 键指定该账号的代理出口
+                      （token 绑 IP，账号全程固定走该出口）
             kick_policy: 被系统踢出（连续5局未下注）时的策略——
                 "stay"（默认）：被踢后自动重进该桌，监控不中断；
                 "follow_system"：遵循系统踢出，该桌停止监控。
@@ -455,7 +466,8 @@ class GameClient:
                 c["account"], c.get("password", ""),
                 entry_url=self._entry_url,
                 geepass_token=self._geepass_token,
-                jfbym_token=self._jfbym_token)
+                jfbym_token=self._jfbym_token,
+                proxy=c.get("proxy"))          # 每账号独立出口（token 绑 IP）
             s["account"] = c["account"]
             sessions.append(s)
 
@@ -590,7 +602,8 @@ class _WSConnection:
         self._player_id = self._session.get("game_player_id", 0)
         self._ws = await websockets.connect(
             self._cfg["ws_url"], open_timeout=12, close_timeout=3,
-            max_size=50 * 1024 * 1024)
+            max_size=50 * 1024 * 1024,
+            proxy=self._session.get("proxy") or None)
         await self._login()
         self._hb_task = asyncio.create_task(self._heartbeat_loop())
         return self
@@ -1409,8 +1422,11 @@ def _gateway_request(method: str, url: str, payload: dict | None,
         headers["token"] = gateway_encrypt(meta)
         body = enc.encode()
 
-    resp = requests.request(method, url, data=body, headers=headers,
-                            impersonate="chrome110", timeout=15)
+    proxy = session.get("proxy") or ""
+    resp = requests.request(
+        method, url, data=body, headers=headers,
+        impersonate="chrome110", timeout=15,
+        proxies={"http": proxy, "https": proxy} if proxy else None)
     resp.raise_for_status()
     text = resp.text
     try:
