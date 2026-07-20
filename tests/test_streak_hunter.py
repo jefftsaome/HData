@@ -102,3 +102,38 @@ async def test_run_ensures_monitor_eagerly():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_graceful_shutdown_cleans_up():
+    """取消任务被等待收尾；监控 shutdown 与关库按序执行。"""
+    from scripts.streak_hunter import _graceful_shutdown
+
+    monitor = Mock()
+    monitor.stats = {"rounds": 1, "broke": 0, "censored": 2}
+    monitor.shutdown = AsyncMock()
+    store = Mock()
+
+    async def sleeper():
+        await asyncio.sleep(999)
+
+    tasks = [asyncio.create_task(sleeper()) for _ in range(2)]
+    await _graceful_shutdown(tasks, monitor, store,
+                             asyncio.get_running_loop().time())
+    assert all(t.cancelled() for t in tasks)
+    monitor.shutdown.assert_awaited_once()
+    store.commit.assert_called_once()
+    store.close.assert_called_once()
+
+
+async def test_graceful_shutdown_store_closed_on_monitor_error():
+    """监控清理抛异常时，关库仍然执行（数据完整性优先）。"""
+    from scripts.streak_hunter import _graceful_shutdown
+
+    monitor = Mock()
+    monitor.stats = {"rounds": 0, "broke": 0, "censored": 0}
+    monitor.shutdown = AsyncMock(side_effect=RuntimeError("boom"))
+    store = Mock()
+    await _graceful_shutdown([], monitor, store,
+                             asyncio.get_running_loop().time())
+    store.commit.assert_called_once()
+    store.close.assert_called_once()

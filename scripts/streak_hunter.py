@@ -532,15 +532,63 @@ class StreakMonitor:
             await asyncio.sleep(10)
 
     async def shutdown(self):
+        """优雅退出：逐桌收场离场（单桌异常不阻断）、断连、收尾 run。"""
         for tid in list(self.episodes):
-            await self._close(tid, "censored_disconnect")
-        if self.mon:
-            await self.mon.aclose()
+            try:
+                await self._close(tid, "censored_disconnect")
+            except Exception:
+                pass
+        try:
+            if self.mon:
+                await self.mon.aclose()
+        except Exception:
+            pass
         if self.run_id:
-            self._store.stop_run(self.run_id)
+            try:
+                self._store.stop_run(self.run_id)
+            except Exception:
+                pass
 
 
 # ── 主入口 ──────────────────────────────────────────────
+
+
+async def _graceful_shutdown(tasks: list[asyncio.Task],
+                             monitor: "StreakMonitor", store: Store,
+                             started: float):
+    """Ctrl+C 优雅退出：停任务 → 离桌断连 → 关库，全程尽量不被打断。
+
+    顺序讲究：先取消任务并**等它们收尾**（归还连接、停止写库），
+    再关监控（逐桌离场 + 断连），最后提交关库——避免任务半空中
+    写已关闭的库。二次 Ctrl+C 只会跳过离桌等可放弃的动作，
+    关库一定执行（下次启动另有 close_stale_episodes 兜底）。
+    """
+    logger.info("[退出] 收到退出信号，开始清理（几秒，请勿重复 Ctrl+C）…")
+    for t in tasks:
+        t.cancel()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), 10)
+    except (Exception, KeyboardInterrupt):
+        pass
+    try:
+        await asyncio.wait_for(monitor.shutdown(), 30)
+    except KeyboardInterrupt:
+        logger.warning("[退出] 清理被二次 Ctrl+C 打断，直接关库")
+    except Exception as e:
+        logger.warning(f"[退出] 监控清理异常"
+                       f"（{type(e).__name__}: {e}），继续关库")
+    try:
+        store.commit()
+        store.close()
+    except Exception as e:
+        logger.warning(f"[退出] 关库异常: {e}")
+    mins = (time.time() - started) / 60
+    logger.info(
+        f"[退出] 清理完成：运行 {mins:.1f} 分钟 | "
+        f"已采局 {monitor.stats['rounds']} | 反 {monitor.stats['broke']} | "
+        f"删失 {monitor.stats['censored']} | "
+        "未完结 episode 已记 censored_disconnect")
 
 
 def _mask_proxy(url: str) -> str:
@@ -550,6 +598,7 @@ def _mask_proxy(url: str) -> str:
 
 async def amain(min_streak: int, db_path: str, max_accounts: int = 0,
                 proxies_path: str = "", proxy_cap: int = 10):
+    started = time.time()
     store = Store(db_path)
     store.purge_raw(30)
     stale = store.close_stale_episodes()
@@ -607,18 +656,13 @@ async def amain(min_streak: int, db_path: str, max_accounts: int = 0,
                 f"大厅路纸 {len(watcher._flat)} 桌")
 
     st_task = asyncio.create_task(status_loop())
-    # 把候选从 watcher 队列喂给 monitor（同步 active 集合）
     try:
         await asyncio.gather(watch_task, mon_task, st_task)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
-        for t in (watch_task, mon_task, st_task):
-            t.cancel()
-        await monitor.shutdown()
-        store.commit()
-        store.close()
-        logger.info("[退出] 已清理，未完结 episode 记 censored_disconnect")
+        await _graceful_shutdown(
+            [watch_task, mon_task, st_task], monitor, store, started)
 
 
 def main():
