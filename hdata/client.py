@@ -135,6 +135,41 @@ GOOD_ROAD_NAMES = {
 }
 
 
+# ── game_token 刷新节流 ──────────────────────────────
+#
+# 平台对同 IP 的 JWT 刷新接口有速率限制（2026-07-20 实测：缓存
+# 全部命中时多账号密集建连，前 5 次刷新成功、第 6 次被拒，精确
+# 阈值未实测）。刷新被拒若直接兜底完整重登（打码），代价高且会
+# 进一步放大请求密度。策略：
+#   1. 进程级最小间隔：所有刷新串行排队，间隔 >= MIN_INTERVAL；
+#   2. 新鲜跳过：session["_refresh_ts"] 在每次成功刷新后记录，
+#      SKIP_S 内不再重复刷新（登录流程刚刷过的 token 直接复用）；
+#   3. 失败退避重试一次再兜底（见 _refresh_cb）。
+
+_REFRESH_MIN_INTERVAL_S = 2.0   # 进程内任意两次刷新的最小间隔
+_REFRESH_SKIP_S = 60.0          # 刷新成功后多少秒内视为新鲜可复用
+_REFRESH_RETRY_DELAY_S = 5.0    # 刷新失败后的退避重试延迟
+
+
+class _RefreshThrottle:
+    """进程级刷新节流器：按事件循环分配锁，全局共享上次刷新时刻。"""
+
+    _locks: dict[int, asyncio.Lock] = {}
+    _last_ts: float = 0.0
+
+    @classmethod
+    async def acquire(cls):
+        loop = asyncio.get_running_loop()
+        lock = cls._locks.get(id(loop))
+        if lock is None:
+            lock = cls._locks[id(loop)] = asyncio.Lock()
+        async with lock:
+            wait = cls._last_ts + _REFRESH_MIN_INTERVAL_S - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            cls._last_ts = time.monotonic()
+
+
 class GameClient:
     """游戏平台数据采集客户端（对外门面）。
 
@@ -202,6 +237,7 @@ class GameClient:
             session = await self._refresh_game_token(account, session)
         except Exception:
             pass
+        session["_password"] = password      # 兜底重登用，仅驻内存不落盘
         self._account = account
         self._password = password
         self._session = session
@@ -215,9 +251,14 @@ class GameClient:
         }
 
     async def _refresh_game_token(self, account: str, session: dict) -> dict:
-        """用站点会话刷新 game_token 并写回缓存。失败抛异常。"""
+        """用站点会话刷新 game_token 并写回缓存。失败抛异常。
+
+        进程级节流（平台对同 IP 刷新有速率限制）；成功后记录
+        session["_refresh_ts"] 供建连前新鲜度跳过判断。
+        """
         from hdata.auth.params import decode_jwt
         from hdata.auth.session import refresh_game_session, save_session
+        await _RefreshThrottle.acquire()
         params = await refresh_game_session(account, session)
         new_token = params.get("token")
         if new_token:
@@ -232,6 +273,7 @@ class GameClient:
             sub = jwt_info.get("sub", {})
             if isinstance(sub, dict):
                 session["game_player_id"] = sub.get("playerId", 0)
+        session["_refresh_ts"] = time.time()
         try:
             save_session(account, session)
         except Exception:
@@ -302,22 +344,45 @@ class GameClient:
     async def _refresh_cb(self, session: dict) -> dict:
         """每次新建 WS 连接前刷新 game_token（服务端按 jti 单连接）。
 
-        刷新失败（站点会话也失效）时，若有密码则完整重登兜底。
+        三层保护：
+          1. 新鲜跳过：_REFRESH_SKIP_S 内刚刷过的 token 直接复用，
+             避免登录流程+建连前重复刷新触发平台速率限制；
+          2. 失败退避重试一次：限流类拒绝多数几秒内自愈；
+          3. 兜底完整重登（可能走打码）：必须用**本会话所属账号**
+             （各分片共享本回调，self._account 只是主账号），并继承
+             会话的代理出口（token 绑 IP）。
         """
         account = session.get("account", "")
-        try:
-            return await self._refresh_game_token(account, session)
-        except Exception:
-            if not self._password:
-                raise
-            # 站点会话整体失效 → 完整重新登录（可能走打码）
-            fresh = await _session_login(
-                self._account, self._password,
-                entry_url=self._entry_url, force_refresh=True,
-                geepass_token=self._geepass_token,
-                jfbym_token=self._jfbym_token)
+        if time.time() - session.get("_refresh_ts", 0) < _REFRESH_SKIP_S:
+            return session
+        for attempt in (1, 2):
+            try:
+                return await self._refresh_game_token(account, session)
+            except Exception as e:
+                if attempt == 1:
+                    logger.warning(f"[{account}] 建连前刷新失败"
+                                   f"（{type(e).__name__}），"
+                                   f"{_REFRESH_RETRY_DELAY_S:.0f}s 后重试")
+                    await asyncio.sleep(_REFRESH_RETRY_DELAY_S)
+                else:
+                    logger.warning(f"[{account}] 建连前刷新重试仍失败"
+                                   f"（{type(e).__name__}）")
+        # 站点会话整体失效 → 用会话所属账号完整重新登录
+        password = session.get("_password") or (
+            self._password if account == self._account else "")
+        if not password:
+            raise LoginError(f"[{account}] game_token 刷新失败且无密码可兜底重登")
+        logger.warning(f"[{account}] 站点会话失效，完整重登兜底（可能打码）")
+        fresh = await _session_login(
+            account, password,
+            entry_url=self._entry_url, force_refresh=True,
+            geepass_token=self._geepass_token,
+            jfbym_token=self._jfbym_token,
+            proxy=session.get("proxy") or None)
+        fresh["_password"] = password
+        if account == self._account:
             self._session = fresh
-            return fresh
+        return fresh
 
     # ── 4. 玩家设置（gateway HTTP） ───────────────────
 
@@ -469,6 +534,7 @@ class GameClient:
                 jfbym_token=self._jfbym_token,
                 proxy=c.get("proxy"))          # 每账号独立出口（token 绑 IP）
             s["account"] = c["account"]
+            s["_password"] = c.get("password", "")  # 兜底重登用，不落盘
             sessions.append(s)
 
         # 2. 桌台轮询分配到各账号
@@ -596,8 +662,10 @@ class _WSConnection:
         if self._on_before_connect:
             try:
                 self._session = await self._on_before_connect(self._session)
-            except Exception:
-                pass  # 刷新失败则沿用现有 token
+            except Exception as e:
+                logger.warning(f"[{self._session.get('account', '?')}] "
+                               f"建连前回调失败（{type(e).__name__}: {e}），"
+                               "沿用现有 token 尝试连接")
         self._rebuild_cfg()
         self._player_id = self._session.get("game_player_id", 0)
         self._ws = await websockets.connect(
