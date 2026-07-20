@@ -4,7 +4,10 @@
 
     发现层  账号[0]：大厅常驻连接订阅 10052，逐桌跟踪路纸，
             末尾连胜 >= STREAK_MIN 即产生候选（实时流，非定时刷新）
-    监控层  账号[1:]：TableMonitor 动态进桌（add_table），
+    监控层  账号[1:]：启动即登录（与发现层并行，不等首个候选，
+            消除登录耗时造成的入场竞速窗口），TableMonitor 动态
+            进桌（add_table）；进桌前以发现层最新路纸复核——
+            已断跳过、长度变了重对齐、已反转按新方向入场；
             每局 107 结算时判定 延续/反/和，直到反了或删失即离桌
     落库层  SQLite（docs/schema.sql v2 + streak 专用表）
 
@@ -234,14 +237,16 @@ class StreakMonitor:
         self.run_id = 0
 
     async def ensure_monitor(self):
-        """首个候选到来时创建监控（此时才登录全部监控账号）。
+        """启动即创建监控（与发现层并行登录全部监控账号）。
 
+        不在乎打码成本的前提下，提前登录把候选入场延迟从 ~60s
+        （打码登录）压到 1~2s（纯进桌指令），竞速窗口基本消除。
         依赖 hdata 空表建分片能力：monitor_tables([]) 为每个账号
         各建一条连接分片，后续 add_table 自动按负载均衡分配。
         """
         if self.mon is not None:
             return
-        logger.info(f"[监控] 首个候选到达，登录 {len(self._creds)} "
+        logger.info(f"[监控] 启动即登录 {len(self._creds)} "
                     "个监控账号（首次需打码，约1分钟）…")
         first, rest = self._creds[0], self._creds[1:]
         self._client = GameClient(entry_url=ENTRY_URL,
@@ -258,24 +263,44 @@ class StreakMonitor:
                     f"（{len(self.mon._shards)} 个账号分片）")
 
     async def _open_episode(self, cand: dict):
-        """进桌 + 开 episode（候选桌 → 在监状态的唯一入口）。"""
+        """进桌 + 开 episode（候选桌 → 在监状态的唯一入口）。
+
+        入场复核：候选产生到进桌之间牌局可能已推进（尤其监控账号
+        尚未就绪时队列里积压的候选），一律以发现层最新路纸为准——
+        连胜已断则跳过、长度变了则重对齐、已反转则按新方向入场。
+        """
         tid = cand["table_id"]
         if tid in self.episodes:
             return
+        flat = self._watcher._flat.get(tid, "")
+        side, n = road_streak(flat)
+        if not side or n < self._min:
+            logger.info(f"[监控] 入场复核未过 {tid} "
+                        f"{cand.get('table_name')}（候选 "
+                        f"{cand['side']}×{cand['length']}，最新 "
+                        f"{side or '—'}×{n}），跳过")
+            return
+        if (side, n) != (cand["side"], cand["length"]):
+            logger.info(f"[监控] 入场复核对齐 {tid}：候选 "
+                        f"{cand['side']}×{cand['length']} → "
+                        f"最新 {side}×{n}")
+        gr = self._watcher.good_roads.get(tid, [])
+        via = ("good_roads" if
+               (("长庄" if side == "B" else "长闲") in gr)
+               else "local_streak")
         await self.mon.add_table(
             {"table_id": tid, "game_type_id": cand["game_type_id"]})
         ep_id = self._store.open_episode({
             "table_id": tid, "table_name": cand.get("table_name"),
             "game_type_id": cand.get("game_type_id"),
-            "side": cand["side"], "detected_via": cand["via"],
-            "start_length": cand["length"],
+            "side": side, "detected_via": via,
+            "start_length": n,
             "account": "+".join(c["account"] for c in self._creds)})
         self.episodes[tid] = Episode(
-            ep_id, tid, cand["side"], cand["length"],
-            self._creds[0]["account"])
+            ep_id, tid, side, n, self._creds[0]["account"])
         self._watcher.active.add(tid)
         logger.info(f"[监控] 进桌 {tid} {cand.get('table_name')} "
-                    f"{cand['side']}×{cand['length']} "
+                    f"{side}×{n} "
                     f"(episode#{ep_id}，在监 {len(self.episodes)} 桌)")
 
     # ── 主循环：候选消费 + 事件消费双任务并发 ──
@@ -470,28 +495,25 @@ class StreakMonitor:
         # follow_system 的 dropped 事件本程序不使用
 
     async def run(self, candidates: asyncio.Queue):
-        """外层循环：等候选 → 建监控 → 服务；事件流断则全删失重建。"""
+        """外层循环：启动即建监控（与发现层并行）→ 服务；
+        事件流断则全删失重建。候选在监控就绪前积压在队列里，
+        就绪后由 _cand_loop 逐一消费（入场复核兜底过期候选）。"""
         while True:
-            cand = await candidates.get()          # 阻塞等首个候选
-            try:
-                await self.ensure_monitor()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[监控] 初始化失败: {e}，60s 后重试")
-                try:                            # 防半建连泄漏
-                    if self.mon:
-                        await self.mon.aclose()
-                except Exception:
-                    pass
-                self.mon = None
-                candidates.put_nowait(cand)        # 候选放回，避免丢失
-                await asyncio.sleep(60)
-                continue
-            try:
-                await self._open_episode(cand)
-            except Exception as e:
-                logger.warning(f"[监控] 首个候选进桌失败: {e}")
+            if self.mon is None:
+                try:
+                    await self.ensure_monitor()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[监控] 初始化失败: {e}，60s 后重试")
+                    try:                        # 防半建连泄漏
+                        if self.mon:
+                            await self.mon.aclose()
+                    except Exception:
+                        pass
+                    self.mon = None
+                    await asyncio.sleep(60)
+                    continue
             try:
                 await self._serve(candidates)
             except asyncio.CancelledError:
