@@ -83,6 +83,7 @@ class LobbyWatcher:
         self._flat: dict[int, str] = {}          # 桌→最新路纸
         self.good_roads: dict[int, list] = {}    # 桌→平台好路标记（共享给落库）
         self.meta: dict[int, dict] = {}          # 桌→10053 元数据
+        self.online: dict[int, dict] = {}        # 桌→最新 tableOnline（在线人数/总注额）
         self._last_write: dict[int, float] = {}
         self.active: set[int] = set()            # 监控中（由主循环维护）
         self.cooldown: dict[int, float] = {}     # 桌→冷却截止 ts
@@ -162,6 +163,8 @@ class LobbyWatcher:
                   if isinstance(p, dict) and p.get("goodRoadFlag")]
             self.good_roads[tid] = gr
             ton = t.get("tableOnline") or {}
+            if ton:
+                self.online[tid] = ton         # 共享给监控侧落库
             changed = flat != self._flat.get(tid, "")
             if changed:
                 self._flat[tid] = flat
@@ -420,6 +423,9 @@ class StreakMonitor:
         snap = self.mon.snapshots.get(tid) or {}
         last104 = self._last_round.get(tid) or {}
         road_after = self.mon.road_flat(tid)
+        # 在线人数：401 快照无 tableOnline，用大厅 10052 的最新值（1.4s 帧率）
+        online_no = ((self._watcher.online.get(tid) or {}).get("onlineNumber")
+                     or (snap.get("tableOnline") or {}).get("onlineNumber"))
         # 主表 rounds（round_id 去重，重进/多账号安全）
         is_new = self._store.insert_round({
             "round_id": rid, "table_id": tid,
@@ -432,8 +438,7 @@ class StreakMonitor:
             "good_roads": self._watcher.good_roads.get(tid, []),
             "player_count": bet.get("currentRoundPlayerCount"),
             "total_amount": bet.get("currentRoundPlayerAmountCount"),
-            "online_number": (snap.get("tableOnline") or {})
-            .get("onlineNumber"),
+            "online_number": online_no,
             "ts_bet_end": last104.get("countdownEndTime"),
             "ts_server": d.get("serverTime"),
             "ts_settle": now_ms(),
@@ -464,8 +469,7 @@ class StreakMonitor:
             "banker_points": b_pt, "player_points": p_pt,
             "total_amount": bet.get("currentRoundPlayerAmountCount"),
             "player_count": bet.get("currentRoundPlayerCount"),
-            "online_number": (snap.get("tableOnline") or {})
-            .get("onlineNumber"),
+            "online_number": online_no,
             "bet_json": pools, "payout_json": boot})
         if outcome == "broke":
             asyncio.create_task(self._close(tid, "broke", rid))
