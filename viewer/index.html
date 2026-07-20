@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>长龙浏览器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1115; color: #d7dce3; font: 14px/1.5 "Microsoft YaHei", system-ui, sans-serif; }
+  header { padding: 12px 20px; border-bottom: 1px solid #232833; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 17px; color: #fff; }
+  .stat { color: #8b94a3; font-size: 13px; }
+  .stat b { color: #e8b93d; }
+  .filters { padding: 10px 20px; display: flex; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid #232833; background: #14171d; position: sticky; top: 0; z-index: 5; }
+  select, input { background: #1c212b; color: #d7dce3; border: 1px solid #2c3442; border-radius: 6px; padding: 5px 9px; font-size: 13px; }
+  button { background: #2b62c4; color: #fff; border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #3570d8; }
+  #list { padding: 14px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .card { background: #171b23; border: 1px solid #242b38; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+  .card:hover { border-color: #3a4группа458; }
+  .card:hover { border-color: #3a4458; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .side { font-weight: 700; padding: 1px 8px; border-radius: 4px; font-size: 13px; }
+  .side.B { background: #4c1d1d; color: #ff7b72; }
+  .side.P { background: #16324f; color: #79b8ff; }
+  .tname { color: #fff; font-weight: 600; }
+  .gtype { color: #8b94a3; font-size: 12px; }
+  .len { color: #e8b93d; font-weight: 600; }
+  .meta { color: #8b94a3; font-size: 12px; }
+  .outcome { font-size: 12px; padding: 1px 7px; border-radius: 4px; }
+  .outcome.broke { background: #3d2b10; color: #f0b35c; }
+  .outcome.censored { background: #2b2f38; color: #9aa3b2; }
+  .outcome.open { background: #123f2a; color: #5fd69a; }
+  .detail { margin-top: 10px; border-top: 1px dashed #2c3442; padding-top: 10px; }
+  .road { display: flex; flex-wrap: wrap; gap: 3px; margin: 8px 0; }
+  .dot { width: 16px; height: 16px; border-radius: 50%; font-size: 10px; display: flex; align-items: center; justify-content: center; color: #fff; }
+  .dot.B { background: #c0392b; }
+  .dot.P { background: #2470bd; }
+  .dot.T { background: #1e8e5a; }
+  .dot.brk { outline: 2px solid #e8b93d; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  th, td { padding: 4px 6px; text-align: right; border-bottom: 1px solid #232833; white-space: nowrap; }
+  th { color: #8b94a3; font-weight: 500; }
+  td.l, th.l { text-align: left; }
+  tr.brk td { background: rgba(232,185,61,.07); }
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 40px; margin: 6px 0; }
+  .bar { flex: 1; min-width: 3px; background: #2b62c4; border-radius: 1px 1px 0 0; position: relative; }
+  .bar.brk { background: #e8b93d; }
+  .more-wrap { text-align: center; padding: 14px; }
+  #loading { color: #8b94a3; text-align: center; padding: 30px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐉 长龙浏览器</h1>
+  <span class="stat" id="stats">加载中…</span>
+  <span class="stat" id="clock"></span>
+</header>
+<div class="filters">
+  <select id="f-side"><option value="">龙向(全部)</option><option value="B">庄龙</option><option value="P">闲龙</option></select>
+  <select id="f-outcome"><option value="">结局(全部)</option><option value="broke">已断</option><option value="censored">删失(掉线/换靴)</option><option value="open">进行中</option></select>
+  <select id="f-gtype"><option value="">桌型(全部)</option></select>
+  <select id="f-minlen"><option value="0">峰值长度(不限)</option><option value="5">≥5</option><option value="7">≥7</option><option value="9">≥9</option></select>
+  <input id="f-q" placeholder="桌名/桌ID" size="12">
+  <button onclick="reload(true)">查询</button>
+  <label class="stat" style="align-self:center"><input type="checkbox" id="auto" checked style="vertical-align:-2px"> 30s自动刷新</label>
+</div>
+<div id="list"></div>
+<div class="more-wrap"><button id="more" onclick="loadMore()" style="display:none">加载更多</button></div>
+
+<script>
+let offset = 0, total = 0;
+const $ = id => document.getElementById(id);
+const fmtT = ms => { const d = new Date(ms); return d.toTimeString().slice(0,8); };
+const fmtDur = ms => { const s = Math.round(ms/1000); return s>=60 ? `${Math.floor(s/60)}分${s%60}秒` : `${s}秒`; };
+const OUT = { broke:['✂ 已断','broke'], censored_disconnect:['🔌 掉线','censored'], censored_boot:['🔄 换靴','censored'] };
+
+async function reload(reset) {
+  if (reset) { offset = 0; $('list').innerHTML = ''; }
+  const p = new URLSearchParams({
+    side: $('f-side').value, outcome: $('f-outcome').value,
+    game_type: $('f-gtype').value, min_len: $('f-minlen').value,
+    q: $('f-q').value, limit: 50, offset });
+  const r = await (await fetch('/api/episodes?' + p)).json();
+  total = r.total;
+  const sel = $('f-gtype');
+  if (sel.options.length <= 1) r.game_types.forEach(g => {
+    const o = document.createElement('option'); o.textContent = g; sel.appendChild(o); });
+  if (reset) $('list').innerHTML = '';
+  r.items.forEach(addCard);
+  offset += r.items.length;
+  $('more').style.display = offset < total ? '' : 'none';
+  if (reset && !r.items.length) $('list').innerHTML = '<div id="loading">没有符合条件的长龙</div>';
+}
+function loadMore() { reload(false); }
+
+function addCard(ep) {
+  const div = document.createElement('div');
+  div.className = 'card';
+  const [ot, oc] = ep.outcome ? (OUT[ep.outcome] || [ep.outcome,'censored']) : ['⏳ 进行中','open'];
+  div.innerHTML = `<div class="row">
+    <span class="side ${ep.side}">${ep.side==='B'?'庄龙':'闲龙'}</span>
+    <span class="tname">${ep.table_name || '桌'+ep.table_id}</span>
+    <span class="gtype">${ep.game_type_name}</span>
+    <span class="len">${ep.start_length}→${ep.max_length} 连</span>
+    <span class="meta">存活 ${ep.max_length-ep.start_length} 局 · ${fmtDur(ep.end_ts-ep.start_ts)}</span>
+    <span class="outcome ${oc}">${ot}</span>
+    <span class="meta" style="margin-left:auto">${fmtT(ep.start_ts)}</span>
+  </div><div class="detail" style="display:none"></div>`;
+  div.onclick = () => toggle(div, ep.episode_id);
+  $('list').appendChild(div);
+}
+
+async function toggle(div, eid) {
+  const det = div.querySelector('.detail');
+  if (det.style.display !== 'none') { det.style.display = 'none'; return; }
+  det.style.display = 'block';
+  det.innerHTML = '<span class="meta">加载中…</span>';
+  if (det.dataset.loaded) return;
+  const ep = await (await fetch('/api/episodes/' + eid)).json();
+  det.dataset.loaded = 1;
+  const rounds = ep.rounds || [];
+  const road = rounds.map(r => ({t: r.result[0], brk: r.outcome==='broke'}));
+  const maxAmt = Math.max(...rounds.map(r => r.b_amt + r.p_amt), 1);
+  det.innerHTML = `
+    <div class="road">${road.map(d =>
+      `<span class="dot ${d.t}${d.brk?' brk':''}">${d.t==='T'?'和':''}</span>`).join('')}</div>
+    <div class="bars" title="每局总池(庄+闲)">${rounds.map(r =>
+      `<div class="bar${r.outcome==='broke'?' brk':''}" style="height:${Math.max(6,(r.b_amt+r.p_amt)/maxAmt*100)}%"></div>`).join('')}</div>
+    <table><thead><tr>
+      <th class="l">时间</th><th>连胜长</th><th>结果</th><th>点数</th>
+      <th>庄池</th><th>闲池</th><th>和池</th><th>庄人数</th><th>闲人数</th><th>在线</th>
+    </tr></thead><tbody>${rounds.map(r => `
+      <tr class="${r.outcome==='broke'?'brk':''}">
+        <td class="l">${fmtT(r.ts_settle)}</td><td>${r.streak_len_before}</td>
+        <td>${{B:'庄',P:'闲',T:'和',B6:'庄6'}[r.result]||r.result}</td>
+        <td>${r.banker_points}:${r.player_points}</td>
+        <td>${(r.b_amt||0).toLocaleString()}</td><td>${(r.p_amt||0).toLocaleString()}</td>
+        <td>${(r.t_amt||0).toLocaleString()}</td>
+        <td>${r.b_cnt}</td><td>${r.p_cnt}</td><td>${r.online_number ?? '-'}</td>
+      </tr>`).join('')}</tbody></table>
+    <div class="meta" style="margin-top:6px">金框圆点/金柱 = 断龙那一局；悬停柱子看总池</div>`;
+}
+
+async function stats() {
+  const s = await (await fetch('/api/stats')).json();
+  $('stats').innerHTML = `共 <b>${s.total}</b> 条龙 · 已断 <b>${s.broke}</b> · 删失 ${s.censored} · 进行中 ${s.open} · 平均存活 <b>${s.avg_survive}</b> 局 / <b>${s.avg_secs}</b> 秒`;
+  $('clock').textContent = '数据截至 ' + fmtT(s.range[1] || s.now);
+}
+reload(true); stats();
+setInterval(() => { if ($('auto').checked) { reload(true); stats(); } }, 30000);
+</script>
+</body>
+</html>
