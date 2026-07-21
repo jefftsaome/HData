@@ -290,6 +290,252 @@ def api_round(round_id):
     return {"info": info, "frames": frames, "online": online, "cards": cards}
 
 
+# ── 分析页聚合接口 ──
+
+def _afilters(q):
+    """解析分析页通用筛选：side / game_type / days。"""
+    side = q.get("side", ["all"])[0]
+    gt = q.get("game_type", [""])[0]
+    days = float(q.get("days", ["0"])[0] or 0)
+    return side, gt, days
+
+
+def _ep_where(side, gt, days):
+    sql, args = ["1=1"], []
+    if side in ("B", "P"):
+        sql.append("e.side=?"); args.append(side)
+    if gt:
+        sql.append("t.game_type_name=?"); args.append(gt)
+    if days > 0:
+        sql.append("e.start_ts>=?"); args.append(int((time.time() - days * 86400) * 1000))
+    return " and ".join(sql), args
+
+
+def api_analysis_overview(q):
+    side, gt, days = _afilters(q)
+    where, args = _ep_where(side, gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select e.side, e.outcome, e.max_length, e.start_ts, e.end_ts
+        from streak_episodes e left join tables t on t.table_id=e.table_id
+        where {where}""", args).fetchall()
+    out = {"episodes": len(rows), "broke": 0, "censored": 0,
+           "by_side": {"B": {"n": 0, "broke": 0, "lens": []},
+                       "P": {"n": 0, "broke": 0, "lens": []}}}
+    for r in rows:
+        s = r["side"] if r["side"] in ("B", "P") else None
+        if r["outcome"] == "broke":
+            out["broke"] += 1
+        else:
+            out["censored"] += 1
+        if s:
+            d = out["by_side"][s]
+            d["n"] += 1
+            d["lens"].append(r["max_length"] or 0)
+            if r["outcome"] == "broke":
+                d["broke"] += 1
+    for s in ("B", "P"):
+        d = out["by_side"][s]
+        ls = d.pop("lens")
+        d["avg_len"] = round(sum(ls) / len(ls), 2) if ls else 0
+        d["broke_rate"] = round(d["broke"] / d["n"], 4) if d["n"] else 0
+    out["game_types"] = [r[0] for r in con.execute(
+        "select distinct game_type_name from tables where game_type_name!='' order by 1")]
+    return out
+
+
+def api_analysis_survival(q):
+    """条件断龙概率 + KM 存活（按连胜长度），分庄龙/闲龙。左截断于 min 检测长度。"""
+    side, gt, days = _afilters(q)
+    where, args = _ep_where("all", gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select e.side, e.outcome, e.max_length, e.start_length
+        from streak_episodes e left join tables t on t.table_id=e.table_id
+        where {where} and e.max_length is not null""", args).fetchall()
+    res = {}
+    for s in ("B", "P"):
+        eps = [(r["max_length"], r["outcome"] == "broke", r["start_length"] or 5)
+               for r in rows if r["side"] == s]
+        max_l = max((e[0] for e in eps), default=0)
+        curve, km = [], 1.0
+        for L in range(5, max_l + 1):
+            risk = [e for e in eps if e[0] >= L and e[2] <= L]
+            broke = sum(1 for e in risk if e[0] == L and e[1])
+            n = len(risk)
+            if n == 0:
+                continue
+            h = broke / n
+            km *= (1 - h)
+            curve.append({"len": L, "risk": n, "broke": broke,
+                          "hazard": round(h, 4), "survival": round(km, 4)})
+        res[s] = curve
+    return res
+
+
+def _round_metrics(r, side):
+    """单局衍生指标。r 含 bet_json/player_count/online_number。"""
+    b = parse_bets(r["bet_json"])
+    sa = b["b_amt"] if side == "B" else b["p_amt"]   # 连胜方池
+    oa = b["p_amt"] if side == "B" else b["b_amt"]   # 反方池
+    sc = b["b_cnt"] if side == "B" else b["p_cnt"]
+    oc = b["p_cnt"] if side == "B" else b["b_cnt"]
+    tot = b["b_amt"] + b["p_amt"] + b["t_amt"]
+    return {"total": tot, "s_amt": sa, "o_amt": oa, "t_amt": b["t_amt"],
+            "s_cnt": sc, "o_cnt": oc,
+            "players": r["player_count"] or 0,
+            "online": r["online_number"],
+            "s_avg": sa / sc if sc else 0, "o_avg": oa / oc if oc else 0,
+            "tie_ratio": b["t_amt"] / tot if tot else 0}
+
+
+def _pct(new, old):
+    return (new - old) / old if old else None
+
+
+def api_analysis_pairs(q):
+    """断龙上下局对比：断龙组(broke) vs 继续组(continue)，衍生指标环比。"""
+    side, gt, days = _afilters(q)
+    where, args = _ep_where("all", gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select r.episode_id, r.ts_settle, r.streak_len_before, r.outcome,
+               r.bet_json, r.player_count, r.online_number, e.side
+        from streak_rounds r
+        join streak_episodes e on e.episode_id=r.episode_id
+        left join tables t on t.table_id=e.table_id
+        where {where} and r.streak_len_before>=4
+        order by r.episode_id, r.ts_settle""", args).fetchall()
+    by_ep = defaultdict(list)
+    for r in rows:
+        by_ep[r["episode_id"]].append(r)
+    pairs = []
+    for ep_rows in by_ep.values():
+        for i in range(1, len(ep_rows)):
+            cur, prev = ep_rows[i], ep_rows[i - 1]
+            if cur["outcome"] not in ("broke", "continue"):
+                continue
+            mc, mp = _round_metrics(cur, cur["side"]), _round_metrics(prev, cur["side"])
+            pairs.append({
+                "side": cur["side"], "grp": cur["outcome"],
+                "len": cur["streak_len_before"],
+                "d_total": _pct(mc["total"], mp["total"]),
+                "d_players": _pct(mc["players"], mp["players"]),
+                "d_s_amt": _pct(mc["s_amt"], mp["s_amt"]),
+                "d_o_amt": _pct(mc["o_amt"], mp["o_amt"]),
+                "d_s_avg": _pct(mc["s_avg"], mp["s_avg"]),
+                "d_o_avg": _pct(mc["o_avg"], mp["o_avg"]),
+                "d_tie": mc["tie_ratio"] - mp["tie_ratio"],
+                "cur_total": mc["total"], "cur_players": mc["players"]})
+    # 聚合：按 side×grp 求均值/中位数
+    import statistics as st
+    metrics = ["d_total", "d_players", "d_s_amt", "d_o_amt", "d_s_avg", "d_o_avg", "d_tie"]
+    agg = {}
+    for s in ("B", "P"):
+        for g in ("broke", "continue"):
+            sub = [p for p in pairs if p["side"] == s and p["grp"] == g]
+            a = {"n": len(sub)}
+            for m in metrics:
+                vals = [p[m] for p in sub if p[m] is not None]
+                a[m] = {"mean": round(st.mean(vals), 4) if vals else None,
+                        "median": round(st.median(vals), 4) if vals else None,
+                        "n": len(vals)}
+            agg[f"{s}_{g}"] = a
+    # 散点采样（断龙组全量 + 继续组等量采样）
+    import random
+    broke_pts = [[round(p["d_s_amt"] or 0, 3), round(p["d_o_amt"] or 0, 3), p["side"]]
+                 for p in pairs if p["grp"] == "broke"
+                 and p["d_s_amt"] is not None and p["d_o_amt"] is not None]
+    cont_pts = [[round(p["d_s_amt"] or 0, 3), round(p["d_o_amt"] or 0, 3), p["side"]]
+                for p in pairs if p["grp"] == "continue"
+                and p["d_s_amt"] is not None and p["d_o_amt"] is not None]
+    random.seed(7)
+    random.shuffle(cont_pts)
+    return {"agg": agg,
+            "scatter": {"broke": broke_pts[:1500], "continue": cont_pts[:1500]}}
+
+
+def api_analysis_heatmap(q):
+    """断龙时刻热力：小时 × 桌型 的断龙次数与断龙率。"""
+    side, gt, days = _afilters(q)
+    where, args = _ep_where(side, gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select r.ts_settle, r.outcome, t.game_type_name g
+        from streak_rounds r
+        join streak_episodes e on e.episode_id=r.episode_id
+        left join tables t on t.table_id=e.table_id
+        where {where} and r.outcome in ('broke','continue')""", args).fetchall()
+    heat = defaultdict(lambda: [0, 0])   # (g, hour) -> [broke, total]
+    types = set()
+    for r in rows:
+        g = r["g"] or "未知"
+        types.add(g)
+        h = time.localtime(r["ts_settle"] / 1000).tm_hour
+        k = (g, h)
+        heat[k][1] += 1
+        if r["outcome"] == "broke":
+            heat[k][0] += 1
+    data = [[g, h, b, n, round(b / n, 3) if n else 0]
+            for (g, h), (b, n) in heat.items()]
+    return {"types": sorted(types), "data": data}
+
+
+_WHALES_CACHE = {"ts": 0, "key": None, "data": None}
+
+
+def api_analysis_whales(q):
+    """大户入场事件：帧间分侧增量，新进人均注额超阈值。"""
+    hours = min(float(q.get("hours", ["24"])[0] or 24), 72)
+    min_amt = float(q.get("min_amt", ["20000"])[0] or 20000)
+    key = (hours, min_amt)
+    if _WHALES_CACHE["data"] and _WHALES_CACHE["key"] == key and \
+            time.time() - _WHALES_CACHE["ts"] < 300:
+        return _WHALES_CACHE["data"]
+    since = int((time.time() - hours * 3600) * 1000)
+    con = db()
+    rows = con.execute("""
+        select table_id, round_id, ts, payload from events_raw
+        where protocol_id=110 and ts>? order by round_id, ts""", (since,)).fetchall()
+    events, prev = [], None
+    for tid, rid, ts, payload in rows:
+        try:
+            d = json.loads(payload)
+        except Exception:
+            continue
+        pools = d.get("jackpotPoolInfos")
+        if not pools:
+            continue
+        def side_sums(ids):
+            a = sum(x["totalAmount"] for x in pools if x["betPointId"] in ids)
+            c = sum(x["totalPersonCount"] for x in pools if x["betPointId"] in ids)
+            return a, c
+        ba, bc = side_sums(B_IDS); pa, pc = side_sums(P_IDS)
+        cur = (rid, ba, bc, pa, pc)
+        if prev and prev[0] == rid:
+            for gi, (a0, c0, a1, c1) in enumerate((
+                    (prev[1], prev[2], ba, bc), (prev[3], prev[4], pa, pc))):
+                da, dc = a1 - a0, c1 - c0
+                if da >= min_amt:
+                    events.append({
+                        "ts": ts, "round_id": rid, "table_id": tid,
+                        "side": "B" if gi == 0 else "P",
+                        "d_amt": round(da), "d_cnt": dc,
+                        "per_capita": round(da / dc) if dc > 0 else None,
+                        "kind": "入场" if dc > 0 else "加仓"})
+        prev = cur
+    events.sort(key=lambda e: -e["d_amt"])
+    tids = {e["table_id"] for e in events[:200]}
+    names = {r[0]: r[1] for r in con.execute(
+        f"select table_id, table_name from tables where table_id in ({','.join('?' * len(tids))})",
+        tuple(tids))} if tids else {}
+    for e in events[:200]:
+        e["table_name"] = names.get(e["table_id"], "")
+    out = {"events": events[:200], "total": len(events)}
+    _WHALES_CACHE.update(ts=time.time(), key=key, data=out)
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -315,6 +561,21 @@ class Handler(BaseHTTPRequestHandler):
                 if f.is_file() and f.parent.parent == ROOT.resolve():
                     self._send(f.read_bytes(),
                                ctype="application/javascript; charset=utf-8")
+                else:
+                    self._send({"error": "not found"}, 404)
+            elif u.path == "/analysis":
+                self._send((ROOT / "analysis.html").read_bytes(),
+                           ctype="text/html; charset=utf-8")
+            elif u.path.startswith("/api/analysis/"):
+                name = u.path.rsplit("/", 1)[1]
+                q = parse_qs(u.query)
+                fn = {"overview": api_analysis_overview,
+                      "survival": api_analysis_survival,
+                      "pairs": api_analysis_pairs,
+                      "heatmap": api_analysis_heatmap,
+                      "whales": api_analysis_whales}.get(name)
+                if fn:
+                    self._send(fn(q))
                 else:
                     self._send({"error": "not found"}, 404)
             elif u.path == "/api/stats":

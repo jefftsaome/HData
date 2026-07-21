@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>断龙分析 · 长龙浏览器</title>
+<script src="/vendor/echarts.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1115; color: #d7dce3; font: 14px/1.5 "Microsoft YaHei", system-ui, sans-serif; }
+  header { padding: 12px 20px; border-bottom: 1px solid #232833; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 17px; color: #fff; }
+  header a { color: #79b8ff; text-decoration: none; font-size: 13px; }
+  .filters { padding: 10px 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #232833; background: #14171d; position: sticky; top: 0; z-index: 5; }
+  select, input { background: #1c212b; color: #d7dce3; border: 1px solid #2c3442; border-radius: 6px; padding: 5px 9px; font-size: 13px; }
+  button { background: #2b62c4; color: #fff; border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #3570d8; }
+  section { padding: 16px 20px; border-bottom: 1px solid #1b212b; }
+  section h2 { font-size: 15px; color: #fff; margin-bottom: 10px; }
+  section .note { color: #8b94a3; font-size: 12px; margin-bottom: 8px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card { background: #171b23; border: 1px solid #242b38; border-radius: 8px; padding: 10px 16px; min-width: 150px; }
+  .card .k { color: #8b94a3; font-size: 12px; }
+  .card .v { color: #e8b93d; font-size: 20px; font-weight: 700; }
+  .chart { width: 100%; height: 340px; background: #10141a; border-radius: 6px; }
+  .chart.tall { height: 420px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { padding: 4px 8px; text-align: right; border-bottom: 1px solid #1e242e; }
+  th { color: #8b94a3; font-weight: 500; }
+  th.l, td.l { text-align: left; }
+  .hl { color: #e8b93d; font-weight: 600; }
+  .B { color: #ff7b72; } .P { color: #79b8ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>断龙分析</h1>
+  <a href="/">← 返回长龙列表</a>
+</header>
+<div class="filters">
+  <label>龙侧 <select id="f-side">
+    <option value="all">庄龙+闲龙</option><option value="B">仅庄龙</option><option value="P">仅闲龙</option>
+  </select></label>
+  <label>桌型 <select id="f-gt"><option value="">全部</option></select></label>
+  <label>时间范围 <select id="f-days">
+    <option value="1">近24小时</option><option value="3">近3天</option>
+    <option value="7" selected>近7天</option><option value="0">全部</option>
+  </select></label>
+  <button onclick="loadAll()">应用</button>
+  <span id="msg" style="color:#8b94a3;font-size:12px"></span>
+</div>
+
+<section>
+  <h2>① 总览</h2>
+  <div class="cards" id="ov"></div>
+</section>
+
+<section>
+  <h2>② 存活分析：长龙死在第几局</h2>
+  <div class="note">左：条件断龙概率 P(断|达到该长度)；右：KM 存活率（达到5连后还能延续的概率）。左截断于检测长度5，删失已剔除。</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="chart" id="c-hazard"></div>
+    <div class="chart" id="c-km"></div>
+  </div>
+</section>
+
+<section>
+  <h2>③ 断龙上下局对比（衍生指标）</h2>
+  <div class="note">断龙组=断的那一局和它的上一局；继续组=任一延续局和它的上一局。指标均为环比变化率（断龙是否真的"有痕迹"）。</div>
+  <table id="pairs-table" style="margin-bottom:12px"></table>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="chart" id="c-pairs-bar"></div>
+    <div class="chart tall" id="c-pairs-scatter"></div>
+  </div>
+</section>
+
+<section>
+  <h2>④ 断龙时刻热力</h2>
+  <div class="note">小时 × 桌型，颜色=断龙率（该时段该桌型延续局中最终断掉的比例），悬浮显示次数。</div>
+  <div class="chart tall" id="c-heat"></div>
+</section>
+
+<section>
+  <h2>⑤ 大户入场监测</h2>
+  <div class="note">帧间分侧增量 ≥ 阈值的跳变事件。新进人均注额=Δ金额/Δ人数，Δ0人=存量加仓。</div>
+  <div class="filters" style="position:static;background:none;border:0;padding:0 0 10px">
+    <label>时间 <select id="w-hours"><option value="24" selected>近24小时</option><option value="48">近48小时</option><option value="72">近72小时</option></select></label>
+    <label>阈值 <select id="w-min"><option value="20000">2万</option><option value="50000" selected>5万</option><option value="100000">10万</option><option value="500000">50万</option></select></label>
+    <button onclick="loadWhales()">刷新</button>
+  </div>
+  <div id="whale-summary" class="note"></div>
+  <table id="whale-table"></table>
+</section>
+
+<script>
+const $=id=>document.getElementById(id);
+const charts={};
+function mk(id){ if(!charts[id]) charts[id]=echarts.init($(id)); return charts[id]; }
+function qs(){ const p=new URLSearchParams(); p.set('side',$('f-side').value); p.set('days',$('f-days').value);
+  if($('f-gt').value) p.set('game_type',$('f-gt').value); return p; }
+const AX={axisLine:{lineStyle:{color:'#2c3442'}},axisLabel:{color:'#8b94a3',fontSize:10},splitLine:{lineStyle:{color:'#1b212b'}}};
+const TT={backgroundColor:'#171b23',borderColor:'#2c3442',textStyle:{color:'#d7dce3',fontSize:12}};
+const SIDE={B:'庄龙',P:'闲龙'};
+const fmtT=ts=>new Date(ts).toLocaleString('zh-CN',{hour12:false});
+
+async function loadOverview(){
+  const d=await(await fetch('/api/analysis/overview?'+qs())).json();
+  const gt=$('f-gt');
+  if(gt.options.length<=1){ d.game_types.forEach(g=>{const o=document.createElement('option');o.value=o.textContent=g;gt.add(o);}); }
+  const card=(k,v,sub)=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="k">${sub||''}</div></div>`;
+  $('ov').innerHTML =
+    card('龙总数', d.episodes, `断 ${d.broke} · 删失 ${d.censored}`) +
+    card('庄龙', d.by_side.B.n, `断龙率 ${(d.by_side.B.broke_rate*100).toFixed(1)}% · 均长 ${d.by_side.B.avg_len}`) +
+    card('闲龙', d.by_side.P.n, `断龙率 ${(d.by_side.P.broke_rate*100).toFixed(1)}% · 均长 ${d.by_side.P.avg_len}`);
+}
+
+async function loadSurvival(){
+  const d=await(await fetch('/api/analysis/survival?'+qs())).json();
+  const lens=[...new Set([...d.B.map(p=>p.len),...d.P.map(p=>p.len)])].sort((a,b)=>a-b);
+  const pick=(arr,k,f)=>{const p=arr.find(x=>x.len===k);return p?p[f]:null;};
+  const base={type:'line',showSymbol:true,symbolSize:5,connectNulls:true};
+  mk('c-hazard').setOption({
+    backgroundColor:'transparent',tooltip:{trigger:'axis',...TT},legend:{textStyle:{color:'#8b94a3'}},
+    xAxis:{type:'category',name:'连胜长度',data:lens,...AX},
+    yAxis:{type:'value',name:'断龙概率',axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+    series:[{...base,name:'庄龙',itemStyle:{color:'#e05252'},data:lens.map(l=>pick(d.B,l,'hazard'))},
+            {...base,name:'闲龙',itemStyle:{color:'#4a9ae0'},data:lens.map(l=>pick(d.P,l,'hazard'))}]});
+  mk('c-km').setOption({
+    backgroundColor:'transparent',tooltip:{trigger:'axis',...TT},legend:{textStyle:{color:'#8b94a3'}},
+    xAxis:{type:'category',name:'连胜长度',data:lens,...AX},
+    yAxis:{type:'value',name:'存活率',min:0,max:1,axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+    series:[{...base,name:'庄龙',itemStyle:{color:'#e05252'},areaStyle:{opacity:.08},data:lens.map(l=>pick(d.B,l,'survival'))},
+            {...base,name:'闲龙',itemStyle:{color:'#4a9ae0'},areaStyle:{opacity:.08},data:lens.map(l=>pick(d.P,l,'survival'))}]});
+}
+
+const METRICS=[['d_total','总池变化率'],['d_players','下注人数变化率'],['d_s_amt','连胜方金额变化率'],
+  ['d_o_amt','反方金额变化率'],['d_s_avg','连胜方人均注额变化'],['d_o_avg','反方人均注额变化'],['d_tie','和池占比变化(pp)']];
+const pctFmt=(m,v)=>v==null?'-':(m==='d_tie'?(v*100).toFixed(2):(v*100).toFixed(1)+'%');
+
+async function loadPairs(){
+  const d=await(await fetch('/api/analysis/pairs?'+qs())).json();
+  // 表格：指标 × 4组（均值/中位数）
+  const G=[['B_broke','庄龙·断'],['B_continue','庄龙·续'],['P_broke','闲龙·断'],['P_continue','闲龙·续']];
+  let rows=METRICS.map(([m,label])=>{
+    const cells=G.map(([k])=>{const a=d.agg[k];return `<td>${pctFmt(m,a[m].mean)}<br><span style="color:#5c6675">${pctFmt(m,a[m].median)}</span></td>`;}).join('');
+    return `<tr><td class="l">${label}</td>${cells}</tr>`;}).join('');
+  $('pairs-table').innerHTML=`<thead><tr><th class="l">指标（均值/中位数）</th>${G.map(([k,label],i)=>`<th class="${k[0]}">${label}<br><span style="color:#5c6675">n=${d.agg[k].n}</span></th>`).join('')}</tr></thead><tbody>${rows}</tbody>`;
+  // 柱状：断 vs 续 各组均值
+  mk('c-pairs-bar').setOption({
+    backgroundColor:'transparent',tooltip:{trigger:'axis',...TT,valueFormatter:v=>v==null?'-':(v*100).toFixed(1)+'%'},
+    legend:{textStyle:{color:'#8b94a3'}},
+    xAxis:{type:'category',data:METRICS.map(m=>m[1]),axisLabel:{color:'#8b94a3',fontSize:9,interval:0,rotate:25},axisLine:{lineStyle:{color:'#2c3442'}}},
+    yAxis:{type:'value',name:'变化率',axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+    series:G.map(([k,label])=>({name:label,type:'bar',
+      itemStyle:{color:{B_broke:'#e05252',B_continue:'#7a3a3a',P_broke:'#4a9ae0',P_continue:'#2f527a'}[k]},
+      data:METRICS.map(([m])=>d.agg[k][m].mean)}))});
+  // 散点：x=连胜方金额变化率 y=反方金额变化率
+  const pts=(arr,side)=>arr.filter(p=>p[2]===side).map(p=>[p[0],p[1]]);
+  const sym=(s,c,o)=>({type:'scatter',symbolSize:5,itemStyle:{color:c,opacity:o}});
+  mk('c-pairs-scatter').setOption({
+    backgroundColor:'transparent',
+    tooltip:{...TT,formatter:p=>`${p.seriesName}<br>连胜方 ${(p.value[0]*100).toFixed(1)}% / 反方 ${(p.value[1]*100).toFixed(1)}%`},
+    legend:{textStyle:{color:'#8b94a3'}},
+    xAxis:{type:'value',name:'连胜方金额变化率',nameLocation:'middle',nameGap:25,axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+    yAxis:{type:'value',name:'反方金额变化率',axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+    series:[{...sym('','#e05252',.5),name:'断龙·庄',data:pts(d.scatter.broke,'B')},
+            {...sym('','#4a9ae0',.5),name:'断龙·闲',data:pts(d.scatter.broke,'P')},
+            {...sym('','#665555',.25),name:'继续·庄',data:pts(d.scatter.continue,'B')},
+            {...sym('','#556677',.25),name:'继续·闲',data:pts(d.scatter.continue,'P')}]});
+}
+
+async function loadHeat(){
+  const d=await(await fetch('/api/analysis/heatmap?'+qs())).json();
+  const hours=[...Array(24).keys()];
+  mk('c-heat').setOption({
+    backgroundColor:'transparent',
+    tooltip:{...TT,formatter:p=>{const[g,h,b,n,rate]=p.value;return `${g} ${h}:00<br>断 ${b} / 共 ${n} 局<br>断龙率 ${(rate*100).toFixed(1)}%`;}},
+    grid:{left:90,right:30,top:20,bottom:60},
+    xAxis:{type:'category',name:'小时',data:hours,...AX},
+    yAxis:{type:'category',data:d.types,...AX,splitLine:{show:false}},
+    visualMap:{min:0,max:1,calculable:true,orient:'horizontal',left:'center',bottom:5,
+      textStyle:{color:'#8b94a3'},inRange:{color:['#141a24','#2b62c4','#e8b93d','#e05252']},
+      formatter:v=>(v*100).toFixed(0)+'%'},
+    series:[{type:'heatmap',data:d.data.map(r=>[r[1],d.types.indexOf(r[0]),r]),
+      label:{show:false},emphasis:{itemStyle:{borderColor:'#fff',borderWidth:1}}}]});
+}
+
+async function loadWhales(){
+  const h=$('w-hours').value, m=$('w-min').value;
+  $('whale-summary').textContent='加载中（全帧扫描需几秒）…';
+  const d=await(await fetch(`/api/analysis/whales?hours=${h}&min_amt=${m}`)).json();
+  $('whale-summary').innerHTML=`共 <b>${d.total}</b> 次跳变，显示金额最大的 ${d.events.length} 条`;
+  $('whale-table').innerHTML=`<thead><tr><th class="l">时间</th><th class="l">桌台</th><th>局号</th><th>侧</th>
+    <th>金额增量</th><th>人数增量</th><th>新进人均</th><th>类型</th></tr></thead><tbody>
+    ${d.events.map(e=>`<tr><td class="l">${fmtT(e.ts)}</td><td class="l">${e.table_name||e.table_id}</td>
+      <td>${e.round_id}</td><td class="${e.side}">${e.side==='B'?'庄':'闲'}</td>
+      <td class="hl">+${e.d_amt.toLocaleString()}</td><td>${e.d_cnt>0?'+'+e.d_cnt:'0'}</td>
+      <td>${e.per_capita?e.per_capita.toLocaleString():'-'}</td><td>${e.kind}</td></tr>`).join('')}</tbody>`;
+}
+
+async function loadAll(){
+  $('msg').textContent='加载中…';
+  try{
+    await Promise.all([loadOverview(),loadSurvival(),loadPairs(),loadHeat()]);
+    $('msg').textContent='已更新 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  }catch(e){ $('msg').textContent='加载失败: '+e; }
+}
+loadAll(); loadWhales();
+window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c.resize()));
+</script>
+</body>
+</html>
