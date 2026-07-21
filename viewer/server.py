@@ -7,11 +7,14 @@
     GET /api/stats                     汇总指标
     GET /api/episodes?side=P&outcome=broke&min_len=5&game_type=&q=&limit=50&offset=0
     GET /api/episodes/{id}             单条龙详情（逐局+路纸尾）
+    GET /api/lastjump?threshold=20000  "封盘前最后一跳"信号收敛面板
 """
 import json
+import math
 import sqlite3
 import sys
 import time
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -148,6 +151,93 @@ def api_episode(eid):
     return ep
 
 
+# ── "封盘前最后一跳"信号面板 ──
+
+_LASTJUMP_CACHE = {"ts": 0, "data": None}
+_LASTJUMP_TTL = 60  # 秒
+
+
+def _wilson(k, n, z=1.96):
+    if n == 0:
+        return (0, 0, 0)
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (p, max(0.0, c - h), min(1.0, c + h))
+
+
+def _side_amounts(payload):
+    try:
+        d = json.loads(payload)
+    except Exception:
+        return None
+    b = p = 0.0
+    for it in d.get("jackpotPoolInfos") or []:
+        pid = it.get("betPointId")
+        if pid in B_IDS:
+            b += it.get("totalAmount") or 0
+        elif pid in P_IDS:
+            p += it.get("totalAmount") or 0
+    return b, p
+
+
+def api_lastjump(threshold=20000):
+    if time.time() - _LASTJUMP_CACHE["ts"] < _LASTJUMP_TTL and _LASTJUMP_CACHE["data"]:
+        d = _LASTJUMP_CACHE["data"]
+        if d.get("threshold") == threshold:
+            return d
+    con = db()
+    evs = con.execute("""
+        select e.round_id, e.ts, e.payload,
+               (select r.result from rounds r where r.round_id=e.round_id) result
+        from events_raw e
+        where e.protocol_id=110 and e.round_id is not null
+        order by e.round_id, e.ts""").fetchall()
+    rounds = defaultdict(list)
+    for rid, ts, payload, res in evs:
+        if res and res[0] in "BP":
+            rounds[rid].append((ts, payload, res))
+
+    events = []  # (ts, heavy_side, win)
+    for rid, frames in rounds.items():
+        parsed = [_side_amounts(p) for _, p, _ in frames]
+        parsed = [x for x in parsed if x]
+        if len(parsed) < 2:
+            continue
+        db_ = parsed[-1][0] - parsed[-2][0]
+        dp_ = parsed[-1][1] - parsed[-2][1]
+        res0 = frames[0][2][0]
+        if db_ > threshold and db_ > 2 * dp_:
+            events.append((frames[-1][0], "B", res0 == "B"))
+        elif dp_ > threshold and dp_ > 2 * db_:
+            events.append((frames[-1][0], "P", res0 == "P"))
+    events.sort()
+
+    def stat(sub):
+        k = sum(1 for e in sub if e[2])
+        p, lo, hi = _wilson(k, len(sub))
+        return {"n": len(sub), "wins": k, "rate": round(p, 4),
+                "ci": [round(lo, 4), round(hi, 4)]}
+
+    # 累计胜率曲线（按事件顺序）
+    curve, w = [], 0
+    for i, e in enumerate(events, 1):
+        w += e[2]
+        curve.append([e[0], round(w / i, 4)])
+    data = {
+        "threshold": threshold,
+        "computed_at": int(time.time() * 1000),
+        "total": stat(events),
+        "side_B": stat([e for e in events if e[1] == "B"]),
+        "side_P": stat([e for e in events if e[1] == "P"]),
+        "curve": curve,
+        "events": [{"ts": e[0], "side": e[1], "win": e[2]} for e in events[-50:]],
+    }
+    _LASTJUMP_CACHE.update({"ts": time.time(), "data": data})
+    return data
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -172,6 +262,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(api_stats())
             elif u.path == "/api/episodes":
                 self._send(api_episodes(parse_qs(u.query)))
+            elif u.path == "/api/lastjump":
+                q = parse_qs(u.query)
+                thr = int(q.get("threshold", ["20000"])[0] or 20000)
+                self._send(api_lastjump(thr))
             elif u.path.startswith("/api/episodes/"):
                 eid = int(u.path.rsplit("/", 1)[1])
                 ep = api_episode(eid)

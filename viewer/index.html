@@ -56,6 +56,22 @@
   <span class="stat" id="stats">加载中…</span>
   <span class="stat" id="clock"></span>
 </header>
+<section id="panel-jump" style="margin:10px 20px;background:#171b23;border:1px solid #242b38;border-radius:8px;padding:12px 16px;">
+  <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+    <b style="color:#e8b93d">⚡ 封盘前最后一跳（头号待验证信号）</b>
+    <select id="j-thr" onchange="loadJump()">
+      <option value="10000">阈值 1万</option>
+      <option value="20000" selected>阈值 2万</option>
+      <option value="50000">阈值 5万</option>
+    </select>
+    <span class="stat" id="j-summary">加载中…</span>
+  </div>
+  <div id="j-chart" style="margin-top:8px"></div>
+  <div class="meta" style="color:#8b94a3;font-size:12px;margin-top:4px">
+    口径：封盘前最后一帧押注快照较上一帧单边激增 &gt;阈值（且2倍于对方）。曲线=累计胜率随样本收敛走势；
+    稳定在 0.5 以下 = 真"杀大"，回升到 0.5 = 当初的 4/18 只是噪声。
+  </div>
+</section>
 <div class="filters">
   <select id="f-side"><option value="">龙向(全部)</option><option value="B">庄龙</option><option value="P">闲龙</option></select>
   <select id="f-outcome"><option value="">结局(全部)</option><option value="broke">已断</option><option value="censored">删失(掉线/换靴)</option><option value="open">进行中</option></select>
@@ -147,6 +163,42 @@ async function stats() {
   $('stats').innerHTML = `共 <b>${s.total}</b> 条龙 · 已断 <b>${s.broke}</b> · 删失 ${s.censored} · 进行中 ${s.open} · 平均存活 <b>${s.avg_survive}</b> 局 / <b>${s.avg_secs}</b> 秒`;
   $('clock').textContent = '数据截至 ' + fmtT(s.range[1] || s.now);
 }
+
+async function loadJump() {
+  const thr = $('j-thr').value;
+  const d = await (await fetch('/api/lastjump?threshold=' + thr)).json();
+  const sig = d.total.n >= 30 && d.total.ci[1] < 0.5 ? ' ⚠️ 显著偏低' :
+              d.total.n >= 30 && d.total.ci[0] > 0.5 ? ' ⚠️ 显著偏高' : '';
+  $('j-summary').innerHTML =
+    `累计 <b>${d.total.n}</b> 局 · 重钱方胜 <b>${d.total.wins}</b> · ` +
+    `胜率 <b>${(d.total.rate*100).toFixed(1)}%</b> ` +
+    `[${(d.total.ci[0]*100).toFixed(1)}~${(d.total.ci[1]*100).toFixed(1)}%]${sig} · ` +
+    `庄跳 ${d.side_B.n}局胜${(d.side_B.rate*100).toFixed(0)}% · ` +
+    `闲跳 ${d.side_P.n}局胜${(d.side_P.rate*100).toFixed(0)}%`;
+  // SVG 累计胜率曲线
+  const c = d.curve;
+  if (c.length < 2) { $('j-chart').innerHTML = '<span class="meta">样本不足</span>'; return; }
+  const W = 900, H = 160, pl = 40, pb = 24, pt = 10, pr = 10;
+  const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = 0, y1 = 1;
+  const X = t => pl + (x1 > x0 ? (t - x0) / (x1 - x0) * (W - pl - pr) : 0);
+  const Y = v => pt + (1 - (v - y0) / (y1 - y0)) * (H - pt - pb);
+  const pts = c.map(p => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(' ');
+  $('j-chart').innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#10141a;border-radius:6px">
+      <line x1="${pl}" y1="${Y(0.5)}" x2="${W-pr}" y2="${Y(0.5)}" stroke="#4a5568" stroke-dasharray="4 3"/>
+      <text x="${W-pr-2}" y="${Y(0.5)-4}" fill="#8b94a3" font-size="10" text-anchor="end">公平线 50%</text>
+      <line x1="${pl}" y1="${Y(0)}" x2="${pl}" y2="${Y(1)}" stroke="#2c3442"/>
+      <polyline points="${pts}" fill="none" stroke="#e8b93d" stroke-width="1.5"/>
+      <text x="${pl+4}" y="${Y(1)+12}" fill="#8b94a3" font-size="10">100%</text>
+      <text x="${pl+4}" y="${Y(0)-2}" fill="#8b94a3" font-size="10">0%</text>
+      <text x="${pl}" y="${H-6}" fill="#8b94a3" font-size="10">${fmtT(x0)}</text>
+      <text x="${W-pr}" y="${H-6}" fill="#8b94a3" font-size="10" text-anchor="end">${fmtT(x1)}</text>
+    </svg>`;
+}
+loadJump();
+setInterval(() => { if ($('auto').checked) loadJump(); }, 30000);
 reload(true); stats();
 setInterval(() => { if ($('auto').checked) { reload(true); stats(); } }, 30000);
 </script>
