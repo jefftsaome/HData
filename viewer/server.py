@@ -259,7 +259,7 @@ def api_round(round_id):
         except Exception:
             continue
         b = p = tt = 0.0
-        bc = pc = 0
+        bc = pc = tc = 0
         for it in d.get("jackpotPoolInfos") or []:
             pid = it.get("betPointId")
             amt = it.get("totalAmount") or 0
@@ -269,9 +269,9 @@ def api_round(round_id):
             elif pid in P_IDS:
                 p += amt; pc += cnt
             elif pid in T_IDS:
-                tt += amt
+                tt += amt; tc += cnt
         frames.append({"ts": ts, "b_amt": b, "p_amt": p, "t_amt": tt,
-                       "b_cnt": bc, "p_cnt": pc,
+                       "b_cnt": bc, "p_cnt": pc, "t_cnt": tc,
                        "players": d.get("currentRoundPlayerCount")})
     # 该局时间窗内的在线人数（大厅快照）
     t0 = frames[0]["ts"] if frames else (info.get("ts_settle") or 0) - 60000
@@ -310,6 +310,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/" or u.path == "/index.html":
                 self._send((ROOT / "index.html").read_bytes(),
                            ctype="text/html; charset=utf-8")
+            elif u.path.startswith("/vendor/"):
+                f = (ROOT / u.path.lstrip("/")).resolve()
+                if f.is_file() and f.parent.parent == ROOT.resolve():
+                    self._send(f.read_bytes(),
+                               ctype="application/javascript; charset=utf-8")
+                else:
+                    self._send({"error": "not found"}, 404)
             elif u.path == "/api/stats":
                 self._send(api_stats())
             elif u.path == "/api/episodes":

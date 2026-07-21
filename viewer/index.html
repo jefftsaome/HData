@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>长龙浏览器</title>
+<script src="/vendor/echarts.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f1115; color: #d7dce3; font: 14px/1.5 "Microsoft YaHei", system-ui, sans-serif; }
@@ -177,51 +178,53 @@ async function loadRound(det, rid) {
     ${RES[i.result]||i.result} ${i.banker_points}:${i.player_points} ·
     靴内第${i.boot_index}局 · 荷官 ${i.dealer_name||'-'} · ${fs.length} 帧押注快照</div>`;
   if (!fs.length) { box.innerHTML = html + '<span class="meta">该局无局内帧记录（监控中途进场）</span>'; return; }
-  const W=900,pl=50,pr=70;
-  const t0=Math.min(fs[0].ts, ...(d.online&&d.online.length?d.online.map(o=>o.ts):[fs[0].ts]));
-  const t1=Math.max(fs[fs.length-1].ts, ...(d.online&&d.online.length?d.online.map(o=>o.ts):[fs[fs.length-1].ts]));
-  const X=t=>pl+(t1>t0?(t-t0)/(t1-t0)*(W-pl-pr):0);
-  // 面板1：金额（独立Y轴）
-  const H1=140,pt1=10,pb1=6;
-  const maxA=Math.max(...fs.map(f=>Math.max(f.b_amt,f.p_amt)),1);
-  const YA=v=>pt1+(1-v/maxA)*(H1-pt1-pb1);
-  const line=(key,color)=>`<polyline points="${fs.map(f=>`${X(f.ts).toFixed(1)},${YA(f[key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
-  const svg1=`<svg viewBox="0 0 ${W} ${H1}" style="width:100%;height:auto;background:#10141a;border-radius:6px 6px 0 0">
-    <text x="4" y="${pt1+4}" fill="#8b94a3" font-size="9">金额（峰值 ${maxA.toLocaleString()}）</text>
-    ${line('b_amt','#e05252')}${line('p_amt','#4a9ae0')}
-    <text x="${W-pr+4}" y="${YA(maxA)+4}" fill="#e05252" font-size="10">庄池</text>
-    <text x="${W-pr+4}" y="${pt1+10}" fill="#4a9ae0" font-size="10">闲池</text>
-  </svg>`;
-  // 面板2：人数（独立Y轴，每条线归一到自己的峰值，标注实际峰值）
-  const H2=120,pt2=10,pb2=18;
-  const maxC=Math.max(...fs.map(f=>Math.max(f.b_cnt,f.p_cnt)),1);
-  const YC=v=>pt2+(1-v/maxC)*(H2-pt2-pb2);
-  const cline=(key,color)=>`<polyline points="${fs.map(f=>`${X(f.ts).toFixed(1)},${YC(f[key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
-  let osvg='',maxO=0;
-  if (d.online && d.online.length>1) {
-    maxO=Math.max(...d.online.map(o=>o.online||0),1);
-    const YO=v=>pt2+(1-v/maxO)*(H2-pt2-pb2);
-    osvg=`<polyline points="${d.online.map(o=>`${X(o.ts).toFixed(1)},${YO(o.online||0).toFixed(1)}`).join(' ')}" fill="none" stroke="#1e8e5a" stroke-width="1.5"/>`;
-  }
-  const svg2=`<svg viewBox="0 0 ${W} ${H2}" style="width:100%;height:auto;background:#0d1116;border-radius:0 0 6px 6px;border-top:1px solid #232a35">
-    <text x="4" y="${pt2+4}" fill="#8b94a3" font-size="9">人数（下注峰值 ${maxC}${maxO?'，在线峰值 '+maxO:''}）</text>
-    ${cline('b_cnt','#a05050')}${cline('p_cnt','#5080a0')}${osvg}
-    <text x="${W-pr+4}" y="${pt2+10}" fill="#a05050" font-size="10">庄人数</text>
-    <text x="${W-pr+4}" y="${pt2+22}" fill="#5080a0" font-size="10">闲人数</text>
-    ${maxO?`<text x="${W-pr+4}" y="${pt2+34}" fill="#1e8e5a" font-size="10">在线</text>`:''}
-    <text x="${pl}" y="${H2-4}" fill="#8b94a3" font-size="9">${fmtT(t0)}</text>
-    <text x="${W-pr}" y="${H2-4}" fill="#8b94a3" font-size="9" text-anchor="end">${fmtT(t1)}(结算)</text>
-  </svg>`;
-  html += svg1+svg2;
+  const chartId='rc_'+rid;
+  html += `<div id="${chartId}" style="width:100%;height:420px;background:#10141a;border-radius:6px"></div>`;
   const key=[];
   for(let k=1;k<fs.length;k++){
     const prev=fs[k-1].b_amt+fs[k-1].p_amt, cur=fs[k].b_amt+fs[k].p_amt;
     if(prev===0||Math.abs(cur-prev)/Math.max(prev,1)>0.1||k>=fs.length-3) key.push(k);
   }
-  html += `<table style="margin-top:6px"><thead><tr><th class="l">时间</th><th>庄池</th><th>闲池</th><th>庄人数</th><th>闲人数</th></tr></thead><tbody>
-    ${key.map(k=>{const f=fs[k];return `<tr><td class="l">${fmtT(f.ts)}</td><td>${f.b_amt.toLocaleString()}</td><td>${f.p_amt.toLocaleString()}</td><td>${f.b_cnt}</td><td>${f.p_cnt}</td></tr>`}).join('')}
+  html += `<table style="margin-top:6px"><thead><tr><th class="l">时间</th><th>庄池</th><th>闲池</th><th>和池</th><th>庄人数</th><th>闲人数</th><th>和人数</th><th>当局下注</th></tr></thead><tbody>
+    ${key.map(k=>{const f=fs[k];return `<tr><td class="l">${fmtT(f.ts)}</td><td>${f.b_amt.toLocaleString()}</td><td>${f.p_amt.toLocaleString()}</td><td>${f.t_amt.toLocaleString()}</td><td>${f.b_cnt}</td><td>${f.p_cnt}</td><td>${f.t_cnt}</td><td>${f.players??'-'}</td></tr>`}).join('')}
   </tbody></table>`;
   box.innerHTML = html;
+  // ---- ECharts 双面板：上=金额 下=人数/在线 ----
+  const chart = echarts.init(document.getElementById(chartId), null, {renderer:'canvas'});
+  const AX = {axisLine:{lineStyle:{color:'#2c3442'}}, axisLabel:{color:'#8b94a3',fontSize:10}, splitLine:{lineStyle:{color:'#1b212b'}}};
+  const tt = {trigger:'axis', axisPointer:{type:'cross', label:{backgroundColor:'#2b62c4'}},
+              backgroundColor:'#171b23', borderColor:'#2c3442', textStyle:{color:'#d7dce3',fontSize:12},
+              valueFormatter:v=>v==null?'-':Number(v).toLocaleString()};
+  const L=(name,data,color)=>({name,type:'line',showSymbol:false,data,lineStyle:{width:1.5,color},itemStyle:{color},emphasis:{focus:'series'}});
+  const opt = {
+    animation:false, backgroundColor:'transparent',
+    axisPointer:{link:[{xAxisIndex:'all'}]},
+    tooltip: {...tt},
+    legend:{textStyle:{color:'#8b94a3',fontSize:11}, top:2, itemWidth:14},
+    grid:[{left:70,right:70,top:30,height:'32%'},{left:70,right:70,top:'52%',height:'30%'}],
+    xAxis:[
+      {type:'time',gridIndex:0,...AX,axisLabel:{show:false}},
+      {type:'time',gridIndex:1,...AX,axisLabel:{...AX.axisLabel,formatter:{hour:'{HH}:{mm}:{ss}',minute:'{HH}:{mm}:{ss}',second:'{HH}:{mm}:{ss}',millisecond:'{HH}:{mm}:{ss}'}}}],
+    yAxis:[
+      {type:'value',gridIndex:0,name:'金额',nameTextStyle:{color:'#8b94a3'},...AX},
+      {type:'value',gridIndex:1,name:'人数',nameTextStyle:{color:'#8b94a3'},...AX}],
+    dataZoom:[{type:'inside',xAxisIndex:[0,1]},{type:'slider',xAxisIndex:[0,1],height:14,bottom:2,
+               borderColor:'#2c3442',backgroundColor:'#14171d',fillerColor:'rgba(43,98,196,.25)',
+               textStyle:{color:'#8b94a3',fontSize:9}}],
+    series:[
+      {...L('庄池',fs.map(f=>[f.ts,f.b_amt]),'#e05252'),xAxisIndex:0,yAxisIndex:0},
+      {...L('闲池',fs.map(f=>[f.ts,f.p_amt]),'#4a9ae0'),xAxisIndex:0,yAxisIndex:0},
+      {...L('和池',fs.map(f=>[f.ts,f.t_amt]),'#c9a227'),xAxisIndex:0,yAxisIndex:0},
+      {...L('庄人数',fs.map(f=>[f.ts,f.b_cnt]),'#a05050'),xAxisIndex:1,yAxisIndex:1},
+      {...L('闲人数',fs.map(f=>[f.ts,f.p_cnt]),'#5080a0'),xAxisIndex:1,yAxisIndex:1},
+      {...L('和人数',fs.map(f=>[f.ts,f.t_cnt]),'#8a7a30'),xAxisIndex:1,yAxisIndex:1},
+      {...L('当局下注人数',fs.map(f=>[f.ts,f.players]),'#c07fd6'),xAxisIndex:1,yAxisIndex:1},
+    ]
+  };
+  if (d.online && d.online.length>1)
+    opt.series.push({...L('在线(大厅快照)',d.online.map(o=>[o.ts,o.online]),'#1e8e5a'),xAxisIndex:1,yAxisIndex:1,lineStyle:{width:1.5,color:'#1e8e5a',type:'dashed'}});
+  chart.setOption(opt);
+  new ResizeObserver(()=>chart.resize()).observe(document.getElementById(chartId));
 }
 
 async function stats() {
