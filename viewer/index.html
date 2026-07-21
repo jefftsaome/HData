@@ -68,6 +68,7 @@
     </select>
     <span class="stat" id="j-summary">加载中…</span>
   </div>
+  <div class="stat" id="j-whale" style="margin-top:6px"></div>
   <div id="j-chart" style="margin-top:8px"></div>
   <div class="meta" style="color:#8b94a3;font-size:12px;margin-top:4px">
     口径：封盘前最后一帧押注快照较上一帧单边激增 &gt;阈值（且2倍于对方）。曲线=累计胜率随样本收敛走势；
@@ -245,6 +246,17 @@ async function loadJump() {
     `[${(d.total.ci[0]*100).toFixed(1)}~${(d.total.ci[1]*100).toFixed(1)}%]${sig} · ` +
     `庄跳 ${d.side_B.n}局胜${(d.side_B.rate*100).toFixed(0)}% · ` +
     `闲跳 ${d.side_P.n}局胜${(d.side_P.rate*100).toFixed(0)}%`;
+  // 追龙鲸区
+  if (d.whale) {
+    const c = d.whale.chase, f = d.whale.fade;
+    const strata = d.whale.chase_strata.map(s =>
+      `${s.len}连:${(s.rate*100).toFixed(0)}%(n=${s.n})`).join(' ');
+    $('j-whale').innerHTML =
+      `🐋 <b>追龙鲸</b>（龙局内末帧大钱押顺方）：n=<b>${c.n}</b> · 胜率 <b>${(c.rate*100).toFixed(1)}%</b> ` +
+      `[${(c.ci[0]*100).toFixed(1)}~${(c.ci[1]*100).toFixed(1)}%]（=断龙率 ${((1-c.rate)*100).toFixed(0)}%） · ` +
+      `斩龙鲸 n=${f.n} 胜率 ${(f.rate*100).toFixed(1)}%<br>` +
+      `<span style="color:#8b94a3">追龙鲸胜率按龙长度分层：${strata || '样本不足'} · 基准胜率≈50%/基准断率≈45.8%</span>`;
+  }
   // SVG 累计胜率曲线
   const c = d.curve;
   if (c.length < 2) { $('j-chart').innerHTML = '<span class="meta">样本不足</span>'; return; }

@@ -200,7 +200,7 @@ def api_lastjump(threshold=20000):
         if res and res[0] in "BP":
             rounds[rid].append((ts, payload, res))
 
-    events = []  # (ts, heavy_side, win)
+    events = []  # (ts, heavy_side, win, round_id)
     for rid, frames in rounds.items():
         parsed = [_side_amounts(p) for _, p, _ in frames]
         parsed = [x for x in parsed if x]
@@ -210,16 +210,38 @@ def api_lastjump(threshold=20000):
         dp_ = parsed[-1][1] - parsed[-2][1]
         res0 = frames[0][2][0]
         if db_ > threshold and db_ > 2 * dp_:
-            events.append((frames[-1][0], "B", res0 == "B"))
+            events.append((frames[-1][0], "B", res0 == "B", rid))
         elif dp_ > threshold and dp_ > 2 * db_:
-            events.append((frames[-1][0], "P", res0 == "P"))
+            events.append((frames[-1][0], "P", res0 == "P", rid))
     events.sort()
+
+    # ── 追龙鲸：龙局内末帧大跳方向 vs 龙侧 ──
+    dragon = {r[0]: (r[1], r[2]) for r in con.execute("""
+        select sr.round_id, e.side, sr.streak_len_before
+        from streak_rounds sr join streak_episodes e on e.episode_id=sr.episode_id""")}
+    chase, fade, by_len = [], [], defaultdict(list)
+    for e in events:
+        if e[3] in dragon:
+            dside, dlen = dragon[e[3]]
+            if e[1] == dside:
+                chase.append(e)
+                by_len[dlen].append(e)
+            else:
+                fade.append(e)
 
     def stat(sub):
         k = sum(1 for e in sub if e[2])
         p, lo, hi = _wilson(k, len(sub))
         return {"n": len(sub), "wins": k, "rate": round(p, 4),
                 "ci": [round(lo, 4), round(hi, 4)]}
+
+    # 追龙鲸按龙长度分层（断率=1-胜率）
+    chase_strata = []
+    for L in sorted(by_len):
+        s = stat(by_len[L])
+        if s["n"] >= 2:
+            s["len"] = L
+            chase_strata.append(s)
 
     # 累计胜率曲线（按事件顺序）
     curve, w = [], 0
@@ -232,8 +254,11 @@ def api_lastjump(threshold=20000):
         "total": stat(events),
         "side_B": stat([e for e in events if e[1] == "B"]),
         "side_P": stat([e for e in events if e[1] == "P"]),
+        "whale": {"chase": stat(chase), "fade": stat(fade),
+                  "chase_strata": chase_strata},
         "curve": curve,
-        "events": [{"ts": e[0], "side": e[1], "win": e[2]} for e in events[-50:]],
+        "events": [{"ts": e[0], "side": e[1], "win": e[2],
+                    "dragon": dragon.get(e[3], [None])[0]} for e in events[-50:]],
     }
     _LASTJUMP_CACHE.update({"ts": time.time(), "data": data})
     return data
