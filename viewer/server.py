@@ -100,7 +100,7 @@ def api_episodes(q):
     if min_len:
         where.append("e.max_length>=?"); args.append(min_len)
     if text:
-        where.append("(e.table_name like ? or cast(e.table_id as text) like ?)")
+        where.append("(coalesce(nullif(e.table_name,''), t.table_name, '') like ? or cast(e.table_id as text) like ?)")
         args += [f"%{text}%", f"%{text}%"]
     w = " and ".join(where)
 
