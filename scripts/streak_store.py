@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS streak_episodes (
     end_round_id  INTEGER,
     end_ts        INTEGER,
     max_length      INTEGER,               -- 最终达到的最大连胜数
-    outcome         TEXT,                  -- broke/censored_boot/censored_disconnect/NULL(进行中)
+    outcome         TEXT,                  -- broke/censored_boot/censored_disconnect(掉线兜底或强杀遗留)/censored_network(我方网络)/censored_kick(疑似被踢且封锁)/censored_manual(人为退出)/NULL(进行中)
     account         TEXT                   -- 监控账号
 );
 CREATE INDEX IF NOT EXISTS idx_ep_table ON streak_episodes(table_id, start_ts);
@@ -255,6 +255,17 @@ class Store:
         self.con.execute(
             """UPDATE streak_episodes SET max_length=MAX(max_length, ?)
                WHERE episode_id=?""", (length, episode_id))
+
+    def update_episode_outcome(self, episode_id: int, outcome: str):
+        """改写已完结 episode 的删失原因标签。
+
+        断连兜底先记 censored_disconnect，重连后探测性重进成功/失败
+        再细化为 censored_network / censored_kick。
+        """
+        self.con.execute(
+            "UPDATE streak_episodes SET outcome=? WHERE episode_id=?",
+            (outcome, episode_id))
+        self.con.commit()
 
     def close_stale_episodes(self, outcome: str = "censored_disconnect"
                              ) -> int:

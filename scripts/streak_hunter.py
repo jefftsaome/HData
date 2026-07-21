@@ -14,7 +14,10 @@
 结局标签:
     broke              反了（首个反向非和局）
     censored_boot      靴结束/换靴（删失）
-    censored_disconnect 掉线/程序退出（删失）
+    censored_disconnect 掉线兜底（删失；未细化原因或进程强杀遗留）
+    censored_network   掉线后探测重进成功 → 我方网络问题（删失）
+    censored_kick      掉线后探测重进失败 → 疑似平台踢出且封锁（删失，重点信号）
+    censored_manual    人为 Ctrl+C 优雅退出（删失）
 
 运行:
     uv run python scripts/streak_hunter.py           # 前台运行
@@ -64,6 +67,7 @@ DB_PATH = "data/streak.db"
 BACCARAT_IDS = {2001, 2002, 2003, 2004, 2005, 2014, 2016,
                 2027, 2030, 2034, 2038}          # 只监控百家乐系
 READD_COOLDOWN_S = 120      # 收场后同桌冷却期（秒），防抖动重进
+PROBE_TIMEOUT_S = 12        # 掉线探测重进等 401 快照的总窗口（秒）
 LOBBY_WRITE_INTERVAL_S = 60 # 同桌大厅采样最短间隔（路纸无变化时）
 STATUS_EVERY_S = 60         # 运行状态打印间隔
 
@@ -211,9 +215,10 @@ class Episode:
     """一条进行中的连胜事件。"""
 
     __slots__ = ("id", "table_id", "side", "length", "start_length",
-                 "boot_index_max", "account")
+                 "boot_index_max", "account", "game_type_id")
 
-    def __init__(self, episode_id, table_id, side, length, account):
+    def __init__(self, episode_id, table_id, side, length, account,
+                 game_type_id=None):
         self.id = episode_id
         self.table_id = table_id
         self.side = side            # "B" / "P"
@@ -221,6 +226,7 @@ class Episode:
         self.start_length = length
         self.boot_index_max = 0     # 靴内局序峰值（换靴检测用）
         self.account = account
+        self.game_type_id = game_type_id  # 掉线探测重进要用
 
 
 class StreakMonitor:
@@ -236,6 +242,7 @@ class StreakMonitor:
         self._last_bet: dict[int, dict] = {}     # 桌→最近一次 110
         self._last_round: dict[int, dict] = {}   # 桌→最近一次 104
         self._raw_buf = 0
+        self._pending_probe = []        # 掉线待探测 [(tid, ep_id, game_type_id)]
         self.stats = {"rounds": 0, "broke": 0, "censored": 0}
         self.run_id = 0
 
@@ -300,7 +307,8 @@ class StreakMonitor:
             "start_length": n,
             "account": "+".join(c["account"] for c in self._creds)})
         self.episodes[tid] = Episode(
-            ep_id, tid, side, n, self._creds[0]["account"])
+            ep_id, tid, side, n, self._creds[0]["account"],
+            cand.get("game_type_id"))
         self._watcher.active.add(tid)
         logger.info(f"[监控] 进桌 {tid} {cand.get('table_name')} "
                     f"{side}×{n} "
@@ -312,9 +320,13 @@ class StreakMonitor:
         """监控建立后的服务循环；事件流异常即抛出，由外层重建。"""
         cand_t = asyncio.create_task(self._cand_loop(candidates))
         ev_t = asyncio.create_task(self._ev_loop())
+        # 掉线探测与事件消费并发：401 快照只在事件流被消费时填充
+        probe_t = (asyncio.create_task(self._probe_pending())
+                   if self._pending_probe else None)
+        tasks = {cand_t, ev_t} | ({probe_t} if probe_t else set())
         try:
             done, pending = await asyncio.wait(
-                {cand_t, ev_t}, return_when=asyncio.FIRST_EXCEPTION)
+                tasks, return_when=asyncio.FIRST_EXCEPTION)
             for t in pending:
                 t.cancel()
                 try:
@@ -326,7 +338,7 @@ class StreakMonitor:
                 if exc:
                     raise exc
         finally:
-            for t in (cand_t, ev_t):
+            for t in tasks:
                 if not t.done():
                     t.cancel()
 
@@ -371,6 +383,62 @@ class StreakMonitor:
         self.stats[key] += 1
         logger.info(f"[监控] 离桌 {tid} episode#{ep.id} {outcome} "
                     f"峰值{ep.length} (broke={self.stats['broke']})")
+
+    async def _probe_pending(self):
+        """掉线重连后逐桌探测性重进，细化删失原因（censored_disconnect 兜底
+        → censored_network / censored_kick）。
+
+        判据：add_table 只发指令不等确认，能否真进桌以 401 快照落地为准
+        （PROBE_TIMEOUT_S 总窗口）。能进 → 桌台本身可进，是我方网络问题；
+        进不去 → 疑似平台踢出且封锁该桌，重点信号。
+
+        探测进桌后统一离场，交还发现层按常规流程重新发现（断线期间
+        牌局已缺失，不续接旧 episode）；若发现层已抢先重新入场则
+        跳过离场，不拆新台。未跑完被打断的桌保留兜底标签。
+        """
+        probes, self._pending_probe = self._pending_probe, []
+        if not probes:
+            return
+        logger.info(f"[监控] 探测性重进 {len(probes)} 张掉线桌台…")
+        sent = []                       # (tid, ep_id) 指令已发出
+        for tid, ep_id, gtid in probes:
+            if not gtid:
+                continue                # 缺 game_type_id 无法探测，保留兜底
+            try:
+                await self.mon.add_table(
+                    {"table_id": tid, "game_type_id": gtid})
+                sent.append((tid, ep_id))
+            except Exception:
+                self._store.update_episode_outcome(ep_id, "censored_kick")
+                logger.warning(f"[监控] 探测重进拒绝 桌{tid} "
+                               f"episode#{ep_id} → censored_kick"
+                               "（疑似被踢且封锁）")
+        remaining = dict(sent)
+        deadline = time.monotonic() + PROBE_TIMEOUT_S
+        while remaining and self.mon is not None \
+                and time.monotonic() < deadline:
+            for tid in list(remaining):
+                if tid in self.mon.snapshots:
+                    ep_id = remaining.pop(tid)
+                    self._store.update_episode_outcome(
+                        ep_id, "censored_network")
+                    logger.info(f"[监控] 探测重进成功 桌{tid} "
+                                f"episode#{ep_id} → censored_network"
+                                "（我方网络问题）")
+            if remaining:
+                await asyncio.sleep(0.5)
+        for tid, ep_id in remaining.items():
+            self._store.update_episode_outcome(ep_id, "censored_kick")
+            logger.warning(f"[监控] 探测重进超时 桌{tid} "
+                           f"episode#{ep_id} → censored_kick"
+                           "（疑似被踢且封锁）")
+        for tid, _ in sent:
+            if tid in self.episodes:
+                continue                # 发现层已重新入场，别拆新台
+            try:
+                await self.mon.leave_table(tid)
+            except Exception:
+                pass
 
     # ── 事件处理 ──
 
@@ -525,7 +593,11 @@ class StreakMonitor:
                 raise
             except Exception as e:
                 logger.warning(f"[监控] 事件流中断: {e}，10s 后重建监控")
-            # 掉线：全部 episode 记删失，等发现层重新发现
+            # 掉线：先快照待探测列表，再全部记删失兜底；
+            # 监控重建成功后由 _probe_pending 细化删失原因
+            self._pending_probe = [
+                (tid, ep.id, ep.game_type_id)
+                for tid, ep in self.episodes.items()]
             for tid in list(self.episodes):
                 await self._close(tid, "censored_disconnect")
             try:
@@ -540,7 +612,7 @@ class StreakMonitor:
         """优雅退出：逐桌收场离场（单桌异常不阻断）、断连、收尾 run。"""
         for tid in list(self.episodes):
             try:
-                await self._close(tid, "censored_disconnect")
+                await self._close(tid, "censored_manual")
             except Exception:
                 pass
         try:
@@ -593,7 +665,7 @@ async def _graceful_shutdown(tasks: list[asyncio.Task],
         f"[退出] 清理完成：运行 {mins:.1f} 分钟 | "
         f"已采局 {monitor.stats['rounds']} | 反 {monitor.stats['broke']} | "
         f"删失 {monitor.stats['censored']} | "
-        "未完结 episode 已记 censored_disconnect")
+        "未完结 episode 已记 censored_manual")
 
 
 def _mask_proxy(url: str) -> str:
