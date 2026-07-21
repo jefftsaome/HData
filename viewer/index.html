@@ -115,8 +115,8 @@ async function toggle(div, eid) {
   const det = div.querySelector('.detail');
   if (det.style.display !== 'none') { det.style.display = 'none'; return; }
   det.style.display = 'block';
+  if (det.dataset.loaded) return;   // 已加载过直接展示，别覆盖
   det.innerHTML = '<span class="meta">加载中…</span>';
-  if (det.dataset.loaded) return;
   const ep = await (await fetch('/api/episodes/' + eid)).json();
   det.dataset.loaded = 1;
   const rounds = ep.rounds || [];

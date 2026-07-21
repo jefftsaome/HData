@@ -817,7 +817,8 @@ class _WSConnection:
                 player_id=self._player_id, game_type_id=2013,
                 service_type_id=OT_HALL))
             end = time.time() + 12
-            while time.time() < end and not ids:
+            last_new = time.time()
+            while time.time() < end:
                 try:
                     frame = await asyncio.wait_for(
                         self.recv(), timeout=max(0.1, end - time.time()))
@@ -826,10 +827,17 @@ class _WSConnection:
                 if not frame or frame.get("protocolId") != _QS_TABLE_LIST_ALL:
                     continue
                 data = _payload(frame) or {}
+                new = False
                 for t in data.get("hallGameTable") or []:
                     tid = t.get("tableId")
                     if tid and tid not in ids:
                         ids.append(tid)
+                        new = True
+                if new:
+                    last_new = time.time()
+                # 10089 可能分多帧下发：无新 id 满 2s 才收尾
+                if ids and time.time() - last_new > 2:
+                    break
         if not ids:
             return {}
 
