@@ -7,6 +7,7 @@
     GET /api/stats                     汇总指标
     GET /api/episodes?side=P&outcome=broke&min_len=5&game_type=&q=&limit=50&offset=0
     GET /api/episodes/{id}             单条龙详情（逐局+路纸尾）
+    GET /api/rounds/{round_id}         单局详情（局内110帧资金曲线+在线人数）
     GET /api/lastjump?threshold=20000  "封盘前最后一跳"信号收敛面板
 """
 import json
@@ -238,6 +239,57 @@ def api_lastjump(threshold=20000):
     return data
 
 
+def api_round(round_id):
+    con = db()
+    r = con.execute("""
+        select r.*, coalesce(t.table_name,'') table_name, t.game_type_name
+        from rounds r left join tables t on t.table_id=r.table_id
+        where r.round_id=?""", (round_id,)).fetchone()
+    if not r:
+        return None
+    info = dict(r)
+    # 局内 110 帧
+    evs = con.execute("""
+        select ts, payload from events_raw
+        where protocol_id=110 and round_id=? order by ts""", (round_id,)).fetchall()
+    frames = []
+    for ts, payload in evs:
+        try:
+            d = json.loads(payload)
+        except Exception:
+            continue
+        b = p = tt = 0.0
+        bc = pc = 0
+        for it in d.get("jackpotPoolInfos") or []:
+            pid = it.get("betPointId")
+            amt = it.get("totalAmount") or 0
+            cnt = it.get("totalPersonCount") or 0
+            if pid in B_IDS:
+                b += amt; bc += cnt
+            elif pid in P_IDS:
+                p += amt; pc += cnt
+            elif pid in T_IDS:
+                tt += amt
+        frames.append({"ts": ts, "b_amt": b, "p_amt": p, "t_amt": tt,
+                       "b_cnt": bc, "p_cnt": pc,
+                       "players": d.get("currentRoundPlayerCount")})
+    # 该局时间窗内的在线人数（大厅快照）
+    t0 = frames[0]["ts"] if frames else (info.get("ts_settle") or 0) - 60000
+    t1 = info.get("ts_settle") or (frames[-1]["ts"] if frames else t0 + 60000)
+    online = [dict(ts=row[0], online=row[1], amount=row[2])
+              for row in con.execute("""
+                  select ts, online_number, total_amount from lobby_snapshots
+                  where table_id=? and ts between ? and ? order by ts""",
+                  (info["table_id"], t0 - 15000, t1 + 5000))]
+    # 牌面
+    cards = [dict(side=row[0], idx=row[1], suit=row[2], rank=row[3], points=row[4])
+             for row in con.execute(
+        "select side, card_index, suit, rank, points from round_cards where round_id=? order by side, card_index",
+        (round_id,))]
+    info.pop("road_flat_after", None)
+    return {"info": info, "frames": frames, "online": online, "cards": cards}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -266,6 +318,13 @@ class Handler(BaseHTTPRequestHandler):
                 q = parse_qs(u.query)
                 thr = int(q.get("threshold", ["20000"])[0] or 20000)
                 self._send(api_lastjump(thr))
+            elif u.path.startswith("/api/rounds/"):
+                rid = int(u.path.rsplit("/", 1)[1])
+                rd = api_round(rid)
+                if rd is None:
+                    self._send({"error": "not found"}, 404)
+                else:
+                    self._send(rd)
             elif u.path.startswith("/api/episodes/"):
                 eid = int(u.path.rsplit("/", 1)[1])
                 ep = api_episode(eid)
