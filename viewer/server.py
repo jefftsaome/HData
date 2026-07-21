@@ -35,7 +35,7 @@ def db():
 
 
 def parse_bets(bet_json):
-    d = {"b_amt": 0.0, "p_amt": 0.0, "t_amt": 0.0, "b_cnt": 0, "p_cnt": 0}
+    d = {"b_amt": 0.0, "p_amt": 0.0, "t_amt": 0.0, "b_cnt": 0, "p_cnt": 0, "t_cnt": 0}
     if not bet_json:
         return d
     try:
@@ -48,7 +48,7 @@ def parse_bets(bet_json):
             elif pid in P_IDS:
                 d["p_amt"] += amt; d["p_cnt"] += cnt
             elif pid in T_IDS:
-                d["t_amt"] += amt
+                d["t_amt"] += amt; d["t_cnt"] += cnt
     except Exception:
         pass
     return d

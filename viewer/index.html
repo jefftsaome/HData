@@ -146,7 +146,7 @@ async function toggle(div, eid) {
       `<div class="bar${r.outcome==='broke'?' brk':''}" style="height:${Math.max(6,(r.b_amt+r.p_amt)/maxAmt*100)}%"></div>`).join('')}</div>
     <table><thead><tr>
       <th class="l">时间</th><th>连胜长</th><th>结果</th><th>点数</th>
-      <th>庄池</th><th>闲池</th><th>和池</th><th>庄人数</th><th>闲人数</th><th>在线</th>
+      <th>庄池</th><th>闲池</th><th>和池</th><th>庄人数</th><th>闲人数</th><th>和人数</th><th>在线</th>
     </tr></thead><tbody>${rounds.map(r => `
       <tr class="${r.outcome==='broke'?'brk':''}" data-rid="${r.round_id}" style="cursor:pointer" title="点击查看局内资金曲线">
         <td class="l">${fmtT(r.ts_settle)}</td><td>${r.streak_len_before}</td>
@@ -154,7 +154,7 @@ async function toggle(div, eid) {
         <td>${r.banker_points}:${r.player_points}</td>
         <td>${(r.b_amt||0).toLocaleString()}</td><td>${(r.p_amt||0).toLocaleString()}</td>
         <td>${(r.t_amt||0).toLocaleString()}</td>
-        <td>${r.b_cnt}</td><td>${r.p_cnt}</td><td>${r.online_number ?? '-'}</td>
+        <td>${r.b_cnt}</td><td>${r.p_cnt}</td><td>${r.t_cnt ?? 0}</td><td>${r.online_number ?? '-'}</td>
       </tr>`).join('')}</tbody></table>
     <div class="meta" style="margin-top:6px">金框圆点/金柱 = 断龙那一局；点击任意局行展开局内资金曲线</div>
     <div class="rdetail" style="display:none;margin-top:10px"></div>`;
