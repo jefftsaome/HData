@@ -177,30 +177,42 @@ async function loadRound(det, rid) {
     ${RES[i.result]||i.result} ${i.banker_points}:${i.player_points} ·
     靴内第${i.boot_index}局 · 荷官 ${i.dealer_name||'-'} · ${fs.length} 帧押注快照</div>`;
   if (!fs.length) { box.innerHTML = html + '<span class="meta">该局无局内帧记录（监控中途进场）</span>'; return; }
-  const W=900,H=220,pl=50,pb=30,pt=8,pr=60;
+  const W=900,pl=50,pr=70;
   const t0=Math.min(fs[0].ts, ...(d.online&&d.online.length?d.online.map(o=>o.ts):[fs[0].ts]));
   const t1=Math.max(fs[fs.length-1].ts, ...(d.online&&d.online.length?d.online.map(o=>o.ts):[fs[fs.length-1].ts]));
   const X=t=>pl+(t1>t0?(t-t0)/(t1-t0)*(W-pl-pr):0);
+  // 面板1：金额（独立Y轴）
+  const H1=140,pt1=10,pb1=6;
   const maxA=Math.max(...fs.map(f=>Math.max(f.b_amt,f.p_amt)),1);
-  const maxC=Math.max(...fs.map(f=>Math.max(f.b_cnt,f.p_cnt)),1);
-  const YA=v=>pt+(1-v/maxA)*(H*0.65-pt);
-  const YC=v=>H*0.72+(1-v/maxC)*(H*0.26-pb-8);
+  const YA=v=>pt1+(1-v/maxA)*(H1-pt1-pb1);
   const line=(key,color)=>`<polyline points="${fs.map(f=>`${X(f.ts).toFixed(1)},${YA(f[key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
-  const cline=(key,color)=>`<polyline points="${fs.map(f=>`${X(f.ts).toFixed(1)},${YC(f[key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="1" stroke-dasharray="3 2"/>`;
-  let osvg='';
-  if (d.online && d.online.length>1) {
-    const maxO=Math.max(...d.online.map(o=>o.online||0),1);
-    osvg=`<polyline points="${d.online.map(o=>`${X(o.ts).toFixed(1)},${YC((o.online||0)/maxO*maxC).toFixed(1)}`).join(' ')}" fill="none" stroke="#1e8e5a" stroke-width="1.5"/>`;
-  }
-  html += `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#10141a;border-radius:6px">
-    <text x="${pl}" y="${H*0.6+14}" fill="#8b94a3" font-size="9">─ 金额</text>
-    <text x="${pl}" y="${H*0.72+4}" fill="#8b94a3" font-size="9">┄ 人数/在线</text>
-    ${line('b_amt','#e05252')}${line('p_amt','#4a9ae0')}${cline('b_cnt','#a05050')}${cline('p_cnt','#5080a0')}${osvg}
+  const svg1=`<svg viewBox="0 0 ${W} ${H1}" style="width:100%;height:auto;background:#10141a;border-radius:6px 6px 0 0">
+    <text x="4" y="${pt1+4}" fill="#8b94a3" font-size="9">金额（峰值 ${maxA.toLocaleString()}）</text>
+    ${line('b_amt','#e05252')}${line('p_amt','#4a9ae0')}
     <text x="${W-pr+4}" y="${YA(maxA)+4}" fill="#e05252" font-size="10">庄池</text>
-    <text x="${W-pr+4}" y="${pt+10}" fill="#4a9ae0" font-size="10">闲池</text>
-    <text x="${pl}" y="${H-4}" fill="#8b94a3" font-size="9">${fmtT(t0)}</text>
-    <text x="${W-pr}" y="${H-4}" fill="#8b94a3" font-size="9" text-anchor="end">${fmtT(t1)}(结算)</text>
+    <text x="${W-pr+4}" y="${pt1+10}" fill="#4a9ae0" font-size="10">闲池</text>
   </svg>`;
+  // 面板2：人数（独立Y轴，每条线归一到自己的峰值，标注实际峰值）
+  const H2=120,pt2=10,pb2=18;
+  const maxC=Math.max(...fs.map(f=>Math.max(f.b_cnt,f.p_cnt)),1);
+  const YC=v=>pt2+(1-v/maxC)*(H2-pt2-pb2);
+  const cline=(key,color)=>`<polyline points="${fs.map(f=>`${X(f.ts).toFixed(1)},${YC(f[key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+  let osvg='',maxO=0;
+  if (d.online && d.online.length>1) {
+    maxO=Math.max(...d.online.map(o=>o.online||0),1);
+    const YO=v=>pt2+(1-v/maxO)*(H2-pt2-pb2);
+    osvg=`<polyline points="${d.online.map(o=>`${X(o.ts).toFixed(1)},${YO(o.online||0).toFixed(1)}`).join(' ')}" fill="none" stroke="#1e8e5a" stroke-width="1.5"/>`;
+  }
+  const svg2=`<svg viewBox="0 0 ${W} ${H2}" style="width:100%;height:auto;background:#0d1116;border-radius:0 0 6px 6px;border-top:1px solid #232a35">
+    <text x="4" y="${pt2+4}" fill="#8b94a3" font-size="9">人数（下注峰值 ${maxC}${maxO?'，在线峰值 '+maxO:''}）</text>
+    ${cline('b_cnt','#a05050')}${cline('p_cnt','#5080a0')}${osvg}
+    <text x="${W-pr+4}" y="${pt2+10}" fill="#a05050" font-size="10">庄人数</text>
+    <text x="${W-pr+4}" y="${pt2+22}" fill="#5080a0" font-size="10">闲人数</text>
+    ${maxO?`<text x="${W-pr+4}" y="${pt2+34}" fill="#1e8e5a" font-size="10">在线</text>`:''}
+    <text x="${pl}" y="${H2-4}" fill="#8b94a3" font-size="9">${fmtT(t0)}</text>
+    <text x="${W-pr}" y="${H2-4}" fill="#8b94a3" font-size="9" text-anchor="end">${fmtT(t1)}(结算)</text>
+  </svg>`;
+  html += svg1+svg2;
   const key=[];
   for(let k=1;k<fs.length;k++){
     const prev=fs[k-1].b_amt+fs[k-1].p_amt, cur=fs[k].b_amt+fs[k].p_amt;
