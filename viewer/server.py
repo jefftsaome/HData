@@ -536,6 +536,88 @@ def api_analysis_whales(q):
     return out
 
 
+def api_analysis_conditions(q):
+    """七条件续/反/和概率常驻监测（顺方金额下降组合）。"""
+    side, gt, days = _afilters(q)
+    where, args = _ep_where("all", gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select r.episode_id, r.result, r.bet_json, e.side, rc.boot_index bi
+        from streak_rounds r
+        join streak_episodes e on e.episode_id=r.episode_id
+        left join tables t on t.table_id=e.table_id
+        left join rounds rc on rc.round_id=r.round_id
+        where {where}
+        order by r.episode_id, r.ts_settle""", args).fetchall()
+    by_ep = defaultdict(list)
+    for r in rows:
+        by_ep[r["episode_id"]].append(r)
+
+    def cmp_dir(prev, cur):
+        if prev == 0 or prev is None or cur is None:
+            return None
+        if cur < prev:
+            return "dn"
+        if cur > prev:
+            return "up"
+        return "eq"
+
+    pairs = []
+    for ep_rows in by_ep.values():
+        if len(ep_rows) < 2:
+            continue
+        for i in range(1, len(ep_rows)):
+            prev, cur = ep_rows[i - 1], ep_rows[i]
+            if prev["result"] == "T":
+                continue
+            # boot_index 连续性：两者都有值且差不为1 → 中间漏局，剔除
+            if prev["bi"] is not None and cur["bi"] is not None \
+                    and cur["bi"] - prev["bi"] != 1:
+                continue
+            s = cur["side"]
+            pb, cb = parse_bets(prev["bet_json"]), parse_bets(cur["bet_json"])
+            if s == "B":
+                sa = (pb["b_amt"], cb["b_amt"]); oa = (pb["p_amt"], cb["p_amt"])
+                sc = (pb["b_cnt"], cb["b_cnt"]); oc = (pb["p_cnt"], cb["p_cnt"])
+            else:
+                sa = (pb["p_amt"], cb["p_amt"]); oa = (pb["b_amt"], cb["b_amt"])
+                sc = (pb["p_cnt"], cb["p_cnt"]); oc = (pb["b_cnt"], cb["b_cnt"])
+            if cur["result"] == "T":
+                res = "和"
+            elif (s == "B" and cur["result"] in ("B", "B6")) or (s == "P" and cur["result"] == "P"):
+                res = "续"
+            else:
+                res = "反"
+            pairs.append({"res": res, "side": s,
+                          "sa": cmp_dir(*sa), "oa": cmp_dir(*oa),
+                          "sc": cmp_dir(*sc), "oc": cmp_dir(*oc)})
+    if side in ("B", "P"):
+        pairs = [p for p in pairs if p["side"] == side]
+    base = [p for p in pairs if None not in (p["sa"], p["oa"], p["sc"], p["oc"])]
+
+    def stat(sub):
+        n = len(sub)
+        out = {"n": n}
+        for r in ("续", "反", "和"):
+            k = sum(1 for p in sub if p["res"] == r)
+            p_, lo, hi = _wilson(k, n)
+            out[r] = {"rate": round(p_, 4), "ci": [round(lo, 4), round(hi, 4)]}
+        return out
+
+    conds = [
+        ("基准(全部)", lambda p: True),
+        ("1 顺方金额降", lambda p: p["sa"] == "dn"),
+        ("2 顺方金额降+反方金额降", lambda p: p["sa"] == "dn" and p["oa"] == "dn"),
+        ("3 顺方金额降+反方金额升", lambda p: p["sa"] == "dn" and p["oa"] == "up"),
+        ("4 顺方金额降+反方金额降+顺方人数升", lambda p: p["sa"] == "dn" and p["oa"] == "dn" and p["sc"] == "up"),
+        ("5 顺方金额降+反方金额降+顺方人数降", lambda p: p["sa"] == "dn" and p["oa"] == "dn" and p["sc"] == "dn"),
+        ("6 顺方金额降+反方金额降+顺方人数升+反方人数升", lambda p: p["sa"] == "dn" and p["oa"] == "dn" and p["sc"] == "up" and p["oc"] == "up"),
+        ("7 顺方金额降+反方金额降+顺方人数升+反方人数降", lambda p: p["sa"] == "dn" and p["oa"] == "dn" and p["sc"] == "up" and p["oc"] == "dn"),
+    ]
+    return {"total_pairs": len(base),
+            "conds": [{"label": lb, **stat([p for p in base if f(p)])} for lb, f in conds]}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -573,6 +655,7 @@ class Handler(BaseHTTPRequestHandler):
                       "survival": api_analysis_survival,
                       "pairs": api_analysis_pairs,
                       "heatmap": api_analysis_heatmap,
+                      "conditions": api_analysis_conditions,
                       "whales": api_analysis_whales}.get(name)
                 if fn:
                     self._send(fn(q))

@@ -81,7 +81,14 @@
 </section>
 
 <section>
-  <h2>⑤ 大户入场监测</h2>
+  <h2>⑥ 顺方金额下降·七条件概率监测</h2>
+  <div class="note">长期观察面板：顺方金额下降及各组合条件下，下一局续/反/和的概率（Wilson 95% CI）。上局为和局的对已剔除；中间漏局的对已剔除（boot_index 连续性校验）。重点跟踪条件 4/6（待扩样弱线索）。</div>
+  <table id="cond-table" style="margin-bottom:12px"></table>
+  <div class="chart" id="c-cond"></div>
+</section>
+
+<section>
+  <h2>⑦ 大户入场监测</h2>
   <div class="note">帧间分侧增量 ≥ 阈值的跳变事件。新进人均注额=Δ金额/Δ人数，Δ0人=存量加仓。</div>
   <div class="filters" style="position:static;background:none;border:0;padding:0 0 10px">
     <label>时间 <select id="w-hours"><option value="24" selected>近24小时</option><option value="48">近48小时</option><option value="72">近72小时</option></select></label>
@@ -198,10 +205,42 @@ async function loadWhales(){
       <td>${e.per_capita?e.per_capita.toLocaleString():'-'}</td><td>${e.kind}</td></tr>`).join('')}</tbody>`;
 }
 
+async function loadConds(){
+  const d=await(await fetch('/api/analysis/conditions?'+qs())).json();
+  const fmt=(r)=>r==null?'-':`${(r.rate*100).toFixed(1)}%<br><span style="color:#5c6675">[${(r.ci[0]*100).toFixed(1)},${(r.ci[1]*100).toFixed(1)}]</span>`;
+  $('cond-table').innerHTML=`<thead><tr><th class="l">条件</th><th>n</th><th>续</th><th>反</th><th>和</th></tr></thead><tbody>
+    ${d.conds.map((c,i)=>`<tr${i===0?' style="color:#e8b93d"':(i===4||i===6)?' class="hl"':''}>
+      <td class="l">${c.label}</td><td>${c.n}</td><td>${fmt(c['续'])}</td><td>${fmt(c['反'])}</td><td>${fmt(c['和'])}</td></tr>`).join('')}</tbody>`;
+  // 柱状+误差线：续/反概率 vs 基准
+  const labels=d.conds.map(c=>c.label);
+  const base=d.conds[0];
+  const bar=(key,color)=>({name:key,type:'bar',itemStyle:{color},data:d.conds.map(c=>c.n?c[key].rate:null)});
+  const err=(key)=>d.conds.flatMap((c,i)=>c.n?[[i,c[key].ci[0],c[key].ci[1]]]:[]);
+  mk('c-cond').setOption({
+    backgroundColor:'transparent',
+    tooltip:{trigger:'axis',...TT,valueFormatter:v=>v==null?'-':(v*100).toFixed(1)+'%'},
+    legend:{textStyle:{color:'#8b94a3'}},
+    xAxis:{type:'category',data:labels,axisLabel:{color:'#8b94a3',fontSize:9,interval:0,rotate:20},axisLine:{lineStyle:{color:'#2c3442'}}},
+    yAxis:{type:'value',min:0,max:0.8,axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+    series:[
+      bar('续','#3d9970'),bar('反','#b5544e'),
+      {name:'续CI',type:'custom',silent:true,itemStyle:{color:'#8fd8b8'},
+       renderItem:(p,api)=>{const x=api.coord([api.value(0),0])[0];const y1=api.coord([0,api.value(1)])[1];const y2=api.coord([0,api.value(2)])[1];
+         return {type:'group',children:[{type:'line',shape:{x1:x-14,y1:y1,x2:x-14,y2:y2},style:{stroke:'#8fd8b8',lineWidth:1.5}},
+           {type:'line',shape:{x1:x-19,y1:y1,x2:x-9,y2:y1},style:{stroke:'#8fd8b8',lineWidth:1.5}},
+           {type:'line',shape:{x1:x-19,y1:y2,x2:x-9,y2:y2},style:{stroke:'#8fd8b8',lineWidth:1.5}}]};},
+       data:err('续'),z:10},
+      {name:'基准续',type:'line',markLine:{silent:true,symbol:'none',lineStyle:{color:'#3d9970',type:'dashed'},
+        data:[{yAxis:base['续'].rate}],label:{formatter:'基准续 '+(base['续'].rate*100).toFixed(1)+'%',color:'#3d9970',fontSize:10}},data:[]},
+      {name:'基准反',type:'line',markLine:{silent:true,symbol:'none',lineStyle:{color:'#b5544e',type:'dashed'},
+        data:[{yAxis:base['反'].rate}],label:{formatter:'基准反 '+(base['反'].rate*100).toFixed(1)+'%',color:'#b5544e',fontSize:10}},data:[]},
+    ]});
+}
+
 async function loadAll(){
   $('msg').textContent='加载中…';
   try{
-    await Promise.all([loadOverview(),loadSurvival(),loadPairs(),loadHeat()]);
+    await Promise.all([loadOverview(),loadSurvival(),loadPairs(),loadHeat(),loadConds()]);
     $('msg').textContent='已更新 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   }catch(e){ $('msg').textContent='加载失败: '+e; }
 }
