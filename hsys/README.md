@@ -6,128 +6,159 @@
 
 ```
 hsys/
-├── README.md               ← 本文档（架构总览 + 运行手册）
+├── README.md               ← 本文档（架构总览 + 数据层决策 + 运行手册）
 ├── crawl-bot/              ← 采集层
 │   ├── hunter.py           ← 配置驱动启动器（复用 scripts/streak_hunter）
-│   ├── archive.py          ← events_raw 月度归档（gzip NDJSON）
+│   ├── archive.py          ← SQLite 时代的 events_raw 归档；
+│   │                         PG 时代由"分区 detach + pg_dump"接替
 │   ├── config.example.json ← 配置模板（提交）
 │   ├── config.json         ← 真实配置（.gitignore，严禁提交）
-│   ├── data/               ← SQLite + 归档文件（.gitignore）
-│   │   ├── streak.db
-│   │   └── archive/events_raw-YYYY-MM.jsonl.gz
+│   ├── data/               ← SQLite（PG 切换前）+ 归档文件（.gitignore）
 │   └── logs/               ← 采集日志（.gitignore）
-└── server/                 ← Web 服务层（FastAPI，规划见 server/README.md）
+└── server/                 ← Web 服务层
+    ├── README.md           ← 技术选型与建设规划（2026-07-22 定版）
+    ├── app/                ←（待建）FastAPI 应用
+    └── web/                ←（待建）Vue 页面与共享组件
 ```
 
-## 架构
+## 架构（2026-07-22 定版）
 
 ```
               ┌──────────── crawl-bot ────────────┐
   平台网站 ──WS──► hunter.py（登录/订阅/落库）      │
-              │    ├─► data/streak.db（热窗）      │
-              │    └─► archive.py 定期归档 ──► data/archive/*.jsonl.gz（永久）
+              │    └─► PostgreSQL（本机）          │
+              │         ├─ 派生分析表（永久）       │
+              │         └─ events_raw（月分区，     │
+              │            冷数据 detach+dump 归档）│
               └────────┐
-                       │ HTTP POST /ingest（push.enabled=true 后启用）
+                       │ HTTP POST /ingest（批量 200ms）
                        ▼
-              ┌────── server（FastAPI，待开发）──────┐
-              │  登录（双密码）→ 页面 / WebSocket 推送 │
+              ┌────── server（FastAPI）────────────┐
+              │  /ingest → 内存事件总线 → /ws 广播   │←──SQL──► PostgreSQL
+              │  登录（双密码）→ Vue 页面            │
               └──────────────┬───────────────────────┘
-                             ▼
+                             ▼ WebSocket
                         浏览器（局域网 3-5 人）
 ```
 
-## 为什么不用 Redis
+## 数据库：PostgreSQL（2026-07-22 决策，取代原 SQLite 方案）
 
-采集进程和 Web 服务跑在同一台机器上。推送链路就是"采集进程直接把事件
-POST 给 Web 服务"——像记者直接打电话进广播站，广播站（Web 服务）再转述
-给听众（浏览器 WebSocket）。3-5 个听众完全不需要中转仓库。
+原定"SQLite 保留"决策随多用户 Web 平台需求作废，理由：
 
-Redis 解决的是"生产者和消费者解耦 + 缓冲 + 多方订阅"。出现以下情况再加：
+- 3-5 人同时在线读 + 采集进程持续写，SQLite WAL 单写锁在长查询下会
+  堆积；PG 多版本并发无此问题；
+- PG 原生**声明式分区**：events_raw 按月分区，冷数据 `DETACH PARTITION`
+  + `pg_dump` 即完成归档，比手写 archive.py 干净；
+- PG `LISTEN/NOTIFY` 自带消息通道，覆盖"数据库事件通知"场景，
+  使 Redis 失去最大存在理由（见下节）；
+- 互联网化的权限、备份、运维生态成熟。
 
-- 消费者变多（多个服务都要订阅同一事件流）；
-- 需要事件缓冲/重放（Web 服务重启期间的事件不能丢）；
-- 采集和 Web 分离部署到不同机器且需要可靠队列。
+形态约定：
 
-到时候把 crawl-bot 的 POST 目标从 Web 换成 Redis Stream 即可，采集侧
-改动只有一处。
+- PG 装在采集机本机（Windows 服务，仅监听 localhost:5432），
+  库名 `hdata`；crawl-bot 与 server 都走本机连接；
+- 时间戳一律 `BIGINT` epoch 毫秒（与现有代码一致，避开时区坑）；
+- `events_raw` 按月 `PARTITION BY RANGE (ts)`；热窗默认保留最近
+  2 个分区，更老分区 detach 后 `pg_dump` 成 `events_raw-YYYY-MM.sql.gz`
+  永久保存（存 `crawl-bot/data/archive/`），需要时可回灌；
+- 派生分析表（streak_rounds / streak_episodes / lobby_snapshots /
+  rounds / round_bet_points 等）不分区、永不清。
 
-## 为什么继续用 SQLite（不换 PostgreSQL）
+迁移路径（P0 里程碑，见 server/README.md）：
 
-- 单机部署、单写多读：采集进程写，viewer/分析只读，WAL 模式互不阻塞；
-- 3-5 个局域网用户，QPS 个位数，SQLite 绰绰有余；
-- 零运维：没有服务进程要管，备份就是拷文件；
-- 300-500 MB/天的大头是 events_raw，已用"热窗 + gzip 归档"解决，
-  与数据库选型无关。
+1. 安装 PG（`scoop install postgresql` 或 EDB 安装包），`createdb hdata`；
+2. `hsys/crawl-bot/schema_pg.sql` 建库（含 events_raw 分区）；
+3. `streak_store.py` 抽象 Store 接口，`store_pg.py`（asyncpg）与
+   现有 sqlite 实现并存，`config.json` 加 `db.backend` 切换；
+4. `scripts/migrate_sqlite_to_pg.py` 一次性搬迁：派生分析表全量 +
+   events_raw 最近 30 天；旧 `data/streak.db` 保留为只读备份，
+   已有 NDJSON.gz 归档仍可按需回灌；
+5. 切换当天下线 stdlib viewer（其页面由 server 接替，见 P2）。
 
-换 PostgreSQL 的触发条件：多机部署、多人同时在线 > 20、需要远程直连
-SQL、或者要做跨机热备。届时分析表结构可直接平移。
+## 实时推送：WebSocket（2026-07-22 决策）
 
-## 数据保留策略（数据永久保存）
+- 链路：crawl-bot → `POST /ingest`（200ms 批量打包，带共享密钥）
+  → server 内存事件总线 → `/ws` 广播给已订阅的浏览器；
+- 浏览器端按桌台 / 事件类型订阅，页面只收自己关心的流；
+- 选 WS 不选 SSE：WS 还能上行订阅指令，换桌台不用重建连接；
+- 暂不用 PG LISTEN/NOTIFY 做推送主链路（采集进程直连 server 更直接），
+  它留给"非采集写入者"（如分析任务写完结果表后通知前端刷新）。
+
+## Redis：允许引入，但当前暂缓
+
+- 3-5 用户单机部署，server 内存事件总线够用；
+- PG LISTEN/NOTIFY 覆盖持久化队列场景，Redis 剩余价值（缓存）在
+  本规模无意义；
+- Windows 无官方 Redis（需 Memurai 或 WSL），多一份运维负担；
+- **引入触发条件**：server 多进程/多机部署、出现热点查询需要缓存、
+  需要跨机任务队列。架构上事件总线做成接口（`bus.py`），届时换
+  Redis 实现，业务代码不动。
+
+## 数据保留策略（PG 时代）
 
 | 数据 | 位置 | 策略 |
 |---|---|---|
-| 派生分析表（streak_rounds / streak_episodes / lobby_snapshots 等） | streak.db | **永不清** |
-| events_raw 热窗（≤7 天） | streak.db | 采集启动时清超窗部分（`purge_raw_days`） |
-| events_raw 冷数据（>7 天） | data/archive/*.jsonl.gz | **永久保存**，gzip 约压到 1/6，每月 ~2-3 GB |
-| 采集日志 | logs/hunter.log* | loguru 50 MB 滚动 |
+| 派生分析表 | PG `hdata` | **永不清** |
+| events_raw 热窗 | PG 月分区（默认留最近 2 个分区） | 更老分区 detach |
+| events_raw 冷数据 | `data/archive/events_raw-YYYY-MM.sql.gz` | **永久保存** |
+| 采集日志 | `logs/hunter.log*` | loguru 50 MB 滚动 |
 
-⚠ 运行 `archive.py --export --delete` 必须在 `purge_raw_days` 到期之前，
-否则超窗数据会被启动清理直接删掉、来不及归档。建议每 2-3 天跑一次，
-或把 `purge_raw_days` 调大（磁盘换安全）。今后会把"先归档后清理"合并
-成一条命令/定时任务。
+（SQLite 时代的 archive.py 与 purge_raw_days 机制保留到 PG 切换完成，
+切换后 purge 逻辑废弃，由分区 detach 接替。）
 
-## 胁迫密码删除范围（设计约定）
+## 胁迫密码删除范围（设计约定，PG 时代更新）
 
 用户在 Web 端输入胁迫密码时，依次：先杀采集进程 → 删除以下内容：
 
-1. `crawl-bot/data/` 整个目录（streak.db 及 wal/shm、archive/ 全部归档）；
-2. `crawl-bot/logs/` 全部日志；
-3. `crawl-bot/config.json`（含平台账号与打码 token）；
-4. `config.example.json` 保留；代码与文档保留。
+1. **DROP DATABASE hdata**（含全部分区与历史）；
+2. `crawl-bot/data/` 整个目录（归档 dump、旧 SQLite 备份）；
+3. `crawl-bot/logs/` 全部日志；
+4. `crawl-bot/config.json`（含平台账号与打码 token、PG 口令）；
+5. `config.example.json` 保留；代码与文档保留。
 
-这是"停止采集 + 删所有日志 + 删数据库"的唯一自洽解释：留在机器上的
-账号凭据与归档数据同样会暴露采集行为。若日后要保留归档另存他机，
-在 server 实现时改成"先上传后删除"的一个开关即可。
+server 进程本身继续运行、界面表现与正常登录一致（数据已空）。
+这是"停止采集 + 删所有日志 + 删数据库"的唯一自洽解释。
 
 ## 局域网部署注意
 
-- Web 服务绑定 `0.0.0.0`，Windows 防火墙放行端口（计划 7200）；
-- 登录认证必须开启（双密码：正常 / 胁迫），口令哈希存储，不写明文；
-- 日后上互联网前必须加：HTTPS、登录限流（防爆破）、胁迫接口单独
-  的速率限制与审计。
+- PG 只监听 localhost，不对外开放；server 绑 `0.0.0.0:7200`，
+  Windows 防火墙放行 7200；
+- 登录认证必须开启（双密码：正常 / 胁迫），口令 bcrypt 哈希存储；
+- 日后上互联网前必须加：HTTPS、登录限流、/ingest 密钥轮换、
+  PG 口令与共享密钥移入 Windows 凭据管理器或环境变量。
 
-## 运行手册
+## 运行手册（PG 切换后）
 
 ```bash
-# 1. 校验配置（不启动）
-uv run python hsys/crawl-bot/hunter.py --check
+# 0. 一次性：安装并初始化 PG
+scoop install postgresql
+initdb -D <pgdata> -U postgres -W   # 或按 scoop 提示初始化
+pg_ctl -D <pgdata> start
+createdb -U postgres hdata
+psql -U postgres -d hdata -f hsys/crawl-bot/schema_pg.sql
 
-# 2. 启动采集（先停掉旧的 scripts/streak_hunter.py 进程！同一批账号
-#    不能两边同时登录，会互踢）
+# 1. 一次性：迁移历史数据
+uv run python scripts/migrate_sqlite_to_pg.py --from data/streak.db
+
+# 2. 日常采集（config.json 里 db.backend = "pg"）
+uv run python hsys/crawl-bot/hunter.py --check
 uv run python hsys/crawl-bot/hunter.py
 
-# 3. 归档（采集运行中可直接跑；默认干跑）
-uv run python hsys/crawl-bot/archive.py
-uv run python hsys/crawl-bot/archive.py --export --delete
+# 3. 冷数据归档（每月一次，或做成 Automation）
+#    detach 上月分区 + pg_dump，脚本化在 P0 内完成
 
-# 4. 收缩库文件（须先停采集）
-uv run python hsys/crawl-bot/archive.py --export --delete --vacuum
+# 4. Web 服务
+uvicorn hsys.server.app.main:app --host 0.0.0.0 --port 7200
 ```
 
-### 从旧路径迁移（一次性）
-
-1. `Ctrl+C` 停掉正在跑的 `scripts/streak_hunter.py`（会优雅收尾）；
-2. 移动库文件：
-   `mv data/streak.db* hsys/crawl-bot/data/`（含 .db-wal/.db-shm）；
-3. `uv run python hsys/crawl-bot/hunter.py --check` 确认配置；
-4. `uv run python hsys/crawl-bot/hunter.py` 启动；
-5. viewer 如需看新库：`python viewer/server.py --port 7100
-   --db hsys/crawl-bot/data/streak.db`。
+（PG 切换前的 SQLite 手册见 git 历史版本。）
 
 ## 路线图
 
-- [x] crawl-bot 配置化启动 + 归档
-- [ ] server：FastAPI + 登录（双密码）+ 页面迁移 + WebSocket 推送
-- [ ] crawl-bot → server /ingest 实时推送（config.push 预留）
-- [ ] 归档合并进采集进程（先归档后清理一体化）
-- [ ] 定时归档任务（Automation）
+- [x] crawl-bot 配置化启动 + SQLite 归档（2026-07-22）
+- [ ] **P0**：PG 落地（schema_pg.sql、store_pg.py、迁移脚本、分区归档脚本）
+- [ ] **P1**：server 骨架（FastAPI + 登录双密码 + /ingest + /ws + 实时首页）
+- [ ] **P2**：四页迁移（Vue 化 + /api/query + ECharts）
+- [ ] **P3**：可配置看板（布局 JSON + 拖拽）+ 分析参数 UI 化
+- [ ] **P4**：加固上互联网（HTTPS、限流、密钥管理）
+- [ ] viewer（stdlib）下线
