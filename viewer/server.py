@@ -9,6 +9,9 @@
     GET /api/episodes/{id}             单条龙详情（逐局+路纸尾）
     GET /api/rounds/{round_id}         单局详情（局内110帧资金曲线+在线人数）
     GET /api/lastjump?threshold=20000  "封盘前最后一跳"信号收敛面板
+    GET /api/analysis/{overview,survival,pairs,heatmap,conditions,timeslice,whales}
+    GET /api/heat/{overview,daily,timeline,tables}   平台热度看板
+    页面: / 长龙列表 · /analysis 断龙分析 · /heat 平台热度
 """
 import json
 import math
@@ -786,6 +789,70 @@ def api_heat_tables(q):
     return _heat_cached(f"tb{limit}", 30, calc)
 
 
+def api_analysis_timeslice(q):
+    """时段×龙结构：每小时×龙侧 断龙率/新龙形成数/断龙均长/存活时长，
+    叠加大厅热度（总在线）。龙侧筛选忽略（本面板就是对比两侧），
+    桌型/时间范围筛选生效。"""
+    side, gt, days = _afilters(q)
+    where, args = _ep_where("all", gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select r.ts_settle, r.outcome, e.side
+        from streak_rounds r
+        join streak_episodes e on e.episode_id=r.episode_id
+        left join tables t on t.table_id=e.table_id
+        where {where} and r.outcome in ('broke','continue')
+          and r.streak_len_before>=4""", args).fetchall()
+    rate = defaultdict(lambda: [0, 0])
+    for ts, o, s in rows:
+        if s not in ("B", "P"):
+            continue
+        h = time.localtime(ts / 1000).tm_hour
+        rate[(h, s)][1] += 1
+        rate[(h, s)][0] += (o == "broke")
+    rows2 = con.execute(f"""
+        select e.start_ts, e.side, e.max_length, e.outcome, e.end_ts
+        from streak_episodes e left join tables t on t.table_id=e.table_id
+        where {where} and e.outcome is not null""", args).fetchall()
+    form = defaultdict(int)
+    lens = defaultdict(list)
+    durs = defaultdict(list)
+    for st_, s, L, o, en in rows2:
+        if s not in ("B", "P") or not st_:
+            continue
+        h = time.localtime(st_ / 1000).tm_hour
+        form[(h, s)] += 1
+        if o == "broke" and L:
+            lens[(h, s)].append(L)
+            if en:
+                durs[(h, s)].append((en - st_) / 1000)
+    heat = defaultdict(float)
+    for h, tid, o in con.execute("""
+            select strftime('%H', ts/1000,'unixepoch','localtime') h,
+                   table_id, avg(online_number) o
+            from lobby_snapshots group by h, table_id"""):
+        heat[int(h)] += o or 0
+    hours = list(range(24))
+    sides = {}
+    for s in ("B", "P"):
+        br, ci, nn, fm, al, sv = [], [], [], [], [], []
+        for h in hours:
+            b, n = rate.get((h, s), [0, 0])
+            p, lo, hi = _wilson(b, n)
+            br.append(round(p, 4) if n else None)
+            ci.append([round(lo, 4), round(hi, 4)] if n else None)
+            nn.append(n)
+            fm.append(form.get((h, s), 0))
+            ls = lens.get((h, s), [])
+            al.append(round(sum(ls) / len(ls), 2) if ls else None)
+            ds = durs.get((h, s), [])
+            sv.append(round(sum(ds) / len(ds) / 60, 1) if ds else None)
+        sides[s] = {"broke_rate": br, "ci": ci, "n": nn, "formed": fm,
+                    "broke_avg_len": al, "avg_surv_min": sv}
+    return {"hours": hours, "heat": [round(heat[h]) for h in hours],
+            "sides": sides}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -843,6 +910,7 @@ class Handler(BaseHTTPRequestHandler):
                       "pairs": api_analysis_pairs,
                       "heatmap": api_analysis_heatmap,
                       "conditions": api_analysis_conditions,
+                      "timeslice": api_analysis_timeslice,
                       "whales": api_analysis_whales}.get(name)
                 if fn:
                     self._send(fn(q))

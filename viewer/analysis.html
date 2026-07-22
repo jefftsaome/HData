@@ -82,6 +82,17 @@
 </section>
 
 <section>
+  <h2>⑤ 时段×龙结构（叠加大厅热度）</h2>
+  <div class="note">左：每小时断龙率（庄/闲，tooltip 含 95% CI 与样本量）；右：每小时新龙形成数（庄/闲堆叠）。
+    虚线=大厅总在线（右轴）。本板块龙侧筛选不生效（就是对比两侧），桌型/时间范围生效。
+    断率看"什么时段断龙多"，形成数看"什么时段长龙多"——两者是不同的平台行为。</div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap">
+    <div class="chart" id="c-ts-rate" style="flex:1;min-width:420px"></div>
+    <div class="chart" id="c-ts-form" style="flex:1;min-width:420px"></div>
+  </div>
+</section>
+
+<section>
   <h2>⑥ 顺方金额下降·七条件概率监测</h2>
   <div class="note">长期观察面板：顺方金额下降及各组合条件下，下一局续/反/和的概率（Wilson 95% CI）。上局为和局的对已剔除；中间漏局的对已剔除（boot_index 连续性校验）。重点跟踪条件 4/6（待扩样弱线索）。</div>
   <table id="cond-table" style="margin-bottom:12px"></table>
@@ -238,10 +249,50 @@ async function loadConds(){
     ]});
 }
 
+async function loadTimeslice(){
+  const d=await(await fetch('/api/analysis/timeslice?'+qs())).json();
+  const H=d.hours.map(h=>h+':00');
+  const heatLine={name:'大厅总在线',type:'line',yAxisIndex:1,data:d.heat,symbol:'none',
+    lineStyle:{type:'dashed',color:'#e8b93d',width:1.5},itemStyle:{color:'#e8b93d'}};
+  mk('c-ts-rate').setOption({
+    backgroundColor:'transparent',
+    tooltip:{trigger:'axis',...TT,formatter:ps=>{
+      let s=ps[0].axisValueLabel;
+      for(const p of ps){
+        if(p.seriesName==='大厅总在线'){ s+=`<br>${p.marker}热度 ${p.value.toLocaleString()}`; continue; }
+        const m=d.sides[p.seriesName==='庄龙'?'B':'P'], i=p.dataIndex, ci=m.ci[i];
+        s+=`<br>${p.marker}${p.seriesName} ${p.value==null?'—':(p.value*100).toFixed(1)+'%'}`
+          +(ci?` <span style="color:#5c6675">[${(ci[0]*100).toFixed(0)}-${(ci[1]*100).toFixed(0)}] n=${m.n[i]}</span>`:'');
+      }
+      return s;}},
+    legend:{textStyle:{color:'#8b94a3'}},
+    grid:{left:50,right:60,top:35,bottom:30},
+    xAxis:{type:'category',data:H,...AX},
+    yAxis:[{type:'value',name:'断龙率',min:0.3,max:0.6,
+            axisLabel:{formatter:v=>(v*100).toFixed(0)+'%',color:'#8b94a3'},...AX},
+           {type:'value',name:'热度',axisLabel:{color:'#8b94a3'},splitLine:{show:false}}],
+    series:[
+      {name:'庄龙',type:'line',data:d.sides.B.broke_rate,connectNulls:true,itemStyle:{color:'#e05252'},symbolSize:5},
+      {name:'闲龙',type:'line',data:d.sides.P.broke_rate,connectNulls:true,itemStyle:{color:'#4a9ae0'},symbolSize:5},
+      heatLine]});
+  mk('c-ts-form').setOption({
+    backgroundColor:'transparent',
+    tooltip:{trigger:'axis',...TT},
+    legend:{textStyle:{color:'#8b94a3'}},
+    grid:{left:50,right:60,top:35,bottom:30},
+    xAxis:{type:'category',data:H,...AX},
+    yAxis:[{type:'value',name:'新龙数',axisLabel:{color:'#8b94a3'},...AX},
+           {type:'value',name:'热度',axisLabel:{color:'#8b94a3'},splitLine:{show:false}}],
+    series:[
+      {name:'庄龙',type:'bar',stack:'d',itemStyle:{color:'#e05252'},data:d.sides.B.formed},
+      {name:'闲龙',type:'bar',stack:'d',itemStyle:{color:'#4a9ae0'},data:d.sides.P.formed},
+      {...heatLine}]});
+}
+
 async function loadAll(){
   $('msg').textContent='加载中…';
   try{
-    await Promise.all([loadOverview(),loadSurvival(),loadPairs(),loadHeat(),loadConds()]);
+    await Promise.all([loadOverview(),loadSurvival(),loadPairs(),loadHeat(),loadConds(),loadTimeslice()]);
     $('msg').textContent='已更新 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   }catch(e){ $('msg').textContent='加载失败: '+e; }
 }
