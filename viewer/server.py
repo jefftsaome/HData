@@ -643,6 +643,141 @@ def api_analysis_conditions(q):
             "conds": [{"label": lb, **stat([p for p in base if f(p)])} for lb, f in conds]}
 
 
+# ── 平台热度看板接口（数据源：lobby_snapshots 大厅帧）──
+#
+# 口径说明：覆盖的是账号组可见桌集（~227 桌天花板），非全平台；
+# 大厅帧只推在线人数、不推金额；人数是平台宣称值（未验真）。
+# 采样是 hunter 发现层副产品：路纸变化即写、无变化 60s 兜底一帧。
+
+_HEAT_CACHE = {}
+
+
+def _heat_cached(key, ttl, fn):
+    ent = _HEAT_CACHE.get(key)
+    if ent and time.time() - ent[0] < ttl:
+        return ent[1]
+    data = fn()
+    _HEAT_CACHE[key] = (time.time(), data)
+    return data
+
+
+def _heat_latest_per_table(con, window_ms=600000):
+    """每桌取窗口内最新一帧在线人数。"""
+    now_ms = int(time.time() * 1000)
+    return con.execute("""
+        select l.table_id, l.online_number, l.game_status, l.ts
+        from lobby_snapshots l
+        join (select table_id, max(ts) mts from lobby_snapshots
+              where ts>? group by table_id) m
+          on m.table_id=l.table_id and m.mts=l.ts""",
+        (now_ms - window_ms,)).fetchall()
+
+
+def api_heat_overview(q):
+    """实时概览：当前总在线/活跃桌数/均在线，昨日同刻对比，近24h峰值。"""
+    def calc():
+        con = db()
+        now_ms = int(time.time() * 1000)
+        rows = _heat_latest_per_table(con)
+        total = sum(r["online_number"] or 0 for r in rows)
+        latest = max((r["ts"] for r in rows), default=None)
+        # 昨日同刻 ±30min 均值
+        yrows = con.execute("""
+            select table_id, avg(online_number) o from lobby_snapshots
+            where ts between ? and ? group by table_id""",
+            (now_ms - 86400000 - 1800000, now_ms - 86400000 + 1800000)
+        ).fetchall()
+        yest = sum(r["o"] or 0 for r in yrows) if yrows else None
+        # 近24h 峰值（5min 桶，桶内每桌均值再求和）
+        brows = con.execute("""
+            select (ts/1000/300)*300000 b, table_id, avg(online_number) o
+            from lobby_snapshots where ts>? group by b, table_id""",
+            (now_ms - 86400000,)).fetchall()
+        buckets = defaultdict(float)
+        for r in brows:
+            buckets[r["b"]] += r["o"] or 0
+        peak_b, peak_v = (max(buckets.items(), key=lambda kv: kv[1])
+                          if buckets else (None, 0))
+        return {"now": now_ms, "latest_ts": latest,
+                "total_online": total, "tables": len(rows),
+                "per_table": round(total / len(rows), 1) if rows else 0,
+                "yest_online": round(yest) if yest else None,
+                "yest_pct": (round((total - yest) / yest * 100, 1)
+                             if yest else None),
+                "peak_ts": int(peak_b) if peak_b else None,
+                "peak_online": round(peak_v)}
+    return _heat_cached("ov", 60, calc)
+
+
+def api_heat_daily(q):
+    """24小时热度画像：每桌每小时均值→跨桌求和；跨天合并 + 逐日分线。"""
+    def calc():
+        con = db()
+        rows = con.execute("""
+            select strftime('%H', ts/1000,'unixepoch','localtime') h,
+                   strftime('%m-%d', ts/1000,'unixepoch','localtime') d,
+                   table_id, avg(online_number) o
+            from lobby_snapshots group by d, h, table_id""").fetchall()
+        bydh = defaultdict(float)
+        for r in rows:
+            bydh[(r["d"], r["h"])] += r["o"] or 0
+        days = sorted({d for d, _ in bydh})
+        hours = [f"{i:02d}" for i in range(24)]
+        series = {d: [round(bydh[(d, h)]) if (d, h) in bydh else None
+                      for h in hours] for d in days}
+        merged = []
+        for h in hours:
+            vals = [bydh[(d, h)] for d in days if (d, h) in bydh]
+            merged.append(round(sum(vals) / len(vals)) if vals else None)
+        return {"hours": hours, "days": series, "avg": merged}
+    return _heat_cached("daily", 600, calc)
+
+
+def api_heat_timeline(q):
+    """细粒度实时走势：5min 桶总在线。"""
+    hours = min(float(q.get("hours", ["24"])[0] or 24), 72)
+    def calc():
+        con = db()
+        since = int((time.time() - hours * 3600) * 1000)
+        rows = con.execute("""
+            select (ts/1000/300)*300000 b, table_id, avg(online_number) o
+            from lobby_snapshots where ts>? group by b, table_id""",
+            (since,)).fetchall()
+        buckets = defaultdict(float)
+        for r in rows:
+            buckets[r["b"]] += r["o"] or 0
+        return {"points": [[int(b), round(v)]
+                           for b, v in sorted(buckets.items())]}
+    return _heat_cached(f"tl{hours}", 60, calc)
+
+
+def api_heat_tables(q):
+    """当前桌台热度排行（每桌最新帧在线人数）。"""
+    limit = min(int(q.get("limit", ["30"])[0] or 30), 100)
+    def calc():
+        con = db()
+        rows = _heat_latest_per_table(con)
+        tids = [r["table_id"] for r in rows]
+        names = {}
+        if tids:
+            ph = ",".join("?" * len(tids))
+            for r in con.execute(
+                    f"select table_id, table_name, game_type_name "
+                    f"from tables where table_id in ({ph})", tids):
+                names[r[0]] = (r[1], r[2])
+        total = sum(r["online_number"] or 0 for r in rows)
+        items = sorted((dict(r) for r in rows),
+                       key=lambda x: -(x["online_number"] or 0))[:limit]
+        for it in items:
+            nm = names.get(it["table_id"], ("", ""))
+            it["table_name"], it["game_type_name"] = nm
+            it["share"] = (round((it["online_number"] or 0) / total * 100, 1)
+                           if total else 0)
+        return {"items": items, "total_online": total,
+                "now": int(time.time() * 1000)}
+    return _heat_cached(f"tb{limit}", 30, calc)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -673,6 +808,20 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/analysis":
                 self._send((ROOT / "analysis.html").read_bytes(),
                            ctype="text/html; charset=utf-8")
+            elif u.path == "/heat":
+                self._send((ROOT / "heat.html").read_bytes(),
+                           ctype="text/html; charset=utf-8")
+            elif u.path.startswith("/api/heat/"):
+                name = u.path.rsplit("/", 1)[1]
+                q = parse_qs(u.query)
+                fn = {"overview": api_heat_overview,
+                      "daily": api_heat_daily,
+                      "timeline": api_heat_timeline,
+                      "tables": api_heat_tables}.get(name)
+                if fn:
+                    self._send(fn(q))
+                else:
+                    self._send({"error": "not found"}, 404)
             elif u.path.startswith("/api/analysis/"):
                 name = u.path.rsplit("/", 1)[1]
                 q = parse_qs(u.query)
