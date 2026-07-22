@@ -792,7 +792,9 @@ def api_heat_tables(q):
 def api_analysis_timeslice(q):
     """时段×龙结构：每小时×龙侧 断龙率/新龙形成数/断龙均长/存活时长，
     叠加大厅热度（总在线）。龙侧筛选忽略（本面板就是对比两侧），
-    桌型/时间范围筛选生效。"""
+    桌型/时间范围筛选生效。
+    形成数按覆盖自然日均化（跨天窗口下部分时段只有1天数据，
+    合计口径会把这些时段显示成假低谷）。"""
     side, gt, days = _afilters(q)
     where, args = _ep_where("all", gt, days)
     con = db()
@@ -811,17 +813,20 @@ def api_analysis_timeslice(q):
         rate[(h, s)][1] += 1
         rate[(h, s)][0] += (o == "broke")
     rows2 = con.execute(f"""
-        select e.start_ts, e.side, e.max_length, e.outcome, e.end_ts
+        select e.start_ts, e.side, e.max_length, e.outcome, e.end_ts,
+               strftime('%m-%d', e.start_ts/1000,'unixepoch','localtime') d
         from streak_episodes e left join tables t on t.table_id=e.table_id
         where {where} and e.outcome is not null""", args).fetchall()
     form = defaultdict(int)
+    days_cov = defaultdict(set)     # 每小时覆盖了几个自然日（均化分母）
     lens = defaultdict(list)
     durs = defaultdict(list)
-    for st_, s, L, o, en in rows2:
+    for st_, s, L, o, en, d in rows2:
         if s not in ("B", "P") or not st_:
             continue
         h = time.localtime(st_ / 1000).tm_hour
         form[(h, s)] += 1
+        days_cov[h].add(d)
         if o == "broke" and L:
             lens[(h, s)].append(L)
             if en:
@@ -842,7 +847,9 @@ def api_analysis_timeslice(q):
             br.append(round(p, 4) if n else None)
             ci.append([round(lo, 4), round(hi, 4)] if n else None)
             nn.append(n)
-            fm.append(form.get((h, s), 0))
+            nd = max(len(days_cov.get(h) or {1}), 1)
+            fm.append(round(form.get((h, s), 0) / nd, 1))  # 按覆盖天均化，
+            # 避免跨天窗口把"午后只有1天数据"显示成"午后龙少"的假低谷
             ls = lens.get((h, s), [])
             al.append(round(sum(ls) / len(ls), 2) if ls else None)
             ds = durs.get((h, s), [])
