@@ -11,7 +11,8 @@
     GET /api/lastjump?threshold=20000  "封盘前最后一跳"信号收敛面板
     GET /api/analysis/{overview,survival,pairs,heatmap,conditions,timeslice,whales}
     GET /api/heat/{overview,daily,timeline,tables}   平台热度看板
-    页面: / 长龙列表 · /analysis 断龙分析 · /heat 平台热度
+    GET /api/strategy/oa-down        策略页：反方金额下降七条件（时段/场景切片）
+    页面: / 长龙列表 · /analysis 断龙分析 · /heat 平台热度 · /strategy-od 策略
 """
 import json
 import math
@@ -654,6 +655,148 @@ def api_analysis_conditions(q):
             "conds": [{"label": lb, **stat([p for p in base if f(p)])} for lb, f in conds]}
 
 
+# ── 策略研究页：反方金额下降·七条件（时段/场景切片）──
+#
+# 与 api_analysis_conditions（顺方版）镜像，额外输出：
+# 每小时×条件的顺/反/和（策略可能只在特定时段生效）、
+# 平台热度档/本局总池档场景切片（策略可能只在特定场景生效）。
+# 低样本格子由前端灰显，不在后端丢弃（n 是判断前提）。
+
+_STRAT_CONDS = [
+    ("基准(全部连续对)", lambda p: True),
+    ("1 反方金额降", lambda p: p["oa"] == "dn"),
+    ("2 反方金额降+顺方金额降", lambda p: p["oa"] == "dn" and p["sa"] == "dn"),
+    ("3 反方金额降+顺方金额升", lambda p: p["oa"] == "dn" and p["sa"] == "up"),
+    ("4 反方金额降+顺方金额降+反方人数升",
+     lambda p: p["oa"] == "dn" and p["sa"] == "dn" and p["oc"] == "up"),
+    ("5 反方金额降+顺方金额降+反方人数降",
+     lambda p: p["oa"] == "dn" and p["sa"] == "dn" and p["oc"] == "dn"),
+    ("6 反方金额降+顺方金额降+反方人数升+顺方人数升",
+     lambda p: p["oa"] == "dn" and p["sa"] == "dn" and p["oc"] == "up" and p["sc"] == "up"),
+    ("7 反方金额降+顺方金额降+反方人数升+顺方人数降",
+     lambda p: p["oa"] == "dn" and p["sa"] == "dn" and p["oc"] == "up" and p["sc"] == "dn"),
+]
+
+_STRAT_CACHE = {"ts": 0, "key": None, "data": None}
+
+
+def _stat3(sub):
+    n = len(sub)
+    out = {"n": n}
+    for r in ("续", "反", "和"):
+        k = sum(1 for p in sub if p["res"] == r)
+        p_, lo, hi = _wilson(k, n)
+        out[r] = {"rate": round(p_, 4), "ci": [round(lo, 4), round(hi, 4)]}
+    return out
+
+
+def api_strategy_oa_down(q):
+    side, gt, days = _afilters(q)
+    key = (side, gt, days)
+    if _STRAT_CACHE["data"] and _STRAT_CACHE["key"] == key and \
+            time.time() - _STRAT_CACHE["ts"] < 300:
+        return _STRAT_CACHE["data"]
+    where, args = _ep_where("all", gt, days)
+    con = db()
+    rows = con.execute(f"""
+        select r.episode_id, r.result, r.bet_json, e.side, rc.boot_index bi,
+               r.ts_settle
+        from streak_rounds r
+        join streak_episodes e on e.episode_id=r.episode_id
+        left join tables t on t.table_id=e.table_id
+        left join rounds rc on rc.round_id=r.round_id
+        where {where}
+        order by r.episode_id, r.ts_settle""", args).fetchall()
+    by_ep = defaultdict(list)
+    for r in rows:
+        by_ep[r[0]].append(r)
+
+    def cmp_dir(prev, cur):
+        if prev == 0 or prev is None or cur is None:
+            return None
+        return "dn" if cur < prev else ("up" if cur > prev else "eq")
+
+    pairs = []
+    for ep_rows in by_ep.values():
+        if len(ep_rows) < 2:
+            continue
+        for i in range(1, len(ep_rows)):
+            prev, cur = ep_rows[i - 1], ep_rows[i]
+            if prev[1] == "T":
+                continue
+            if prev[4] is not None and cur[4] is not None \
+                    and cur[4] - prev[4] != 1:
+                continue
+            s = cur[3]
+            pb, cb = parse_bets(prev[2]), parse_bets(cur[2])
+            if s == "B":
+                sa = (pb["b_amt"], cb["b_amt"]); oa = (pb["p_amt"], cb["p_amt"])
+                sc = (pb["b_cnt"], cb["b_cnt"]); oc = (pb["p_cnt"], cb["p_cnt"])
+            else:
+                sa = (pb["p_amt"], cb["p_amt"]); oa = (pb["b_amt"], cb["b_amt"])
+                sc = (pb["p_cnt"], cb["p_cnt"]); oc = (pb["b_cnt"], cb["b_cnt"])
+            if cur[1] == "T":
+                res = "和"
+            elif (s == "B" and cur[1] in ("B", "B6")) or (s == "P" and cur[1] == "P"):
+                res = "续"
+            else:
+                res = "反"
+            pool = cb["b_amt"] + cb["p_amt"] + cb["t_amt"]
+            pairs.append({"res": res, "side": s,
+                          "sa": cmp_dir(*sa), "oa": cmp_dir(*oa),
+                          "sc": cmp_dir(*sc), "oc": cmp_dir(*oc),
+                          "hour": time.localtime(cur[5] / 1000).tm_hour,
+                          "pool": pool})
+    base = [p for p in pairs if None not in (p["sa"], p["oa"], p["sc"], p["oc"])]
+    if side in ("B", "P"):
+        base = [p for p in base if p["side"] == side]
+
+    # 平台热度：每小时大厅总在线（独立于龙筛选），按 24 小时值分三档
+    heat = defaultdict(float)
+    for h, tid, o in con.execute("""
+            select strftime('%H', ts/1000,'unixepoch','localtime') h,
+                   table_id, avg(online_number) o
+            from lobby_snapshots group by h, table_id"""):
+        heat[int(h)] += o or 0
+    hvals = sorted(heat.values())
+    t1 = hvals[len(hvals) // 3] if hvals else 0
+    t2 = hvals[2 * len(hvals) // 3] if hvals else 0
+
+    def heat_tier(p):
+        v = heat.get(p["hour"], 0)
+        return "低" if v <= t1 else ("中" if v <= t2 else "高")
+
+    pools = sorted(p["pool"] for p in base)
+    p1 = pools[len(pools) // 3] if pools else 0
+    p2 = pools[2 * len(pools) // 3] if pools else 0
+
+    def pool_tier(p):
+        return "小" if p["pool"] <= p1 else ("中" if p["pool"] <= p2 else "大")
+
+    overall = [{"label": lb, **_stat3([p for p in base if f(p)])}
+               for lb, f in _STRAT_CONDS]
+    hourly = []
+    for lb, f in _STRAT_CONDS:
+        sub = [p for p in base if f(p)]
+        hourly.append({"label": lb,
+                       "hours": [{"h": h, **_stat3([p for p in sub if p["hour"] == h])}
+                                 for h in range(24)]})
+    def tier_view(tier_fn, tiers):
+        return {t: [{"label": lb,
+                     **_stat3([p for p in base if f(p) and tier_fn(p) == t])}
+                    for lb, f in _STRAT_CONDS] for t in tiers}
+
+    out = {"total_pairs": len(base), "side": side or "all",
+           "overall": overall, "hourly": hourly,
+           "heat_tier": tier_view(heat_tier, ["低", "中", "高"]),
+           "pool_tier": tier_view(pool_tier, ["小", "中", "大"]),
+           "heat_cuts": [round(t1), round(t2)],
+           "pool_cuts": [round(p1), round(p2)],
+           "computed_at": int(time.time() * 1000)}
+    _STRAT_CACHE.update(ts=time.time(), key=key, data=out)
+    return out
+
+
 # ── 平台热度看板接口（数据源：lobby_snapshots 大厅帧）──
 #
 # 口径说明：覆盖的是账号组可见桌集（~227 桌天花板），非全平台；
@@ -898,6 +1041,11 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/heat":
                 self._send((ROOT / "heat.html").read_bytes(),
                            ctype="text/html; charset=utf-8")
+            elif u.path == "/strategy-od":
+                self._send((ROOT / "strategy_od.html").read_bytes(),
+                           ctype="text/html; charset=utf-8")
+            elif u.path == "/api/strategy/oa-down":
+                self._send(api_strategy_oa_down(parse_qs(u.query)))
             elif u.path.startswith("/api/heat/"):
                 name = u.path.rsplit("/", 1)[1]
                 q = parse_qs(u.query)
