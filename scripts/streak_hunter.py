@@ -674,10 +674,12 @@ def _mask_proxy(url: str) -> str:
 
 
 async def amain(min_streak: int, db_path: str, max_accounts: int = 0,
-                proxies_path: str = "", proxy_cap: int = 10):
+                proxies_path: str = "", proxy_cap: int = 10,
+                purge_days: int = 30):
     started = time.time()
     store = Store(db_path)
-    store.purge_raw(30)
+    if purge_days > 0:
+        store.purge_raw(purge_days)
     stale = store.close_stale_episodes()
     if stale:
         logger.info(f"[启动] 清理上次遗留未完结 episode {stale} 条"

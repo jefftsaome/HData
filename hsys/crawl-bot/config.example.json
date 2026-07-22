@@ -1,0 +1,22 @@
+{
+  "entry_url": "https://leyu.com",
+  "geepass_token": "填入 GEETEST 打码平台 token",
+  "jfbym_token": "填入 玖富云码 打码平台 token",
+  "accounts": [
+    {"account": "发现层账号", "password": "密码"},
+    {"account": "监控账号1", "password": "密码"},
+    {"account": "监控账号2", "password": "密码"}
+  ],
+  "db_path": "hsys/crawl-bot/data/streak.db",
+  "log_file": "hsys/crawl-bot/logs/hunter.log",
+  "min_streak": 5,
+  "max_accounts": 0,
+  "proxies": "",
+  "proxy_cap": 10,
+  "purge_raw_days": 7,
+  "push": {
+    "enabled": false,
+    "target": "http://127.0.0.1:7200/ingest",
+    "备注": "预留：hsys/server 上线后把采集事件实时 POST 过去；当前未接入"
+  }
+}
