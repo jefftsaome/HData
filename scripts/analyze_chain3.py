@@ -287,6 +287,63 @@ def main():
                 print(f"| {label} | {blk} | {len(sel)} | {k} | "
                       f"{k/len(sel):.3f} | [{l_:.3f},{h_:.3f}] |")
 
+    # ── 逐小时检验 ──
+    def hr(ts):
+        return int(time.strftime("%H", time.localtime(ts / 1000)))
+
+    print("\n## 逐小时检验")
+    print("\n### Q1：4 条件命中率与 r2 反率 按小时（r2 结算时刻）")
+    print("| 小时 | 非和对 | 4条件窗 | 命中率 | 反 | P(反|4条件) | CI |")
+    print("|---|---|---|---|---|---|---|")
+    for h in range(24):
+        allp = [w for w in q1 if hr(w["r2"]["ts"]) == h]
+        if not allp:
+            continue
+        hitp = [w for w in allp if cond4(w["r1"], w["r2"])]
+        k = sum(1 for w in hitp if w["r2"]["res"] == "broke")
+        if hitp:
+            p = k / len(hitp)
+            l_, h_ = wilson(k, len(hitp))
+            print(f"| {h:02d} | {len(allp)} | {len(hitp)} | "
+                  f"{len(hitp)/len(allp):.1%} | {k} | {p:.3f} | "
+                  f"[{l_:.3f},{h_:.3f}] |")
+        else:
+            print(f"| {h:02d} | {len(allp)} | 0 | — | — | — | — |")
+
+    print("\n### Q2：子集反率 按小时（r3 结算时刻）")
+    print("| 小时 | n | 反 | 和 | P(反|非和) | CI |")
+    print("|---|---|---|---|---|---|")
+    for h in range(24):
+        sel = [w for w in sub if hr(w["r3"]["ts"]) == h]
+        if not sel:
+            continue
+        nt = [w for w in sel if w["r3"]["res"] != "tie"]
+        k = sum(1 for w in nt if w["r3"]["res"] == "broke")
+        ntie = len(sel) - len(nt)
+        if not nt:
+            continue
+        p = k / len(nt)
+        l_, h_ = wilson(k, len(nt))
+        mark = " ◄" if p >= 0.70 and len(nt) >= 10 else ""
+        print(f"| {h:02d} | {len(nt)} | {k} | {ntie} | {p:.3f} | "
+              f"[{l_:.3f},{h_:.3f}]{mark} |")
+
+    print("\n### ↑↑↑↑ 格（最大格）× 小时")
+    dom = cells.get((True, True, True, True), [])
+    print("| 小时 | n | 反 | P(反|非和) | CI |")
+    print("|---|---|---|---|---|")
+    for h in range(24):
+        sel = [w for w in dom if w["r3"]["res"] != "tie"
+               and hr(w["r3"]["ts"]) == h]
+        if len(sel) < 5:
+            continue
+        k = sum(1 for w in sel if w["r3"]["res"] == "broke")
+        p = k / len(sel)
+        l_, h_ = wilson(k, len(sel))
+        mark = " ◄" if p >= 0.70 and len(sel) >= 10 else ""
+        print(f"| {h:02d} | {len(sel)} | {k} | {p:.3f} | "
+              f"[{l_:.3f},{h_:.3f}]{mark} |")
+
     # ── 样本外复核（按日期对半切）──
     print("\n## 样本外复核（按日期对半：前半找候选，后半验证）")
     dates = sorted({time.strftime("%Y-%m-%d", time.localtime(w["r2"]["ts"] / 1000))
