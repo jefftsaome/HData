@@ -8,8 +8,8 @@
     dist_pyd/*.pyd 与包结构保持一致，外部直接 `from hdata.client import GameClient`
 
 环境要求（缺一不可）:
-    1. Python 3.13.5（与 pyproject.toml requires-python 一致；
-       .pyd 与解释器版本强绑定，目标机器必须是同一大版本）
+    1. Python 3.13.x（与 pyproject.toml requires-python 一致；
+       .pyd 与解释器大版本强绑定 cp313，目标机器必须是 3.13.x）
     2. C 编译器:
        - Windows: MSVC "Visual Studio Build Tools"（勾选 C++ 生成工具）
        - Linux:   gcc
