@@ -28,7 +28,14 @@ from hdata.auth.session import build_ws_config, get_login
 from hdata.client import GameClient
 from hdata.protocol.codec import (
     FS_LOGIN, build_login_msg, decode_frame, encode_frame, extract_param)
-from scripts.streak_hunter import ACCOUNTS, ENTRY_URL, GEEPASS, JFBYM
+
+_cfg = json.loads((Path(__file__).parent.parent
+                   / "hsys" / "crawl-bot" / "config.json")
+                  .read_text(encoding="utf-8"))
+ACCOUNTS = _cfg["accounts"]
+ENTRY_URL = _cfg["entry_url"]
+GEEPASS = _cfg["geepass_token"]
+JFBYM = _cfg["jfbym_token"]
 
 PROXIES_FILE = Path(__file__).parent.parent / "data" / "proxies.json"
 CONNECT_INTERVAL_S = 3.0     # 与生产一致的建连间隔

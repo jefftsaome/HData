@@ -10,12 +10,16 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from scripts.streak_hunter import StreakMonitor
+sys.path.insert(0, str(Path(__file__).parent.parent
+                     / "hsys" / "crawl-bot"))
+from strategies.streak import StreakMonitor
 
 
 def _make_monitor(min_streak: int = 4) -> StreakMonitor:
@@ -106,7 +110,7 @@ async def test_run_ensures_monitor_eagerly():
 
 async def test_graceful_shutdown_cleans_up():
     """取消任务被等待收尾；监控 shutdown 与关库按序执行。"""
-    from scripts.streak_hunter import _graceful_shutdown
+    from strategies.streak import _graceful_shutdown
 
     monitor = Mock()
     monitor.stats = {"rounds": 1, "broke": 0, "censored": 2}
@@ -127,7 +131,7 @@ async def test_graceful_shutdown_cleans_up():
 
 async def test_graceful_shutdown_store_closed_on_monitor_error():
     """监控清理抛异常时，关库仍然执行（数据完整性优先）。"""
-    from scripts.streak_hunter import _graceful_shutdown
+    from strategies.streak import _graceful_shutdown
 
     monitor = Mock()
     monitor.stats = {"rounds": 0, "broke": 0, "censored": 0}

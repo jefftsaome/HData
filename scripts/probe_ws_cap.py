@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -20,7 +21,14 @@ from loguru import logger
 
 import hdata.client as hc
 from hdata.client import GameClient
-from scripts.streak_hunter import ACCOUNTS, ENTRY_URL, GEEPASS, JFBYM
+
+_cfg = json.loads((Path(__file__).parent.parent
+                   / "hsys" / "crawl-bot" / "config.json")
+                  .read_text(encoding="utf-8"))
+ACCOUNTS = _cfg["accounts"]
+ENTRY_URL = _cfg["entry_url"]
+GEEPASS = _cfg["geepass_token"]
+JFBYM = _cfg["jfbym_token"]
 
 
 async def main(n_monitor: int = 6, interval: float = 3.0):

@@ -90,7 +90,7 @@ HTTPS、登录限流（如 5 次/分钟/IP）、/ingest 密钥轮换。
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| **P0** | PG 安装初始化、schema_pg.sql（含 events_raw 月分区）、store_pg.py、SQLite→PG 迁移脚本、分区归档脚本 | 采集写 PG 跑 24h 无异常；迁移后派生表行数与 SQLite 一致 |
+| **P0** | ~~PG 安装初始化、schema_pg.sql（含 events_raw 月分区）~~（2026-07-23 已交付 postgres/ 镜像）+ store_pg.py、SQLite→PG 迁移脚本、分区归档脚本 | 采集写 PG 跑 24h 无异常；迁移后派生表行数与 SQLite 一致 |
 | **P1** | FastAPI 骨架：登录双密码、/ingest、/ws、实时首页（Vue） | 登录/胁迫两条路径行为正确；浏览器秒级看到新局 |
 | **P2** | 四页迁移（长龙/断龙分析/热度/策略页）+ /api/query + ECharts 局内图升级 | 覆盖 viewer 全部功能后 viewer 下线 |
 | **P3** | 可配置看板（布局 JSON + gridstack 拖拽）+ 分析参数 UI 化 | 不改代码拼出新分析视图 |
