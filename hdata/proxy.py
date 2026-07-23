@@ -26,7 +26,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from loguru import logger
+from htools.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 默认每出口连接预算：实测安全工作点（3s 间隔 10 条并发全成功，
 # 硬上限未知，见 平台边界试探.md §2.2）；探针压测前不建议调大

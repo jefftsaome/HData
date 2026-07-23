@@ -38,7 +38,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
-from loguru import logger
+from htools.utils.logger import get_logger
 
 from hdata.auth.session import (
     LoginError,
@@ -58,6 +58,8 @@ from hdata.protocol.codec import (
 )
 from hdata.protocol.roadpaper import decode_road_paper, decode_bead_plate
 from hdata.protocol.schemacodec import schema_decode
+
+logger = get_logger(__name__)
 
 # ── 协议常量（内部使用，不导出） ──
 _QS_TABLE_LIST_ALL = 10089
