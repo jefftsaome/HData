@@ -462,6 +462,9 @@ class GameClient:
             kick_policy: 被系统踢出（连续5局未下注）时的策略——
                 "stay"（默认）：被踢后自动重进该桌，监控不中断；
                 "follow_system"：遵循系统踢出，该桌停止监控。
+                （"rotate" 对单连接无意义：无其他账号可换，被踢桌
+                摘除后不再重进，仅空桌后连接保活——请改用
+                monitor_tables 多账号模式。）
 
         Returns:
             MultiTableSession — `async with` 进入后:
@@ -503,7 +506,9 @@ class GameClient:
                       每项可带 "proxy" 键指定该账号的代理出口
                       （token 绑 IP，账号全程固定走该出口）
             kick_policy: 被系统踢出（连续5局未下注）时的策略——
-                "stay"（默认）：被踢后自动重进该桌，监控不中断；
+                "stay"（默认）：被踢后同账号自动重进该桌，监控不中断；
+                "rotate"：被踢后换另一个账号分片重进该桌（降低单账号
+                    反复被踢的曝光；仅一个存活分片时退回同账号重进）；
                 "follow_system"：遵循系统踢出，该桌停止监控。
 
         Returns:
@@ -1098,8 +1103,10 @@ class MultiTableSession:
 
     用 `async with` 进入；退出时自动离全部桌。
     某张桌被踢（5局未投注）时按 kick_policy 处理：
-      - "stay"（默认）：该桌自动重进，其他桌不受影响；
-      - "follow_system"：遵循系统踢出，该桌停止监控。
+      - "stay"（默认）：该桌自动重进（同账号原地重进），其他桌不受影响；
+      - "follow_system"：遵循系统踢出，该桌停止监控；
+      - "rotate"：该桌从本分片摘除并上报（由 TableMonitor 换账号
+        分片重进）；空分片保持连接等待新分配，不终止迭代。
     """
 
     def __init__(self, conn: "_WSConnection", tables: list[dict],
@@ -1110,14 +1117,20 @@ class MultiTableSession:
              "game_type_id": int(t.get("game_type_id", 2001))}
             for t in tables
         ]
-        if kick_policy not in ("stay", "follow_system"):
-            raise ValueError("kick_policy 只能是 'stay' 或 'follow_system'")
+        if kick_policy not in ("stay", "follow_system", "rotate"):
+            raise ValueError(
+                "kick_policy 只能是 'stay' / 'follow_system' / 'rotate'")
         self.kick_policy = kick_policy
         self.snapshots: dict[int, dict] = {}
         self._entered: set[int] = set()
         self._leaving: set[int] = set()   # 主动离桌中的桌（防误判为被踢）
         self._road_accum: dict[int, list] = {}   # 每桌珠盘累积（116重置/107追加）
         self._last_round_id: dict[int, int] = {}   # 每桌已入路的最大 roundId
+
+    @property
+    def account(self) -> str:
+        """本分片使用的监控账号。"""
+        return str(self._conn._session.get("account", "?"))
 
     async def __aenter__(self) -> "MultiTableSession":
         await self._conn.__aenter__()
@@ -1200,6 +1213,9 @@ class MultiTableSession:
 
         kick_policy="stay"（默认）：被踢（102 推送）后自动重进该桌，
         产出 type="kick" 事件（data.dropped=False）。
+        kick_policy="rotate"：被踢即从本分片摘除，产出 type="kick"
+        事件（data.dropped=True，含 account/table），由 TableMonitor
+        换账号分片重进；空分片保活等待新分配，迭代不终止。
         kick_policy="follow_system"：被踢即停止监控该桌，产出
         type="kick" 事件（data.dropped=True）；全部桌被踢后迭代结束。
         """
@@ -1240,8 +1256,10 @@ class MultiTableSession:
                         or table_id not in self._entered \
                         or payload.get("leaveTableType") == 1:
                     continue            # 自己主动离桌的确认/无关桌，忽略
-                if self.kick_policy == "follow_system":
-                    # 遵循系统踢出：停止监控该桌
+                if self.kick_policy in ("follow_system", "rotate"):
+                    # 摘除该桌并上报；rotate 由 TableMonitor 换分片重进
+                    t = next((x for x in self._tables
+                              if x["table_id"] == table_id), None)
                     self._tables = [x for x in self._tables
                                     if x["table_id"] != table_id]
                     self._entered.discard(table_id)
@@ -1249,8 +1267,9 @@ class MultiTableSession:
                     yield {"type": "kick", "protocol_id": pid,
                            "table_id": table_id,
                            "data": {"action": "dropped", "dropped": True,
+                                    "account": self.account, "table": t,
                                     "raw": payload}}
-                    if not self._tables:
+                    if not self._tables and self.kick_policy == "follow_system":
                         return
                     continue
                 # stay：自动重进该桌
@@ -1318,6 +1337,7 @@ class TableMonitor:
         self._shards = shards
         self._refresh_cb_factory = refresh_cb_factory
         self._closed = False
+        self._rotate = bool(shards) and shards[0].kick_policy == "rotate"
 
     # ── 生命周期 ──
 
@@ -1423,10 +1443,49 @@ class TableMonitor:
 
     # ── 事件流 ──
 
+    async def _rotate_table(self, src: MultiTableSession, ev: dict):
+        """rotate 策略：把被踢的桌换到另一个账号分片重进（原地改事件）。
+
+        目标分片 = 源分片以外负载最小者；仅一个存活分片时退回源分片
+        原账号重进（action="auto_reenter"，保监控连续性）。重进指令
+        发送失败则把桌从目标分片撤回，事件标记 rotate_failed 交给
+        调用方收场/重建逻辑处理。
+        """
+        t = ev["data"].get("table")
+        if not t:
+            return
+        others = [s for s in self._shards if s is not src]
+        target = min(others, key=lambda s: len(s._tables)) if others else src
+        nt = {"table_id": int(t["table_id"]),
+              "game_type_id": int(t.get("game_type_id", 2001))}
+        target._tables.append(nt)
+        try:
+            await target._enter_one(nt)
+        except Exception as e:
+            target._tables.remove(nt)
+            logger.warning(f"[TableMonitor] 轮转重进失败 桌{nt['table_id']}"
+                           f" → {target.account}: {e}")
+            ev["data"].update({"action": "rotate_failed",
+                               "from_account": ev["data"].get("account"),
+                               "to_account": target.account})
+            return
+        rotated = target is not src
+        ev["data"].update({
+            "action": "rotated" if rotated else "auto_reenter",
+            "dropped": False,
+            "from_account": ev["data"].get("account"),
+            "to_account": target.account,
+            **({} if rotated else {"note": "仅一个存活分片，原账号重进"})})
+        logger.info(f"[TableMonitor] 桌{nt['table_id']} 被踢，"
+                    f"{ev['data']['from_account']} → {target.account}"
+                    f"（{ev['data']['action']}）")
+
     async def events(self) -> AsyncIterator[dict]:
         """全部分片合并的统一事件流。
 
         每个分片一个转发任务汇入队列；aclose() 后迭代自然结束。
+        kick_policy="rotate" 时，被踢桌在此换账号分片重进，
+        事件 data.action 标记 rotated / auto_reenter / rotate_failed。
         """
         queue: asyncio.Queue = asyncio.Queue()
         done = asyncio.Event()
@@ -1434,6 +1493,9 @@ class TableMonitor:
         async def pump(shard: MultiTableSession):
             try:
                 async for ev in shard.events():
+                    if self._rotate and ev.get("type") == "kick" \
+                            and ev.get("data", {}).get("dropped"):
+                        await self._rotate_table(shard, ev)
                     await queue.put(ev)
                     if self._closed:
                         return
