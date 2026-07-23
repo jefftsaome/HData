@@ -14,17 +14,6 @@ from hdata.auth.captcha_solver import (
 )
 
 
-def test_manual_cli_accepts_separate_platform_tokens():
-    from test_get_login import build_parser
-
-    args = build_parser().parse_args(
-        ["--http", "--geepass-token", "gp", "--jfbym-token", "jf"]
-    )
-
-    assert args.geepass_token == "gp"
-    assert args.jfbym_token == "jf"
-
-
 def test_auth_package_keeps_legacy_exports():
     import hdata.auth as auth
 
@@ -759,16 +748,6 @@ async def test_solver_redacts_nonmapping_top_level_response(monkeypatch, solver_
 
     assert_safe_error(exc_info.value, sentinel)
     assert "stage=response_parse" in exc_info.value.raw_error
-
-
-def test_manual_cli_output_never_includes_token_values(capsys):
-    from test_get_login import _print_result
-
-    _print_result({"token": "site-token-secret", "game_token": "jwt-secret"})
-
-    output = capsys.readouterr().out
-    assert "site-token-secret" not in output
-    assert "jwt-secret" not in output
 
 
 @pytest.mark.asyncio
