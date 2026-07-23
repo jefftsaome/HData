@@ -17,5 +17,5 @@ build/
 .session_cache.json
 .chrome_profile/
 data/
-node_modules/# HSys 真实配置（含账号密码与打码 token，严禁提交）
-hsys/crawl-bot/config.json
+node_modules/
+

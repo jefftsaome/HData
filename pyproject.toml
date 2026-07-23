@@ -27,7 +27,7 @@ ws_source = "hdata.sources.leyu_ws:WSSource"
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests*", "scripts*", "viewer*", "hsys*"]
+exclude = ["tests*", "scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -29,9 +30,11 @@ from hdata.client import GameClient
 from hdata.protocol.codec import (
     FS_LOGIN, build_login_msg, decode_frame, encode_frame, extract_param)
 
-_cfg = json.loads((Path(__file__).parent.parent
-                   / "hsys" / "crawl-bot" / "config.json")
-                  .read_text(encoding="utf-8"))
+_ap = argparse.ArgumentParser(description="代理探针（账号配置来自 crawl-bot config.json）")
+_ap.add_argument("--config", required=True,
+                 help="账号配置 JSON 路径（含 accounts/entry_url/geepass_token/jfbym_token）")
+_args, _ = _ap.parse_known_args()
+_cfg = json.loads(Path(_args.config).read_text(encoding="utf-8"))
 ACCOUNTS = _cfg["accounts"]
 ENTRY_URL = _cfg["entry_url"]
 GEEPASS = _cfg["geepass_token"]
