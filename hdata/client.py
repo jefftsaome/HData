@@ -116,17 +116,23 @@ class TableInfo:
 
 
 # gameTypeId → 官方名称（逆向自大厅前端 JS：枚举 It + _gameNameMap，
-# 与网页大厅实际显示的 8 个分类逐一对上）
+# 与网页大厅实际显示的 8 个分类逐一对上；2019/2021/2023/2025 为
+# 2026-07-24 大厅实测补充）
 _GAME_TYPE_NAMES = {
     2001: "经典百家乐", 2002: "极速百家乐", 2003: "竞咪百家乐",
     2004: "包桌百家乐", 2005: "共咪百家乐", 2006: "龙虎",
     2007: "轮盘", 2008: "骰宝", 2009: "牛牛",
     2010: "炸金花", 2011: "三公", 2012: "21点",
     2013: "多台", 2014: "高额百家乐", 2015: "斗牛",
-    2016: "保险百家乐", 2018: "百家乐大赛", 2020: "番摊",
-    2027: "劲舞百家乐", 2030: "主播百家乐", 2034: "闪电百家乐",
-    2038: "电投百家乐",
+    2016: "保险百家乐", 2018: "百家乐大赛", 2019: "德州扑克",
+    2020: "番摊", 2021: "21点", 2023: "温州牌九",
+    2025: "安达巴哈", 2027: "劲舞百家乐", 2030: "主播百家乐",
+    2034: "闪电百家乐", 2038: "电投百家乐",
 }
+# 注意：桌名 ≠ 游戏类型。实测"龙争虎斗 01~10"系列桌（越南厅）挂
+# 在经典百家乐(2001)下，是百家乐主题桌而非龙虎斗；真龙虎桌为
+# gameTypeId=2006（桌名"龙虎E25"式）。物理桌台系列看 physicsTableNo
+# 字母前缀（J=龙争虎斗系、H/C/B=经典百家乐系、U=极速系、E=龙虎/边游戏系）。
 
 # 好路类型 id → 官方名称（逆向自前端 GoodRoadType 字典 + 中文语言包
 # @grd_20001~20011；用于 set_road_filter 的参数与 goodRoadPoints 解读）
@@ -145,7 +151,11 @@ GOOD_ROAD_NAMES = {
 # 进一步放大请求密度。策略：
 #   1. 进程级最小间隔：所有刷新串行排队，间隔 >= MIN_INTERVAL；
 #   2. 新鲜跳过：session["_refresh_ts"] 在每次成功刷新后记录，
-#      SKIP_S 内不再重复刷新（登录流程刚刷过的 token 直接复用）；
+#      SKIP_S 内不再重复刷新（登录流程刚刷过的 token 直接复用）——
+#      但 jti 单连接消费：一张 token 被一条 WS 连接登录成功后即死，
+#      跨连接复用必 10026。故跳过前提追加"未被消费"
+#      （session["_token_consumed"]，由 _WSConnection._login 成功时置位、
+#      每次刷新成功后复位）；
 #   3. 失败退避重试一次再兜底（见 _refresh_cb）。
 
 _REFRESH_MIN_INTERVAL_S = 2.0   # 进程内任意两次刷新的最小间隔
@@ -276,6 +286,7 @@ class GameClient:
             if isinstance(sub, dict):
                 session["game_player_id"] = sub.get("playerId", 0)
         session["_refresh_ts"] = time.time()
+        session["_token_consumed"] = False   # 新 token 尚未被任何连接消费
         try:
             save_session(account, session)
         except Exception:
@@ -360,7 +371,8 @@ class GameClient:
              会话的代理出口（token 绑 IP）。
         """
         account = session.get("account", "")
-        if time.time() - session.get("_refresh_ts", 0) < _REFRESH_SKIP_S:
+        if (not session.get("_token_consumed")
+                and time.time() - session.get("_refresh_ts", 0) < _REFRESH_SKIP_S):
             return session
         for attempt in (1, 2):
             try:
@@ -729,6 +741,9 @@ class _WSConnection:
             if pid == FS_LOGIN:
                 info = extract_param(frame) or {}
                 if info.get("status") == 1:
+                    # jti 单连接消费：本连接登录成功即标记该 token 已消费，
+                    # 下一条新连接建连前 _refresh_cb 会强制刷新（见节流策略注释）。
+                    self._session["_token_consumed"] = True
                     return
                 raise LoginError(f"WS 登录被拒: {info.get('msg')}")
             if pid == 10026:
