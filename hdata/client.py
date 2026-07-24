@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
 from htools.utils.logger import get_logger
@@ -95,10 +95,12 @@ class TableInfo:
     table_name: str
     status: int                 # gameStatus：2  betting, 3  dealing, 4 开牌/结算
     online: int                 # 在线人数
-    boot_no: str                # 靴号
-    road_flat: str              # 珠盘 B/P/T 序列（如 "BBPTPBPB"）
-    road_count: int             # 本靴已开局的局数
-    good_roads: list[str]       # 服务端标记的生效好路名（如 ["长庄","逢闲连"]）
+    total_amount: float = 0.0   # 大厅总下注额（tableOnline.totalAmount；
+                                # 平台目前恒推 0，字段保留待平台填数）
+    boot_no: str = ""           # 靴号
+    road_flat: str = ""         # 珠盘 B/P/T 序列（如 "BBPTPBPB"）
+    road_count: int = 0         # 本靴已开局的局数
+    good_roads: list[str] = field(default_factory=list)  # 生效好路名
 
     def to_dict(self) -> dict:
         return {
@@ -108,6 +110,7 @@ class TableInfo:
             "table_name": self.table_name,
             "status": self.status,
             "online": self.online,
+            "total_amount": self.total_amount,
             "boot_no": self.boot_no,
             "road_flat": self.road_flat,
             "road_count": self.road_count,
@@ -1639,9 +1642,11 @@ def _table_info_from_snapshot(table_id: str, t: dict,
         except Exception:
             flat = ""
     online = 0
+    total_amount = 0.0
     ton = t.get("tableOnline")
     if isinstance(ton, dict):
         online = ton.get("onlineNumber", 0) or 0
+        total_amount = ton.get("totalAmount", 0) or 0
     good_roads = [
         GOOD_ROAD_NAMES.get(p.get("goodRoadType"),
                             f"类型{p.get('goodRoadType')}")
@@ -1656,6 +1661,7 @@ def _table_info_from_snapshot(table_id: str, t: dict,
         table_name=m.get("tableName") or t.get("tableName", "") or "",
         status=t.get("gameStatus", 0) or 0,
         online=online,
+        total_amount=total_amount,
         boot_no=t.get("bootNo", "") or m.get("bootNo", "") or "",
         road_flat=flat,
         road_count=len(flat),

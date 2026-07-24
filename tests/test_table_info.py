@@ -60,6 +60,26 @@ class TestTableInfoFromSnapshot:
         d = t.to_dict()
         assert "good_roads" in d and isinstance(d["good_roads"], list)
 
+    def test_total_amount_normal(self):
+        """tableOnline.totalAmount 正常下发时要接到 TableInfo 上。"""
+        t = _table_info_from_snapshot("1", _snap())
+        assert t.total_amount == 100.0
+        assert t.to_dict()["total_amount"] == 100.0
+
+    def test_total_amount_missing(self):
+        """tableOnline 缺键或整个没有时兜底 0，不报错。"""
+        t = _table_info_from_snapshot("1", _snap(
+            tableOnline={"onlineNumber": 7}))
+        assert t.total_amount == 0
+        t2 = _table_info_from_snapshot("1", _snap(tableOnline=None))
+        assert t2.total_amount == 0 and t2.online == 0
+
+    def test_total_amount_zero(self):
+        """平台恒推 0 的现状：如实存 0（数据样本.md：121 次观测全 0）。"""
+        t = _table_info_from_snapshot("1", _snap(
+            tableOnline={"onlineNumber": 6, "totalAmount": 0}))
+        assert t.total_amount == 0 and t.online == 6
+
     def test_good_road_names_complete(self):
         assert GOOD_ROAD_NAMES[1] == "长闲"
         assert GOOD_ROAD_NAMES[2] == "长庄"
