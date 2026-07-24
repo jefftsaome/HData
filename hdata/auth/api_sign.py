@@ -16,7 +16,11 @@ import uuid as _uuid_mod
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_SIGN_JS = _ROOT / "scripts" / "sign_wasm.cjs"
+# 签名脚本真源随包分发（hdata/auth/）；项目根 scripts/ 仅为开发期转发入口，
+# 作 fallback 保险。_ROOT 仍用于 uuid 缓存定位。
+_SIGN_JS_PKG = Path(__file__).resolve().parent / "sign_wasm.cjs"
+_SIGN_JS_DEV = _ROOT / "scripts" / "sign_wasm.cjs"
+_SIGN_JS = _SIGN_JS_PKG if _SIGN_JS_PKG.exists() else _SIGN_JS_DEV
 _UUID_CACHE = _ROOT / ".cache" / "api_uuid.txt"
 
 _NODE = shutil.which("node")
@@ -45,7 +49,7 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
     if not _NODE:
         raise SignError("node 不在 PATH 中，无法生成 X-API-XXX 签名")
     if not _SIGN_JS.exists():
-        raise SignError(f"签名脚本缺失: {_SIGN_JS}")
+        raise SignError(f"签名脚本缺失（已查找包内与项目根）: {_SIGN_JS_PKG} / {_SIGN_JS_DEV}")
 
     p = _normalize_path(path)
     try:

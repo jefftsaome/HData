@@ -190,20 +190,37 @@ Resp.data: {url:"https://api.wnbtmel.com?token=<40hex>",
 - `hdata/auth/api_sign.py`：Python 封装（`sign_path()` / `get_uuid()` / `common_headers()`）。
 - ⚠️ Git Bash 调用需 `MSYS_NO_PATHCONV=1`，否则 `/site/api` 被转成 Windows 路径导致 wasm unreachable。
 
-### 运维记录：2026-07-24 间歇性 unreachable 事件
+### 运维记录：2026-07-24 SignError 事件（两种病因，均已修复）
 
-- **现象**：纯 HTTP 打码登录在 kaptchcate / validateGeeCheckV2 两步抛 `SignError`
-  （node 进程 rc=1，`RuntimeError: unreachable`，wasm-function[62] 调用栈），全链路断。
-- **排查**：站点 wasm 文件与本地 `scripts/wasm_api_sign_bg.wasm` 大小完全一致（61356 字节），
-  导出结构未变（`memory` / `sign` / `__wbindgen_*` / 空名初始化导出均在），
-  手动逐步执行（实例化 → 空名初始化 → sign）成功输出 64 hex。
-- **结论**：wasm 内部依赖 `Date.now()` / `Math.random()`，存在**偶发 unreachable**，
-  当时撞上高发时段；并非平台更换 wasm 或调用约定。次日复测 20/20 成功，
+当天纯 HTTP 打码登录抛 `SignError`、全链路断。排查后确认存在**两个独立病因**：
+
+**病因一（主凶，必现）：签名脚本未打进 wheel。**
+
+- **现象**：从 git 安装 hdata 的环境（如 HSys/crawl-bot）中，`sign_path()` 抛
+  `SignError: 签名脚本缺失: .../site-packages/scripts/sign_wasm.cjs`，
+  HTTP 登录第一步签名就挂，必现。
+- **根因**：`sign_wasm.cjs` 与 `wasm_api_sign_bg.wasm` 原本放在项目根 `scripts/`，
+  不属于 Python 包目录，setuptools 打包时被排除；而 `api_sign.py` 按"包根/scripts"路径查找，
+  源码目录运行正常，一旦安装到 site-packages 就找不到文件。
+- **修复**：两个文件移入 `hdata/auth/`（包内真源），`pyproject.toml` 增加
+  `[tool.setuptools.package-data]` 声明 `*.cjs` / `*.wasm`；`api_sign.py` 改为包内优先、
+  项目根 fallback；项目根 `scripts/sign_wasm.cjs` 改为薄转发入口（CLI 用法不变）。
+  已验证 wheel 内含两个文件，git 安装环境 `sign_path()` 正常。
+
+**病因二（次因，偶发）：wasm 内部偶发 unreachable。**
+
+- **现象**：HData 源码目录直跑 `node scripts/sign_wasm.cjs /site/api prod` 曾出现
+  `RuntimeError: unreachable`（wasm-function[62] 调用栈，rc=1）。
+- **排查**：站点 wasm 与本地文件大小一致（61356 字节），导出结构未变
+  （`memory` / `sign` / `__wbindgen_*` / 空名初始化导出均在），复测 20/20 成功，
   端到端 HTTP 登录全链路通过（pkdqeq.vip:6800，拿到 token + UUID）。
+- **结论**：wasm 内部依赖 `Date.now()` / `Math.random()`，偶发 unreachable 属已知行为，
+  并非平台更换 wasm 或调用约定。
 - **加固**：`sign_wasm.cjs` 重试次数 3 → 6（每次重建实例），覆盖间歇性高发期。
-- **启示**：若再次出现 SignError，先直接跑 `node scripts/sign_wasm.cjs /site/api prod`
-  连试 10 次以上——全部失败才说明平台真改了 wasm/调用方式，再按第四节流程重新逆向；
-  部分失败属正常偶发，重试机制会兜住。
+
+**启示**：再遇 SignError，先看报错文本——"签名脚本缺失"是文件部署问题（查安装包内容）；
+`rc=1 unreachable` 才是 wasm 执行问题，此时直跑 CLI 连试 10 次以上，
+全部失败才说明平台真改了 wasm/调用方式，再按第四节流程重新逆向。
 
 ### 服务端校验强度（对照实验结论）
 
