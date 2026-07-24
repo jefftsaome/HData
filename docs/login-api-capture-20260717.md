@@ -190,6 +190,21 @@ Resp.data: {url:"https://api.wnbtmel.com?token=<40hex>",
 - `hdata/auth/api_sign.py`：Python 封装（`sign_path()` / `get_uuid()` / `common_headers()`）。
 - ⚠️ Git Bash 调用需 `MSYS_NO_PATHCONV=1`，否则 `/site/api` 被转成 Windows 路径导致 wasm unreachable。
 
+### 运维记录：2026-07-24 间歇性 unreachable 事件
+
+- **现象**：纯 HTTP 打码登录在 kaptchcate / validateGeeCheckV2 两步抛 `SignError`
+  （node 进程 rc=1，`RuntimeError: unreachable`，wasm-function[62] 调用栈），全链路断。
+- **排查**：站点 wasm 文件与本地 `scripts/wasm_api_sign_bg.wasm` 大小完全一致（61356 字节），
+  导出结构未变（`memory` / `sign` / `__wbindgen_*` / 空名初始化导出均在），
+  手动逐步执行（实例化 → 空名初始化 → sign）成功输出 64 hex。
+- **结论**：wasm 内部依赖 `Date.now()` / `Math.random()`，存在**偶发 unreachable**，
+  当时撞上高发时段；并非平台更换 wasm 或调用约定。次日复测 20/20 成功，
+  端到端 HTTP 登录全链路通过（pkdqeq.vip:6800，拿到 token + UUID）。
+- **加固**：`sign_wasm.cjs` 重试次数 3 → 6（每次重建实例），覆盖间歇性高发期。
+- **启示**：若再次出现 SignError，先直接跑 `node scripts/sign_wasm.cjs /site/api prod`
+  连试 10 次以上——全部失败才说明平台真改了 wasm/调用方式，再按第四节流程重新逆向；
+  部分失败属正常偶发，重试机制会兜住。
+
 ### 服务端校验强度（对照实验结论）
 
 | 端点 | 真签名 | 假签名/无签名 |

@@ -83,7 +83,9 @@ function signOnce(apiPath, env = "prod") {
 
 // wasm 内部依赖 Date.now()/Math.random()，实测存在偶发 unreachable，
 // 重建实例重试即可（与浏览器端行为一致，浏览器失败时会回退静态表）。
-function sign(apiPath, env = "prod", retries = 3) {
+// 2026-07-24 曾出现 unreachable 高发时段（3 次重试全挂、HTTP 登录断链），
+// 重试提高到 6 次以覆盖间歇性高发期；单次调用约 10ms，6 次成本可忽略。
+function sign(apiPath, env = "prod", retries = 6) {
   let lastErr;
   for (let i = 0; i < retries; i++) {
     try {
