@@ -320,12 +320,17 @@ class GameClient:
     # ── 3. 进桌 ───────────────────────────────────────
 
     async def enter_table(self, table_id: int,
-                          game_type_id: int = 2001) -> "TableSession":
+                          game_type_id: int = 2001,
+                          road_init: str = "") -> "TableSession":
         """进入指定桌台，返回 TableSession（异步上下文管理器）。
 
         Args:
             table_id: 目标桌台 ID（来自 get_tables）
             game_type_id: 游戏类型（默认 2001 经典百家乐）
+            road_init: 可选，进桌前已知的路纸初值（通常取 get_tables()
+                返回项的 road_flat）。401 快照的 beatPlateRoad 进桌瞬间
+                通常为空，传了初值则进桌后 road_flat() 立即可读；
+                第一条 116 全长路纸到达后会重置为权威值。
 
         Returns:
             TableSession — 用 `async with` 进入后:
@@ -340,7 +345,7 @@ class GameClient:
         """
         session = self._require_session()
         conn = _WSConnection(session, on_before_connect=self._refresh_cb)
-        ts = TableSession(conn, table_id, game_type_id)
+        ts = TableSession(conn, table_id, game_type_id, road_init=road_init)
         return ts
 
     async def _refresh_cb(self, session: dict) -> dict:
@@ -892,14 +897,17 @@ class TableSession:
     被踢出（连续5局未投注）时内部自动重进，events() 不中断。
     """
 
-    def __init__(self, conn: _WSConnection, table_id: int, game_type_id: int):
+    def __init__(self, conn: _WSConnection, table_id: int, game_type_id: int,
+                 road_init: str = ""):
         self._conn = conn
         self.table_id = table_id
         self.game_type_id = game_type_id
         self.snapshot: dict = {}
         self._entered = False
         self._leaving = False   # 主动离桌中（防把离桌确认误判为被踢）
-        self._road_accum: list = []   # 珠盘累积（116全长重置 / 107逐局追加）
+        # 珠盘累积（116全长重置 / 107逐局追加）；road_init 为进桌前初值
+        #（通常来自大厅 road_flat），第一条 116 到达后被权威全长覆盖。
+        self._road_accum: list = list(road_init)
         self._last_round_id = 0       # 已入路的最大 roundId（107去重）
 
     async def __aenter__(self) -> "TableSession":

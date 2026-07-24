@@ -134,3 +134,29 @@ def test_round_result_token_garbage():
     assert round_result_token("abc") == ""
     assert round_result_token("1:2") == ""
     assert round_result_token(123) == ""
+
+
+class TestTableSessionRoadInit:
+    """TableSession road_init 初值：401 快照 beatPlateRoad 进桌瞬间通常为空，
+    大厅 road_flat 可作进桌前初值传入，第一条 116 到达后重置为权威全长。"""
+
+    def _make(self, road_init=""):
+        from hdata.client import TableSession
+        return TableSession(None, 2654, 2001, road_init=road_init)
+
+    def test_init_value_readable_immediately(self):
+        ts = self._make(road_init="PPPBTB6BTT")
+        assert ts.road_flat() == "PPPBTB6BTT"
+
+    def test_empty_init_returns_empty(self):
+        ts = self._make()
+        assert ts.road_flat() == ""
+
+    def test_116_full_road_resets_init(self):
+        """116 全长路纸到达后 _road_accum 被权威值置换（模拟 _apply_road 核心路径）。"""
+        ts = self._make(road_init="BBBB")
+        # 构造最小合法 beatPlateRoad 位图（PPB 三局）
+        b64 = _encode_cells([(1, 0b100100), (1, 0b100100), (1, 0b100101)])
+        ts._apply_road(116, {"roadPaper": {"beatPlateRoad": b64}})
+        assert ts.road_flat() != "BBBB"      # 初值已被覆盖
+        assert ts.road_flat() != ""

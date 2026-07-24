@@ -35,7 +35,8 @@ async def main():
         return
     target = bacc[0]
     print(f"[enter] 进桌 {target['table_id']} ...")
-    async with await client.enter_table(target["table_id"], 2001) as ts:
+    async with await client.enter_table(target["table_id"], 2001,
+                                        road_init=target["road_flat"]) as ts:
         snap = ts.snapshot
         print(f"[snapshot] tableName={snap.get('tableName')} "
               f"bootNo={snap.get('bootNo')} roundNo={snap.get('roundNo')} "
