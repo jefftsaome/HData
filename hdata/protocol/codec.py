@@ -144,14 +144,31 @@ def build_message(protocol_id: int, data: dict, *,
     }
 
 
+# 协议 schema 内容哈希（protocolCodecConfig），2026-07-24 浏览器登录帧抓包实录，
+# 与 .cache/h3_schemas.json 各协议 version 字段逐字一致。
+# 键为 {protocolId}_{schema版本}；值为静态值，仅当平台升级协议 schema 时才变，
+# 届时需重新抓包更新（见 docs/数据样本.md"登录请求帧"一节）。
+PROTOCOL_CODEC_CONFIG = {
+    "10053_7": "26695a937138721cdec2878bf9ca16ada04535f16cd1d83d115c95548c558a38",
+    "10089_7": "da3d29a428cf043dbd86724edac7f25c2e9c185ca986812c01003aaf2fce8548",
+    "10073_7": "a5e098a48a2f406aaeac90ff7c7ff5f1832b098507b0e60c7cb0a014c9f5c127",
+    "10075_7": "9c69c9b2566b7700b2aa699aa7662dbbca482eab73c3a15be047ed8e6df1e323",
+    "301_2": "0ea525bf9283b3d65a008cbb340a093d994d7c2862fdf34bebbbadfc92bcc075",
+    "302_2": "5de34be7725f7feca1bcdb09876abcaa804bc9d414837c9b7c040e9c30899927",
+}
+
+
 def build_login_msg(token: str, player_id: int, device_id: str,
                     game_type_id: int = 2013) -> dict:
     """构造登录消息（Fs.Login=10000）。
 
     与浏览器 _sendLogin 一致：
       data = {jwtToken, deviceType: 15, deviceId, timeZoneArea, offsetMinutes,
-              protocolCodecConfig: {}, version: "1.1.1"}
+              protocolCodecConfig: PROTOCOL_CODEC_CONFIG, version: "1.1.1"}
       getRequestDataVO(Fs.Login, data, 2013, 0, playerId, Ot.HALL)
+
+    protocolCodecConfig 历史版本发空表 {}，实测与真实客户端不一致；
+    2026-07-24 起补齐 6 个 schema 哈希（静态常量，见 PROTOCOL_CODEC_CONFIG）。
     """
     offset = -time.timezone // 60 if time.daylight == 0 else -time.altzone // 60
     data = {
@@ -160,7 +177,7 @@ def build_login_msg(token: str, player_id: int, device_id: str,
         "deviceId": device_id,
         "timeZoneArea": "Asia/Shanghai",
         "offsetMinutes": offset,
-        "protocolCodecConfig": {},
+        "protocolCodecConfig": dict(PROTOCOL_CODEC_CONFIG),
         "version": "1.1.1",
     }
     return build_message(FS_LOGIN, data,

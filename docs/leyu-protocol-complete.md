@@ -602,8 +602,16 @@ wss://wsproxy.{backendDomainUrl}/
 ```json
 {"jwtToken": "...", "deviceType": 15, "deviceId": "...",
  "timeZoneArea": "Asia/Shanghai", "offsetMinutes": 480,
- "protocolCodecConfig": {}, "version": "1.1.1"}
+ "protocolCodecConfig": {"10053_7": "<64hex>", "10089_7": "<64hex>",
+   "10073_7": "<64hex>", "10075_7": "<64hex>",
+   "301_2": "<64hex>", "302_2": "<64hex>"},
+ "version": "1.1.1"}
 ```
+
+`protocolCodecConfig` 为 6 个协议 schema 内容哈希（静态值，2026-07-24 抓包实录，
+详见 docs/数据样本.md"登录请求帧"），已固化为 `codec.PROTOCOL_CODEC_CONFIG` 常量；
+hdata 历史版本发空表 `{}`。`deviceId` 为三段式
+`{fixedDeviceId两段}-{每连接随机8位}`（hdata `ensure_device_id_suffix()` 复刻）。
 
 登录成功响应（protocolId=10000, status=1）后，服务器会陆续推大厅数据
 （10028 活动、10011 公告、10040 活动列表等）。

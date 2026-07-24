@@ -1,16 +1,23 @@
-"""端到端冒烟：login → get_tables → enter_table → events。"""
+"""端到端冒烟：login → get_tables → enter_table → events。
+
+环境变量 HDATA_PROXY 可指定代理出口（如 http://127.0.0.1:7890），
+不设置则直连。token 绑定登录 IP，设置后 login/refresh/WS 全程同一出口。
+"""
 import asyncio
+import os
 import sys
 sys.path.insert(0, ".")
 from hdata.client import GameClient
 
 GEEPASS = "5a5ca5f84f0d49d1bde19cea2fd71e425s4e7xtqdlm4gvm7"
 JFBYM = "ZF3_3Gq7as0TRNBEO3DW51m8XIz0dRpXeElLS8FmdU8"
+PROXY = os.environ.get("HDATA_PROXY", "")
 
 
 async def main():
     client = GameClient(entry_url="https://leyu.com",
-                    geepass_token=GEEPASS, jfbym_token=JFBYM)
+                    geepass_token=GEEPASS, jfbym_token=JFBYM,
+                    proxy=PROXY or None)
     s = await client.login("lidongsen1", "lds19830413")
     print(f"[login] OK player_id={s['player_id']} domain={s['domain']} "
           f"backend={s['backend']} exp={s['game_exp']}")

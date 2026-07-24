@@ -51,20 +51,43 @@ DEFAULT_WS_PORT = 18026  # 兼容旧引用，仅作兜底
 WS_STATIC_KEY_SUFFIX = "&platformId=1&applicationId=5&version=v1.0.5"
 
 
-def generate_device_id() -> str:
-    """生成与浏览器端一致格式的 deviceId。
-
-    浏览器逻辑（assets release js）:
-        fixedDeviceId = Date.now().toString() + Math.floor(1e5*(9*Math.random()+1))
-        DEVICE_ID = fixedDeviceId + "-" + Math.floor(1e7*(9*Math.random()+1))
-    即 "{13位毫秒时间戳}{6位随机数}-{8位随机数}"，例如 1783928954151253203-87228064。
-    """
+def _rand_digits(n: int) -> int:
+    """n 位十进制随机数（首位非零）。"""
     import random
+    return random.randint(10 ** (n - 1), 10 ** n - 1)
+
+
+def generate_device_id() -> str:
+    """生成与浏览器端一致格式的完整 deviceId（三段式）。
+
+    浏览器真实客户端（2026-07-24 登录帧抓包实录）:
+        fixedDeviceId = "{13位毫秒时间戳}{6位随机}-{8位随机}"  （首次运行生成并持久化）
+        deviceId      = fixedDeviceId + "-{8位随机}"           （每条 WS 连接第三段重新随机）
+    例如 1784893260093339843-95557669-55953617。
+
+    本函数用于无任何持久化前缀时的全新生成；若已有 fixedDeviceId（如浏览器
+    登录时从 localStorage 取得），应使用 ensure_device_id_suffix() 补第三段。
+    """
     import time
 
-    fixed = f"{int(time.time() * 1000)}{random.randint(100000, 999999)}"
-    suffix = random.randint(10000000, 99999999)
-    return f"{fixed}-{suffix}"
+    fixed = f"{int(time.time() * 1000)}{_rand_digits(6)}-{_rand_digits(8)}"
+    return f"{fixed}-{_rand_digits(8)}"
+
+
+def ensure_device_id_suffix(device_id: str) -> str:
+    """把两段式 fixedDeviceId 补成三段式完整 deviceId；三段原样返回，空则新生成。
+
+    浏览器登录链路持久化的是 fixedDeviceId（两段），真实客户端每条 WS 连接
+    在其后追加一段随机数。本函数复刻该行为：
+      - "1784893260093339843-95557669"           → 追加随机第三段
+      - "1784893260093339843-95557669-55953617"  → 原样返回
+      - ""                                       → generate_device_id()
+    """
+    if not device_id:
+        return generate_device_id()
+    if device_id.count("-") >= 2:
+        return device_id
+    return f"{device_id}-{_rand_digits(8)}"
 
 
 # ── 异常 ──────────────────────────────────────────────
@@ -457,7 +480,7 @@ def build_ws_config(game_session: dict) -> dict:
     token = game_session.get("game_token", "")
     player_id = game_session.get("game_player_id", 0)
     backend = (game_session.get("game_backend", "") or "").strip()
-    device_id = game_session.get("device_id", "") or generate_device_id()
+    device_id = ensure_device_id_suffix(game_session.get("device_id", ""))
 
     # backend 形如 "6pwn4i.com:4999"；wsproxy 子域 + 原端口
     backend_host = backend.split(":")[0] if backend else ""

@@ -190,12 +190,12 @@ class WSSource(DataSource):
 
     async def _try_connect_with_fallback(self) -> bool:
         """尝试连接 WS，主域名失败时轮询备用域名。"""
-        from hdata.auth.session import WS_STATIC_KEY_SUFFIX, generate_device_id
+        from hdata.auth.session import WS_STATIC_KEY_SUFFIX, ensure_device_id_suffix
 
         # 收集所有待尝试的 WS URL
         candidates = [self._ws_url]
         backend_list = self._game_session.get("backend_domain_url_list", "")
-        device_id = self._game_session.get("device_id", "") or generate_device_id()
+        device_id = ensure_device_id_suffix(self._game_session.get("device_id", ""))
         if backend_list:
             for entry in backend_list.split(","):
                 entry = entry.strip()
