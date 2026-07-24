@@ -133,6 +133,23 @@ class GameBrowserLogin:
             current_url = page.url
             logger.info("current URL: {}", current_url[:100])
 
+            # 直奔游戏大厅页：首页不会自动创建游戏 iframe，
+            # 必须进入大厅 URL 才会产生携带 params 的 iframe 请求。
+            # 已登录（持久化 profile）时几秒内即可捕获；未登录时
+            # 大厅地址会重定向回登录页，由 _wait_for_params 轮询兜底。
+            try:
+                from urllib.parse import urlparse as _up
+                _pu = _up(current_url)
+                if _pu.netloc:
+                    _hall = (f"{_pu.scheme}://{_pu.netloc}"
+                             "/game/detail/realbet?enName=YBZR"
+                             "&venueTitle=%E4%B9%90%E9%B1%BC%E7%9C%9F%E4%BA%BA")
+                    logger.info("navigating to hall: {}", _hall[:80])
+                    await page.goto(_hall, wait_until="domcontentloaded",
+                                    timeout=30000)
+            except Exception as _e:
+                logger.warning("hall 直达失败（不影响登录兜底）: {}", _e)
+
             if self._headless:
                 # 自动模式：等待自动跳转到游戏或超时
                 result = await self._wait_for_params(context=context, timeout=60)
@@ -258,6 +275,7 @@ class GameBrowserLogin:
     async def _wait_for_params(self, context, timeout: int) -> dict | None:
         """轮询等待 params URL 被截获，或从页面存储中直接提取 JWT。"""
         deadline = time.time() + timeout
+        last_nav = time.time() + 15  # 首次重导航窗口在 20s 后
         while time.time() < deadline:
             if self._captured_params:
                 return self._decrypt_and_save()
@@ -267,6 +285,28 @@ class GameBrowserLogin:
             fallback = await self._probe_all_pages(context)
             if fallback:
                 return fallback
+
+            # 已登录（localStorage 有 X-API-TOKEN）但还没拿到 params：
+            # 每 20s 重导航一次大厅页，促发游戏 iframe 请求
+            if time.time() - last_nav >= 20:
+                last_nav = time.time()
+                try:
+                    for pg in context.pages:
+                        tok = await pg.evaluate(
+                            "(()=>{try{return localStorage.getItem('X-API-TOKEN')||''}catch(e){return ''}})()")
+                        if not tok:
+                            continue
+                        from urllib.parse import urlparse as _up2
+                        pu = _up2(pg.url)
+                        if pu.netloc and "/game/" not in pu.path:
+                            await pg.goto(
+                                f"{pu.scheme}://{pu.netloc}"
+                                "/game/detail/realbet?enName=YBZR"
+                                "&venueTitle=%E4%B9%90%E9%B1%BC%E7%9C%9F%E4%BA%BA",
+                                wait_until="domcontentloaded", timeout=15000)
+                        break
+                except Exception:
+                    pass
 
             await asyncio.sleep(1)
         return None
