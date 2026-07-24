@@ -70,7 +70,8 @@ class GameBrowserLogin:
     """使用 Playwright 自动化游戏登录 + token 提取。"""
 
     def __init__(self, entry_url: str = DEFAULT_ENTRY_URL, headless: bool = True,
-                 profile_dir: Path | None = None, auth_cache_path: Path | None = None):
+                 profile_dir: Path | None = None, auth_cache_path: Path | None = None,
+                 abort_game_client: bool = True):
         """
         Args:
             entry_url: 游戏入口 URL（默认 https://leyu.me）
@@ -82,6 +83,10 @@ class GameBrowserLogin:
         self._headless = headless
         self._profile_dir = profile_dir or CHROME_PROFILE_DIR
         self._auth_cache_path = auth_cache_path or AUTH_CACHE_PATH
+        # 2026-07-24：平台 token 一次性（jti 单次消费），egret 客户端
+        # 一旦加载就会消费掉 token；True 时捕获 params 后立即 abort
+        # 游戏 iframe 请求，token 留给采集程序使用
+        self._abort_game_client = abort_game_client
         self._captured_params: str = ""
         self._captured_ttl: str = ""
         self._captured_url: str = ""
@@ -115,6 +120,9 @@ class GameBrowserLogin:
             # ── 拦截网络请求，捕获 params URL ──
             context.on("request", self._on_request)
             page.on("request", self._on_request)
+
+            # 路由拦截：捕获 params 后阻断游戏客户端加载，保住 token
+            await context.route("**/*", self._route_intercept)
 
             # ── 导航到入口 ──
             logger.info("navigating to: {}", self._entry_url)
@@ -210,6 +218,31 @@ class GameBrowserLogin:
                     bool(domain_str), x_api_token[:30] if x_api_token else "NO",
                     bool(uuid_val), len(all_cookies))
         return result
+
+    async def _route_intercept(self, route, request):
+        """路由拦截：截获携带 params 的游戏 iframe 请求并阻断其加载。
+
+        平台 game_token 为 jti 单次消费：egret 客户端 WS 登录后
+        token 即作废，采集程序将无法再用。因此在捕获 params/ttl 后
+        直接 abort iframe 文档请求，让 token 保持未消费状态。
+        """
+        url = request.url
+        if self._abort_game_client and "params=" in url and "/egret" in url:
+            params, ttl = self._extract_params_ttl_from_url(url)
+            if params:
+                self._captured_params = params
+                self._captured_ttl = ttl
+                self._captured_url = url
+                logger.info("captured params URL (aborting game client): {}", url[:80])
+            try:
+                await route.abort()
+            except Exception:
+                pass
+            return
+        try:
+            await route.continue_()
+        except Exception:
+            pass
 
     def _on_request(self, request):
         """拦截 Playwright 网络请求，捕获 params URL。"""
