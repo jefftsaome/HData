@@ -97,6 +97,10 @@ class GameBrowserLogin:
             context = await p.chromium.launch_persistent_context(
                 user_data_dir=str(self._profile_dir),
                 headless=self._headless,
+                # 种子站域名/证书由平台动态轮换，入口常出现证书与域名
+                # 不匹配（ERR_CERT_AUTHORITY_INVALID）；登录流程靠后续
+                # 重定向发现真实域名，必须容忍入口证书异常才能走下去
+                ignore_https_errors=True,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
