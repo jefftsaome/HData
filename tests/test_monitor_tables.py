@@ -208,3 +208,60 @@ async def test_rotate_fallback_single_shard_reenter_same_account(monkeypatch):
     assert "note" in ev["data"]
     assert [t["table_id"] for t in src._tables] == [100]  # 桌回到原分片
     await agen.aclose()
+
+
+# ── 分片级故障隔离（2026-07-25 断线重连优化） ──
+
+
+class _FailConn(_KickConn):
+    """recv 即断的假连接：模拟 WS 底层断开。"""
+
+    async def recv(self):
+        raise OSError("connection reset")
+
+
+async def test_shard_failure_does_not_end_merged_stream(monkeypatch):
+    """单片掉线：合并流产出带 account 的 error 事件后不终止，
+    其余分片的事件照常到达（旧 done.set() bug 会在此终止全流）。"""
+    client = _make_client(monkeypatch, extra_accounts=0)
+    client._session["account"] = "acc0"
+    mon = await client.monitor_tables(
+        [], accounts=[{"account": "a0", "password": "p"}],
+        kick_policy="rotate")
+    # 首片换坏连接，次片保持可推帧的好连接
+    bad, good = mon._shards[0], mon._shards[1]
+    bad._conn = _FailConn(bad._conn._session)
+    good._conn = _KickConn(good._conn._session)
+    good._tables.append({"table_id": 100, "game_type_id": 2001})
+    await good.__aenter__()
+
+    good._conn.frames.put_nowait(_kick_frame(100))
+    agen = mon.events()
+    seen = [await asyncio.wait_for(agen.__anext__(), timeout=2)
+            for _ in range(2)]
+    err = next(e for e in seen if e["type"] == "error")
+    assert err["data"]["account"] == "acc0"       # 故障来源可定位
+    kick = next(e for e in seen if e["type"] == "kick")
+    assert kick["table_id"] == 100                # 好片事件照常到达
+    # 流不终止：后续取事件是超时而非 StopAsyncIteration
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(agen.__anext__(), timeout=1.2)
+    await agen.aclose()
+
+
+async def test_stream_ends_only_when_all_shards_dead(monkeypatch):
+    """全部分片都死掉后，合并事件流才自然结束。"""
+    client = _make_client(monkeypatch)
+    client._session["account"] = "acc0"
+    mon = await client.monitor_tables(
+        [], accounts=[{"account": "a0", "password": "p"}],
+        kick_policy="rotate")
+    for shard in mon._shards:
+        shard._conn = _FailConn(shard._conn._session)
+
+    agen = mon.events()
+    errs = []
+    with pytest.raises(StopAsyncIteration):
+        while True:
+            errs.append(await asyncio.wait_for(agen.__anext__(), timeout=2))
+    assert {e["data"]["account"] for e in errs} == {"acc0", "a0"}

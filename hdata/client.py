@@ -1249,8 +1249,13 @@ class MultiTableSession:
         while True:
             try:
                 frame = await self._conn.recv()
-            except Exception:
-                return
+            except Exception as e:
+                # 连接断开必须上抛（TableMonitor 合并层捕获后转成带账号的
+                # error 事件）。此前静默 return：分片死了但本迭代"正常
+                # 结束"，外层分不清"单片掉线"和"全片结束"，只能全量重建
+                # （streak 侧 97 桌批量掉线事故的放大链第一环）。
+                raise ConnectionError(
+                    f"[{self.account}] 分片连接中断: {e}") from e
             if not frame:
                 continue
             pid = frame.get("protocolId")
@@ -1514,9 +1519,10 @@ class TableMonitor:
         事件 data.action 标记 rotated / auto_reenter / rotate_failed。
         """
         queue: asyncio.Queue = asyncio.Queue()
-        done = asyncio.Event()
+        remaining = len(self._shards)       # 仍在运行的分片转发任务数
 
         async def pump(shard: MultiTableSession):
+            nonlocal remaining
             try:
                 async for ev in shard.events():
                     if self._rotate and ev.get("type") == "kick" \
@@ -1526,10 +1532,17 @@ class TableMonitor:
                     if self._closed:
                         return
             except Exception as e:
+                # 分片级故障只上报本分片（data.account 标识来源），
+                # 不再终止整体事件流；由调用方决定重建单片还是全部。
                 await queue.put({"type": "error", "protocol_id": 0,
-                                 "table_id": 0, "data": {"error": str(e)}})
+                                 "table_id": 0,
+                                 "data": {"error": str(e),
+                                          "account": shard.account}})
             finally:
-                done.set()
+                # 注意：这里绝不能是"任一 pump 结束就置全局完成标志"
+                # （旧 done.set() 的 bug）——单片掉线会把整个合并流
+                # 掐断，迫使调用方全量重建（streak 批量掉线事故根因）。
+                remaining -= 1
 
         tasks = [asyncio.create_task(pump(s)) for s in self._shards]
         try:
@@ -1537,7 +1550,8 @@ class TableMonitor:
                 try:
                     ev = await asyncio.wait_for(queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    if self._closed or (done.is_set() and queue.empty()):
+                    # 全部分片都结束且队列排空才收尾；单片结束不影响其他片
+                    if self._closed or (remaining <= 0 and queue.empty()):
                         break
                     continue
                 yield ev
