@@ -82,6 +82,18 @@ def bind(account: str = "", strategy: str = "", run_id=None):
         _ctx.reset(token)
 
 
+def set_context(**kv) -> None:
+    """持久绑定上下文（无 reset）：进程/任务级默认值。
+
+    供采集入口在创建子任务前调用（contextvars 会随任务创建传播），
+    用法：login_trace.set_context(strategy="streak")；
+    account/run_id 等随调用点变化的字段仍用 bind() 临时绑定。
+    """
+    merged = {**_ctx.get()}
+    merged.update({k: v for k, v in kv.items() if v not in (None, "")})
+    _ctx.set(merged)
+
+
 def set_sink(fn) -> None:
     """接走事件：fn(event_dict)，sync 调用、必须快速非阻塞（可 put_nowait）。
 
