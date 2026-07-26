@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import asyncio
 import json
 import re
 import time
@@ -515,6 +516,27 @@ class LoginError(SessionError):
     """登录失败。"""
 
 
+def _classify_http_login_stage(exc: Exception) -> str:
+    """从打码登录异常的文本启发式判断失败阶段（写日志用）。
+
+    依据：curl_cffi 的 Timeout/网络异常消息通常带 URL——
+    botion/geetest 域名 = geetest 验证码加载/求解；
+    /user/login 路径 = 登录请求；jwt/backend = game_token 刷新；
+    leyu 入口/域名相关 = 域名解析。判不出就如实说"未知"。
+    """
+    s = str(exc).lower()
+    name = type(exc).__name__
+    if "botion" in s or "geetest" in s or "captcha" in s:
+        return "geetest 验证码加载/求解"
+    if "/user/login" in s or "login" in s:
+        return "登录请求"
+    if "jwt" in s or "backend" in s:
+        return "game_token 刷新"
+    if "leyu" in s or "domain" in s:
+        return "域名解析"
+    return f"未知（{name}；多为验证码求解或登录请求网络超时）"
+
+
 async def get_login(account: str, password: str = "",
                     entry_url: str = "", force_refresh: bool = False,
                     captcha_token: str = "", geepass_token: str = "",
@@ -582,52 +604,71 @@ async def get_login(account: str, password: str = "",
 
     # ── 2. HTTP 打码登录（如果提供了平台 token）──
     if password and (geepass_token or legacy_jfbym_token):
-        try:
-            from hdata.auth.http_login import login as http_login
-            logger.info(f"[{account}] get_login: trying HTTP login with captcha")
-            http_session = await http_login(
-                account,
-                password,
-                geepass_token=geepass_token,
-                jfbym_token=legacy_jfbym_token,
-                proxy=proxy or "",
-            )
-            if http_session and http_session.get("token"):
-                # HTTP login 返回的是 session-level 数据，需要补 game 字段
-                result = dict(http_session)
-                result["account"] = account
-                result["source"] = "http_login"
-                result["proxy"] = proxy or ""
-                # 补 game 字段：用 session 去刷新 game_token
-                game_token_ok = False
-                try:
-                    params = await refresh_game_session(account, result)
-                    new_token = params["token"]
-                    result["game_token"] = new_token
-                    if params.get("backendDomainUrl"):
-                        result["game_backend"] = params["backendDomainUrl"]
-                    if params.get("backendDomainUrlList"):
-                        result["backend_domain_url_list"] = params["backendDomainUrlList"]
-                    jwt_info = decode_jwt(new_token)
-                    if jwt_info:
-                        result["game_exp"] = jwt_info.get("exp", 0)
-                        sub = jwt_info.get("sub", {})
-                        if isinstance(sub, dict):
-                            result["game_player_id"] = sub.get("playerId", 0)
-                    game_token_ok = True
-                except TokenRefreshError:
-                    logger.warning(f"[{account}] HTTP login OK but game_token refresh failed")
-                if game_token_ok:
-                    save_session(account, result)
-                    logger.info(f"[{account}] get_login: HTTP login success")
-                    return result
-                # game_token 刷新失败 → 降级到浏览器登录
-                logger.info(f"[{account}] get_login: game_token refresh failed, fall to browser")
-        except Exception as e:
-            logger.warning(
-                f"[{account}] get_login: HTTP login stage failed "
-                f"({type(e).__name__}), fall to browser"
-            )
+        http_session = None
+        for attempt in (1, 2):
+            try:
+                from hdata.auth.http_login import login as http_login
+                logger.info(f"[{account}] get_login: trying HTTP login with captcha"
+                            + ("（超时自动重试）" if attempt == 2 else ""))
+                http_session = await http_login(
+                    account,
+                    password,
+                    geepass_token=geepass_token,
+                    jfbym_token=legacy_jfbym_token,
+                    proxy=proxy or "",
+                )
+                break
+            except Exception as e:
+                stage = _classify_http_login_stage(e)
+                if attempt == 1:
+                    # 打码链路偶发超时（geetest 加载/求解、登录请求），
+                    # 多数几秒内自愈——转浏览器前自动重试 1 次
+                    logger.warning(
+                        f"[{account}] get_login: HTTP login stage failed "
+                        f"({type(e).__name__}, 阶段={stage})，5s 后重试 1 次"
+                    )
+                    await asyncio.sleep(5)
+                else:
+                    logger.warning(
+                        f"[{account}] get_login: HTTP login retry failed "
+                        f"({type(e).__name__}, 阶段={stage}), fall to browser"
+                    )
+        if http_session and http_session.get("token"):
+            # HTTP login 返回的是 session-level 数据，需要补 game 字段
+            result = dict(http_session)
+            result["account"] = account
+            result["source"] = "http_login"
+            result["proxy"] = proxy or ""
+            # 补 game 字段：用 session 去刷新 game_token
+            game_token_ok = False
+            try:
+                params = await refresh_game_session(account, result)
+                new_token = params["token"]
+                result["game_token"] = new_token
+                if params.get("backendDomainUrl"):
+                    result["game_backend"] = params["backendDomainUrl"]
+                if params.get("backendDomainUrlList"):
+                    result["backend_domain_url_list"] = params["backendDomainUrlList"]
+                jwt_info = decode_jwt(new_token)
+                if jwt_info:
+                    result["game_exp"] = jwt_info.get("exp", 0)
+                    sub = jwt_info.get("sub", {})
+                    if isinstance(sub, dict):
+                        result["game_player_id"] = sub.get("playerId", 0)
+                game_token_ok = True
+            except TokenRefreshError:
+                logger.warning(f"[{account}] HTTP login OK but game_token refresh failed")
+            except Exception as e:
+                # 刷新接口网络超时等（此前会冒泡成"HTTP 登录失败"误报）
+                logger.warning(
+                    f"[{account}] HTTP login OK but game_token refresh error "
+                    f"({type(e).__name__}, 阶段=game_token 刷新): {e}")
+            if game_token_ok:
+                save_session(account, result)
+                logger.info(f"[{account}] get_login: HTTP login success")
+                return result
+            # game_token 刷新失败 → 降级到浏览器登录
+            logger.info(f"[{account}] get_login: game_token refresh failed, fall to browser")
 
     # ── 3. 浏览器登录 ──
     if not password:
@@ -664,6 +705,7 @@ async def get_login(account: str, password: str = "",
         headless=False,
         profile_dir=profile_dir,
         auth_cache_path=auth_cache_path,
+        account=account,
     )
     result = await bot.run()
     if not result:

@@ -62,6 +62,12 @@ CHROME_PROFILE_DIR = _PROJ_ROOT / ".chrome_profile"
 AUTH_CACHE_PATH = _PROJ_ROOT / ".auth_cache.json"
 # 缓存目录
 CACHE_DIR = _PROJ_ROOT / ".cache"
+# 等待人工登录时的日志心跳间隔（秒）
+WAIT_HEARTBEAT_S = 30
+# 已登录但未捕获到 params 时，重导航大厅的间隔（秒）
+RENAV_INTERVAL_S = 20
+# 首次重导航前的宽限（秒）：留给首次页面加载/人工登录的时间
+FIRST_RENAV_DELAY_S = 15
 
 # ── 核心逻辑 ──────────────────────────────────────────────
 
@@ -71,18 +77,20 @@ class GameBrowserLogin:
 
     def __init__(self, entry_url: str = DEFAULT_ENTRY_URL, headless: bool = True,
                  profile_dir: Path | None = None, auth_cache_path: Path | None = None,
-                 abort_game_client: bool = True):
+                 abort_game_client: bool = True, account: str = ""):
         """
         Args:
             entry_url: 游戏入口 URL（默认 https://leyu.me）
             headless: 是否无头模式（True=不显示浏览器窗口）
             profile_dir: 浏览器配置目录（用于持久化登录态）
             auth_cache_path: 认证缓存路径（保存解密后的 token 等信息）
+            account: 账号名（可选，仅用于日志标识是哪个账号在登录）
         """
         self._entry_url = entry_url
         self._headless = headless
         self._profile_dir = profile_dir or CHROME_PROFILE_DIR
         self._auth_cache_path = auth_cache_path or AUTH_CACHE_PATH
+        self._account = account
         # 2026-07-24：平台 token 一次性（jti 单次消费），egret 客户端
         # 一旦加载就会消费掉 token；True 时捕获 params 后立即 abort
         # 游戏 iframe 请求，token 留给采集程序使用
@@ -90,6 +98,10 @@ class GameBrowserLogin:
         self._captured_params: str = ""
         self._captured_ttl: str = ""
         self._captured_url: str = ""
+
+    def _tag(self) -> str:
+        """日志账号标签（未传账号时为 '?'）。"""
+        return self._account or "?"
 
     async def run(self) -> dict | None:
         """执行登录/刷新流程，返回解密后的认证数据（含 session 信息）。"""
@@ -115,7 +127,7 @@ class GameBrowserLogin:
                 locale="zh-CN",
             )
 
-            page = context.pages[0] if context.pages else await context.new_page()
+            page = await self._fresh_page(context)
 
             # ── 拦截网络请求，捕获 params URL ──
             context.on("request", self._on_request)
@@ -163,6 +175,23 @@ class GameBrowserLogin:
 
             await context.close()
             return result
+
+    async def _fresh_page(self, context):
+        """关闭持久化 profile 恢复的残留标签页，返回一个干净新页。
+
+        平台每次轮换域名，profile 恢复的可能是旧域名（如 lyvip464.com）
+        页面——在旧页面上登录/探测都会失败或拿到错域名的凭证。
+        """
+        stale = list(context.pages)
+        for sp in stale:
+            try:
+                await sp.close()
+            except Exception:
+                pass
+        if stale:
+            logger.info("[{}] 关闭残留标签页 {} 个（持久化 profile 恢复的旧页面）",
+                        self._tag(), len(stale))
+        return await context.new_page()
 
     async def _enrich_with_session(self, context, result: dict) -> dict:
         """捕获浏览器 session 数据，合并到 result 中。"""
@@ -250,7 +279,8 @@ class GameBrowserLogin:
                 self._captured_params = params
                 self._captured_ttl = ttl
                 self._captured_url = url
-                logger.info("captured params URL (aborting game client): {}", url[:80])
+                logger.info("✅ [{}] 浏览器登录成功，即将自动关闭浏览器"
+                            "（已截获凭证并阻断游戏客户端加载）", self._tag())
             try:
                 await route.abort()
             except Exception:
@@ -270,12 +300,15 @@ class GameBrowserLogin:
                 self._captured_params = params
                 self._captured_ttl = ttl
                 self._captured_url = url
-                logger.info("captured params URL: {}", url[:100])
+                logger.info("✅ [{}] 浏览器登录成功，即将自动关闭浏览器"
+                            "（captured params URL）", self._tag())
 
     async def _wait_for_params(self, context, timeout: int) -> dict | None:
         """轮询等待 params URL 被截获，或从页面存储中直接提取 JWT。"""
         deadline = time.time() + timeout
-        last_nav = time.time() + 15  # 首次重导航窗口在 20s 后
+        started = time.time()
+        last_beat = time.time()
+        last_nav = time.time() + FIRST_RENAV_DELAY_S  # 首次重导航前的宽限
         while time.time() < deadline:
             if self._captured_params:
                 return self._decrypt_and_save()
@@ -287,8 +320,9 @@ class GameBrowserLogin:
                 return fallback
 
             # 已登录（localStorage 有 X-API-TOKEN）但还没拿到 params：
-            # 每 20s 重导航一次大厅页，促发游戏 iframe 请求
-            if time.time() - last_nav >= 20:
+            # 每 RENAV_INTERVAL_S 重导航一次大厅页，促发游戏 iframe 请求。
+            # 页面会自动跳转是程序在干活，不是登录丢了——日志先行告知。
+            if time.time() - last_nav >= RENAV_INTERVAL_S:
                 last_nav = time.time()
                 try:
                     for pg in context.pages:
@@ -299,16 +333,38 @@ class GameBrowserLogin:
                         from urllib.parse import urlparse as _up2
                         pu = _up2(pg.url)
                         if pu.netloc and "/game/" not in pu.path:
-                            await pg.goto(
-                                f"{pu.scheme}://{pu.netloc}"
-                                "/game/detail/realbet?enName=YBZR"
-                                "&venueTitle=%E4%B9%90%E9%B1%BC%E7%9C%9F%E4%BA%BA",
-                                wait_until="domcontentloaded", timeout=15000)
+                            logger.info("[{}] 检测到登录态，正在进入大厅捕获凭证"
+                                        "（页面会自动跳转，请勿操作）…", self._tag())
+                            try:
+                                await pg.goto(
+                                    f"{pu.scheme}://{pu.netloc}"
+                                    "/game/detail/realbet?enName=YBZR"
+                                    "&venueTitle=%E4%B9%90%E9%B1%BC%E7%9C%9F%E4%BA%BA",
+                                    wait_until="domcontentloaded", timeout=15000)
+                            except Exception as _ge:
+                                logger.warning("[{}] 大厅跳转失败"
+                                               f"（{RENAV_INTERVAL_S}s 后重试）: "
+                                               "{}", self._tag(), _ge)
                         break
                 except Exception:
                     pass
 
+            # 心跳：让用户知道程序没死、还在等人工登录
+            if time.time() - last_beat >= WAIT_HEARTBEAT_S:
+                last_beat = time.time()
+                waited = time.time() - started
+                if self._headless:
+                    logger.info("[{}] 等待浏览器自动跳转…"
+                                "（已等待 {:.0f}s/{}s）",
+                                self._tag(), waited, timeout)
+                else:
+                    logger.info("[{}] 等待在浏览器中完成登录…"
+                                "（已等待 {:.0f}s/{}s）",
+                                self._tag(), waited, timeout)
+
             await asyncio.sleep(1)
+        logger.warning("[{}] 等待凭证超时（{}s），未捕获到登录态",
+                       self._tag(), timeout)
         return None
 
     async def _probe_all_pages(self, context) -> dict | None:
@@ -326,7 +382,8 @@ class GameBrowserLogin:
                     self._captured_params = params
                     self._captured_ttl = ttl
                     self._captured_url = url
-                    logger.info("captured params URL from page: {}", url[:100])
+                    logger.info("✅ [{}] 浏览器登录成功，即将自动关闭浏览器"
+                                "（captured params URL from page）", self._tag())
                     return self._decrypt_and_save()
 
             # 2) 再看 localStorage/window.urlParams 是否已有 game JWT
@@ -419,7 +476,9 @@ class GameBrowserLogin:
             # 回写 WS-only 缓存（兼容旧逻辑）
             game_snap = build_auth_snapshot(token, player_id, backend, source="page_storage")
             save_auth_cache(game_snap, self._auth_cache_path)
-            logger.info("extracted game JWT from page storage and saved to auth cache: {}", self._auth_cache_path)
+            logger.info("✅ [{}] 浏览器登录成功，即将自动关闭浏览器"
+                        "（extracted game JWT from page storage, saved to {}）",
+                        self._tag(), self._auth_cache_path)
             return result
 
         return None
@@ -518,6 +577,7 @@ async def main():
         headless=headless,
         profile_dir=profile_dir,
         auth_cache_path=auth_cache_path,
+        account=args.account,
     )
 
     try:
