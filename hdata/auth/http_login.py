@@ -46,6 +46,7 @@ from hdata.auth.domain import resolve_domain as _resolve_domain
 from hdata.auth.geetest_signer import generate_w
 from hdata.auth.api_sign import common_headers
 from hdata.auth.fingerprint import leyu_finger
+from hdata.auth import login_trace
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 
@@ -105,11 +106,25 @@ async def _solve_captcha(
     failures = []
     for solver in solvers:
         name = solver.info().name
+        t0 = time.monotonic()
         try:
             solution = await solver.solve(challenge)
             solution.solver_name = name
+            login_trace.emit(
+                "captcha_solve", method="POST",
+                url=getattr(solver, "_url", ""),
+                elapsed_ms=int((time.monotonic() - t0) * 1000), ok=True,
+                summary={"solver": name}, source=name)
             return solution
         except Exception as exc:
+            # 只留平台 API 调用结果；素材图（static.botion.com）下载不留底
+            login_trace.emit(
+                "captcha_solve", method="POST",
+                url=getattr(solver, "_url", ""),
+                elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+                summary={"solver": name, "error": type(exc).__name__,
+                         "reason": getattr(exc, "reason", "")},
+                source=name)
             failures.append(f"{name}: {type(exc).__name__}")
     raise CaptchaSolveError("solver-chain", "all solvers failed", "; ".join(failures))
 
@@ -147,12 +162,17 @@ async def _verify_captcha(load_data: dict, coords: str,
     }
 
     network_error = ""
+    t0 = time.monotonic()
     try:
         text = cr.get(url, impersonate="chrome110", headers=headers,
                       timeout=30, proxies=_px(proxy)).text
     except Exception as exc:
         network_error = type(exc).__name__
     if network_error:
+        login_trace.emit(
+            "captcha_verify", method="GET", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": network_error}, source="http_login")
         raise VerifyError(
             "network_error",
             reason=network_error,
@@ -161,6 +181,10 @@ async def _verify_captcha(load_data: dict, coords: str,
 
     match = re.search(r"^[^(]+\((.*)\)$", text, re.DOTALL)
     if not match:
+        login_trace.emit(
+            "captcha_verify", method="GET", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_jsonp"}, source="http_login")
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
     payload = None
     json_error = False
@@ -169,13 +193,25 @@ async def _verify_captcha(load_data: dict, coords: str,
     except json.JSONDecodeError:
         json_error = True
     if json_error:
+        login_trace.emit(
+            "captcha_verify", method="GET", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_jsonp"}, source="http_login")
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
 
     if not isinstance(payload, Mapping):
+        login_trace.emit(
+            "captcha_verify", method="GET", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_jsonp"}, source="http_login")
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
 
     data = payload.get("data")
     if not isinstance(data, Mapping):
+        login_trace.emit(
+            "captcha_verify", method="GET", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_jsonp"}, source="http_login")
         raise VerifyError("invalid_jsonp", diagnostics=diagnostics)
 
     raw_result = data.get("result")
@@ -188,6 +224,12 @@ async def _verify_captcha(load_data: dict, coords: str,
         fail_count = int(data.get("fail_count") or 0)
     except (TypeError, ValueError):
         fail_count = 0
+    login_trace.emit(
+        "captcha_verify", method="GET", url=url,
+        elapsed_ms=int((time.monotonic() - t0) * 1000),
+        ok=result == "success",
+        summary={"result": result, "fail_count": fail_count},
+        source="http_login")
     if result != "success":
         raise VerifyError(result, fail_count, diagnostics=diagnostics)
 
@@ -210,9 +252,11 @@ def _safe_status_code(value: object) -> int | str:
 
 def _kaptchcate(domain: str, proxy: str = "", tag: str = "") -> bool:
     """验证码预注册（浏览器在每次弹验证码前必调，status_code 6022 为成功）。"""
+    url = f"{domain}/site/api/v1/user/member/kaptchcate"
+    t0 = time.monotonic()
     try:
         resp = cr.post(
-            f"{domain}/site/api/v1/user/member/kaptchcate",
+            url,
             json={"kType": 4},
             headers=common_headers("/site/api/v1/user/member/kaptchcate",
                                    domain=domain),
@@ -224,8 +268,16 @@ def _kaptchcate(domain: str, proxy: str = "", tag: str = "") -> bool:
         ok = isinstance(body, Mapping) and body.get("status_code") == 6022
         logger.debug("{}kaptchcate: {}",
                      tag, "success" if ok else f"unexpected {body.get('status_code')}")
+        login_trace.emit(
+            "kaptchcate", method="POST", url=url, status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=ok,
+            summary=body, source="http_login")
         return ok
     except Exception as exc:
+        login_trace.emit(
+            "kaptchcate", method="POST", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": type(exc).__name__}, source="http_login")
         logger.warning("{}kaptchcate: failed exception={}", tag, type(exc).__name__)
         return False
 
@@ -251,6 +303,7 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
         "pass_token": seccode.get("pass_token", ""),
     }
 
+    t0 = time.monotonic()
     try:
         resp = cr.post(
             validate_url,
@@ -263,6 +316,10 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
             proxies=_px(proxy),
         )
     except Exception as exc:
+        login_trace.emit(
+            "validate_geecheck", method="POST", url=validate_url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": type(exc).__name__}, source="http_login")
         logger.warning("{}validateGeeCheckV2: failed stage=validate exception={}",
                        tag, type(exc).__name__)
         return ""
@@ -270,13 +327,25 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
     try:
         vresp = resp.json()
     except Exception as exc:
+        login_trace.emit(
+            "validate_geecheck", method="POST", url=validate_url,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_json"}, source="http_login")
         logger.warning("{}validateGeeCheckV2: failed stage=validate exception={}",
                        tag, type(exc).__name__)
         return ""
     raw_status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
     status_code = _safe_status_code(raw_status_code)
 
-    if status_code == 6000:
+    ok = status_code == 6000
+    login_trace.emit(
+        "validate_geecheck", method="POST", url=validate_url,
+        status=resp.status_code,
+        elapsed_ms=int((time.monotonic() - t0) * 1000), ok=ok,
+        summary=vresp, source="http_login")
+
+    if ok:
         # captcha_args.user_ip 是服务端看到的出口 IP，用于计算 X-API-FINGER
         data = vresp.get("data", {}) if isinstance(vresp, Mapping) else {}
         args = data.get("captcha_args", {}) if isinstance(data, Mapping) else {}
@@ -308,6 +377,7 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
             finger = ""
 
     try:
+        t0 = time.monotonic()
         resp = cr.post(
             login_url,
             json=login_body,
@@ -319,23 +389,38 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
             proxies=_px(proxy),
         )
     except Exception as exc:
+        login_trace.emit(
+            "login", method="POST", url=login_url, account=user,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": type(exc).__name__}, source="http_login")
         logger.warning("{}login: failed stage=login exception={}", tag, type(exc).__name__)
         return None
 
     try:
         lresp = resp.json()
     except Exception as exc:
+        login_trace.emit(
+            "login", method="POST", url=login_url, account=user,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_json"}, source="http_login")
         logger.warning("{}login: failed stage=login exception={}", tag, type(exc).__name__)
         return None
 
     raw_status_code = lresp.get("status_code") if isinstance(lresp, Mapping) else None
     status_code = _safe_status_code(raw_status_code)
+    login_data = lresp.get("data", {}) if isinstance(lresp, Mapping) else {}
+    token = login_data.get("token", "") if isinstance(login_data, Mapping) else ""
+    login_trace.emit(
+        "login", method="POST", url=login_url, account=user,
+        status=resp.status_code,
+        elapsed_ms=int((time.monotonic() - t0) * 1000),
+        ok=bool(status_code == 6000 and token),
+        summary=lresp, source="http_login")
     if status_code != 6000:
         logger.warning("{}login: failed stage=login status={}", tag, status_code)
         return None
 
-    login_data = lresp.get("data", {}) if isinstance(lresp, Mapping) else {}
-    token = login_data.get("token", "") if isinstance(login_data, Mapping) else ""
     if not token:
         logger.warning("{}login: no token in response", tag)
         return None
@@ -346,9 +431,11 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
 
 def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "") -> str:
     """从 JWT API 获取 UUID。"""
+    url = f"{domain}/site/api/v1/user/member/jwt"
+    t0 = time.monotonic()
     try:
         resp = cr.post(
-            f"{domain}/site/api/v1/user/member/jwt",
+            url,
             headers=common_headers(
                 "/site/api/v1/user/member/jwt", token=api_token, domain=domain,
                 referer_path="/",
@@ -366,8 +453,24 @@ def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "") -> st
                     payload = json.loads(
                         base64.urlsafe_b64decode(parts[1] + "==")
                     )
-                    return payload.get("uuid", "")
+                    uuid_val = payload.get("uuid", "")
+                    login_trace.emit(
+                        "get_uuid", method="POST", url=url,
+                        status=resp.status_code,
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                        ok=bool(uuid_val),
+                        summary={"uuid": uuid_val, "jwt_len": len(site_jwt)},
+                        source="http_login")
+                    return uuid_val
+        login_trace.emit(
+            "get_uuid", method="POST", url=url, status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "no_jwt_or_bad_format"}, source="http_login")
     except Exception as exc:
+        login_trace.emit(
+            "get_uuid", method="POST", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": type(exc).__name__}, source="http_login")
         logger.warning("{}UUID 获取失败: stage=uuid exception={}", tag, type(exc).__name__)
 
     return ""
@@ -405,6 +508,25 @@ async def login(
     Returns:
         {"token": ..., "uuid": ..., "domain": ..., "lot_number": ...} 或 None
     """
+    # 绑定留底上下文：整条链路（打码/校验/登录/JWT）的埋点事件都带账号
+    with login_trace.bind(account=user):
+        return await _login_inner(
+            user, pwd, captcha_token,
+            geepass_token=geepass_token, jfbym_token=jfbym_token,
+            max_retries=max_retries, proxy=proxy)
+
+
+async def _login_inner(
+    user: str,
+    pwd: str,
+    captcha_token: str = "",
+    *,
+    geepass_token: str = "",
+    jfbym_token: str = "",
+    max_retries: int = 3,
+    proxy: str = "",
+) -> Optional[dict]:
+    """login() 的实现体（账号上下文由外层绑定）。"""
     tag = f"[{user}] "
     pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
     domain = _get_domain()

@@ -33,6 +33,7 @@ from hdata.auth.params import (
     extract_params_from_url,
     validate_game_token,
 )
+from hdata.auth import login_trace
 from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -304,6 +305,7 @@ async def refresh_game_session(account: str, session: dict) -> dict:
     proxy = session.get("proxy") or ""
     proxies = {"http": proxy, "https": proxy} if proxy else None
 
+    t0 = time.monotonic()
     request_error = None
     try:
         resp = requests.post(
@@ -315,11 +317,20 @@ async def refresh_game_session(account: str, session: dict) -> dict:
             proxies=proxies,
         )
     except Exception as exc:
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": type(exc).__name__}, source="token_refresh")
         request_error = _refresh_error("venue_launch", exc=exc)
     if request_error:
         raise request_error
 
     if resp.status_code != 200:
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "bad_status"}, source="token_refresh")
         raise _refresh_error("venue_launch", status=resp.status_code)
 
     parse_error = None
@@ -329,14 +340,29 @@ async def refresh_game_session(account: str, session: dict) -> dict:
     except Exception as exc:
         parse_error = _refresh_error("venue_launch_parse", exc=exc)
     if parse_error:
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_json"}, source="token_refresh")
         raise parse_error
 
     if not game_url or "params=" not in game_url:
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "no_params_in_url"}, source="token_refresh")
         raise _refresh_error("venue_launch_params")
 
     # 提取并解密 params
     params_b64, ttl = extract_params_from_url(game_url)
     if not params_b64 or not ttl:
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "params_extract"}, source="token_refresh")
         raise _refresh_error("params_extract")
 
     decrypt_error = None
@@ -345,14 +371,35 @@ async def refresh_game_session(account: str, session: dict) -> dict:
     except Exception as exc:
         decrypt_error = _refresh_error("params_decrypt", exc=exc)
     if decrypt_error:
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "params_decrypt"}, source="token_refresh")
         raise decrypt_error
 
     if not isinstance(decrypted, Mapping):
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "params_decrypt_parse"}, source="token_refresh")
         raise _refresh_error("params_decrypt_parse")
 
     if not decrypted.get("token"):
+        login_trace.emit(
+            "token_refresh", method="POST", url=url, account=account,
+            status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "params_token_missing"}, source="token_refresh")
         raise _refresh_error("params_token")
 
+    login_trace.emit(
+        "token_refresh", method="POST", url=url, account=account,
+        status=resp.status_code,
+        elapsed_ms=int((time.monotonic() - t0) * 1000), ok=True,
+        summary={"backend": decrypted.get("backendDomainUrl", ""),
+                 "has_token": True}, source="token_refresh")
     logger.info(f"[{account}] game JWT refresh succeeded")
     return dict(decrypted)
 
@@ -575,6 +622,9 @@ async def get_login(account: str, password: str = "",
             game_token = cache.get("game_token", "")
             if game_token and validate_game_token(game_token):
                 logger.info(f"[{account}] get_login: cache hit")
+                login_trace.emit(
+                    "login_path", method="-", account=account, ok=True,
+                    summary={"path": "cache_hit"}, source="session")
                 cache["account"] = account
                 return cache
             # 缓存有 session 但 game_token 过期 → 尝试刷新
@@ -596,8 +646,16 @@ async def get_login(account: str, password: str = "",
                             cache["game_player_id"] = sub.get("playerId", 0)
                     save_session(account, cache)
                     cache["account"] = account
+                    login_trace.emit(
+                        "login_path", method="-", account=account, ok=True,
+                        summary={"path": "cache_refresh"}, source="session")
                     return cache
                 except TokenRefreshError:
+                    login_trace.emit(
+                        "login_path", method="-", account=account, ok=False,
+                        summary={"path": "cache_refresh",
+                                 "error": "TokenRefreshError"},
+                        source="session")
                     logger.warning(f"[{account}] get_login: refresh failed, fallback to browser")
 
     legacy_jfbym_token = jfbym_token or captcha_token
@@ -666,9 +724,21 @@ async def get_login(account: str, password: str = "",
             if game_token_ok:
                 save_session(account, result)
                 logger.info(f"[{account}] get_login: HTTP login success")
+                login_trace.emit(
+                    "login_path", method="-", account=account, ok=True,
+                    summary={"path": "http_login"}, source="session")
                 return result
             # game_token 刷新失败 → 降级到浏览器登录
+            login_trace.emit(
+                "login_path", method="-", account=account, ok=False,
+                summary={"path": "http_login", "error": "game_token_refresh"},
+                source="session")
             logger.info(f"[{account}] get_login: game_token refresh failed, fall to browser")
+        else:
+            login_trace.emit(
+                "login_path", method="-", account=account, ok=False,
+                summary={"path": "http_login", "error": "captcha_chain"},
+                source="session")
 
     # ── 3. 浏览器登录 ──
     if not password:
@@ -707,13 +777,29 @@ async def get_login(account: str, password: str = "",
         auth_cache_path=auth_cache_path,
         account=account,
     )
+    login_trace.emit(
+        "login_path", method="BROWSER", url=entry_url or "https://leyu.me",
+        account=account, ok=None,
+        summary={"path": "browser_login", "phase": "start"}, source="session")
     result = await bot.run()
     if not result:
+        login_trace.emit(
+            "login_path", method="BROWSER", account=account, ok=False,
+            summary={"path": "browser_login", "error": "no_auth_data"},
+            source="session")
         raise LoginError(f"[{account}] 浏览器登录失败：未捕获到认证数据")
 
     # result 现在已包含 game 字段 + session 字段（由 _enrich_with_session 补充）
     if not result.get("game_token"):
+        login_trace.emit(
+            "login_path", method="BROWSER", account=account, ok=False,
+            summary={"path": "browser_login", "error": "no_game_token"},
+            source="session")
         raise LoginError(f"[{account}] 浏览器登录失败：缺少 game_token")
+
+    login_trace.emit(
+        "login_path", method="BROWSER", account=account, ok=True,
+        summary={"path": "browser_login"}, source="session")
 
     # 补充缺失字段
     if not result.get("domain"):

@@ -46,6 +46,7 @@ from hdata.auth.params import (
     decrypt_params,
     save_auth_cache,
 )
+from hdata.auth import login_trace
 from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -105,6 +106,26 @@ class GameBrowserLogin:
 
     async def run(self) -> dict | None:
         """执行登录/刷新流程，返回解密后的认证数据（含 session 信息）。"""
+        t0 = time.monotonic()
+        try:
+            result = await self._run_inner()
+        except Exception as exc:
+            login_trace.emit(
+                "browser_run", method="BROWSER", url=self._entry_url,
+                account=self._account,
+                elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+                summary={"error": type(exc).__name__}, source="browser_login")
+            raise
+        login_trace.emit(
+            "browser_run", method="BROWSER", url=self._entry_url,
+            account=self._account,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+            ok=bool(result),
+            summary={"got_params": bool(result)}, source="browser_login")
+        return result
+
+    async def _run_inner(self) -> dict | None:
+        """run() 的实现体（留底事件由外层包装）。"""
         from playwright.async_api import async_playwright
 
         self._profile_dir.mkdir(parents=True, exist_ok=True)

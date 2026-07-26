@@ -14,6 +14,8 @@ import uuid
 from curl_cffi import requests as cr
 from htools.utils.time import now_ms
 
+from hdata.auth import login_trace
+
 BOTION_LOAD = "https://bcaptcha.botion.com/load"
 BOTION_STATIC = "https://static.botion.com"
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
@@ -39,15 +41,44 @@ def fetch_captcha(page_url: str = "", proxy: str = "") -> dict | None:
     url = f"{BOTION_LOAD}?captcha_id={CAPTCHA_ID}&challenge={challenge}&client_type=web&risk_type={risk_type}&lang=zh-cn&callback={cb}"
 
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    resp = cr.get(url, impersonate="chrome110", headers={"Referer": page_url},
-                  timeout=15, proxies=proxies)
-    if resp.status_code != 200: return None
+    t0 = time.monotonic()
+    try:
+        resp = cr.get(url, impersonate="chrome110", headers={"Referer": page_url},
+                      timeout=15, proxies=proxies)
+    except Exception as exc:
+        login_trace.emit(
+            "captcha_load", method="GET", url=url,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": type(exc).__name__}, source="http_login")
+        return None
+    if resp.status_code != 200:
+        login_trace.emit(
+            "captcha_load", method="GET", url=url, status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "bad_status"}, source="http_login")
+        return None
     m = re.search(r"\((.*)\)$", resp.text, re.DOTALL)
-    if not m: return None
+    if not m:
+        login_trace.emit(
+            "captcha_load", method="GET", url=url, status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary={"error": "invalid_jsonp"}, source="http_login")
+        return None
     outer = json.loads(m.group(1))
-    if outer.get("status") != "success": return None
+    if outer.get("status") != "success":
+        login_trace.emit(
+            "captcha_load", method="GET", url=url, status=resp.status_code,
+            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            summary=outer, source="http_login")
+        return None
     data = outer.get("data", {})
 
+    login_trace.emit(
+        "captcha_load", method="GET", url=url, status=resp.status_code,
+        elapsed_ms=int((time.monotonic() - t0) * 1000), ok=True,
+        summary={"lot_number": data.get("lot_number", ""),
+                 "captcha_type": data.get("captcha_type", "")},
+        source="http_login")
     return {
         "lot_number": data.get("lot_number", ""),
         "payload": data.get("payload", ""),
