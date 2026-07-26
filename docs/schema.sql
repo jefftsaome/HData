@@ -5,6 +5,17 @@
 -- 用途: 牌局真相(rounds/round_bet_points/round_cards)
 --       + 平台叙事(lobby_snapshots) + 原始留底(events_raw)
 -- 分析目标: 分布检验 / 杀大赔小检验 / 好路信号回测 / 热度注水检验
+--
+-- ⚠️ 存档说明（2026-07-25 加注）：本文件是 SQLite（data/streak.db）时代
+--    的 schema。生产采集已于 2026-07-23 迁移至 PostgreSQL（hsys-pg，
+--    库 hdata），与本文档的差异：
+--      1. PG 另有 streak_episodes / streak_rounds 两表（连胜监控），
+--         本文档未收录；
+--      2. PG events_raw 为按月分区表（2026_07 起每月一个分区），
+--         非单表 + AUTOINCREMENT；
+--      3. PG 无 PRAGMA / user_version 概念；
+--      4. PG 现行 DDL 见 HSys 仓库 server/postgres/ 目录。
+--    本文件仍作为 data/streak.db（SQLite 历史库）的结构参考保留。
 -- ═══════════════════════════════════════════════════════════
 
 PRAGMA journal_mode = WAL;        -- 读写不互锁：采集写的同时分析端可查

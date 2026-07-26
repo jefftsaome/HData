@@ -89,6 +89,12 @@ TokenManager.get_token()
 
 ## 剩余问题 (P0)
 
+> **【2026-07-25 加注：两项均已解决】**
+> 1. 纯 HTTP verify 已于 2026-07-17 攻克（e_obj 字段集与浏览器运行时对齐，
+>    w 被服务端正常解密判分；全链路 07-24 复测通过）——见《极验4验证码破解与排查.md》；
+> 2. AB hook 已由 CDP Network 抓包方案替代（`scripts/capture_real_w.py`）。
+> 本节以下为 2026-06-29 时的原始记录，保留存档。
+
 - [ ] **纯 HTTP verify 始终 result=fail** — 18+ 次尝试，坐标疑似不准确。需要对比人工通过的 w 参数 (data/sdk_flow_captured.json)
 - [ ] **AB 测试 hook 可靠性** — addEventListener hook 仅成功一次，后续无法复现。CDP Network 抓包可替代
 

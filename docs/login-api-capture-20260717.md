@@ -46,7 +46,7 @@ Body: {"kType": 4}
 Resp: {"data": {}, "message": "成功", "status_code": 6022}
 ```
 - `kType:4` = GeeTest v4。`status_code:6022` 即成功。
-- **http_login_v2.py 目前缺这一步，纯 HTTP 流程需补上。**
+- 抓包当时纯 HTTP 流程缺这一步；**已于 2026-07-17 补上**（`http_login.py` `_kaptchcate()`，见第五节）。
 
 ### ② GeeTest load — 获取挑战（JSONP）
 
@@ -242,7 +242,7 @@ Resp.data: {url:"https://api.wnbtmel.com?token=<40hex>",
 - Python 复刻：`hdata/auth/fingerprint.py`（`leyu_finger(ip, ...)`），已对拍一致。
 - 仅 login 接口携带；IP 可从 validateGeeCheckV2 响应的 `captcha_args.user_ip` 获得。
 
-## 五、对纯 HTTP 登录（http_login_v2.py）的修正 —— 已完成（2026-07-17）
+## 五、对纯 HTTP 登录（http_login.py，当时开发代号 http_login_v2）的修正 —— 已完成（2026-07-17）
 
 1. ✅ **补 kaptchcate**：`_kaptchcate()` 在 fetch_captcha 前调用 `POST /user/member/kaptchcate {"kType":4}`。
 2. ✅ **补全请求头**：`api_sign.common_headers()` 统一发出 X-API-CLIENT/VERSION/SITE/UUID/XXX；login 另带 X-API-FINGER。
@@ -251,8 +251,9 @@ Resp.data: {url:"https://api.wnbtmel.com?token=<40hex>",
 5. ✅ login body `{name, password:MD5, Kaptchcate:0, codeId:lot_number}` — 实测确认正确。
 6. ✅ **X-API-FINGER**：`hdata/auth/fingerprint.py` 复刻 x64hash128，与浏览器真值对拍一致。
 
-**纯 HTTP 登录剩余唯一卡点：GeeTest verify 的 w 参数**（e_obj 与浏览器 SDK 差 76 bytes，
-见 captcha-flow.md 末尾）。verify 之后的全链路（validate → login → jwt）已与浏览器完全对齐。
+~~纯 HTTP 登录剩余唯一卡点：GeeTest verify 的 w 参数~~ **w 已攻克**：
+e_obj 字段集/顺序已与浏览器运行时对齐（见《极验4验证码破解与排查.md》§2.3），
+2026-07-24 运维记录中纯 HTTP 打码登录全链路实测通过（拿到 token + UUID）。
 
 ## 六、localStorage 关键落盘项
 

@@ -77,5 +77,6 @@ GeeTest SDK:   完整加密管线 (PoW + AES-CBC + RSA-1024)
 
 - `geetest_signer.py` 中的 `generate_w()` 已经包含了正确的 `ep: "123"` 和 `nqfq` 相关字段
 - gct4.js 不负责 `captcha_output` 的生成
-- `captcha_output` 在 bcaptcha.js 或更上层的 GeeTest SDK 中生成
+- `captcha_output` 也并非浏览器端生成——它由 verify 响应 `seccode` 直接返回
+  （2026-07-17 实测确认，见《极验4验证码破解与排查.md》步骤 4）
 - gct4.js 的 DJB hash 和我们的代码无关——它在浏览器端做完整性自检

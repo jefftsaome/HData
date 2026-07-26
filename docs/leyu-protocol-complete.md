@@ -337,7 +337,7 @@ CDP 桥接模式            直连模式（curl_cffi）
   │                        9. ← msg 401: 进桌成功
   │                        10. ← msg 302: 游戏状态
   │                        11. ← msg 303: 结算数据（循环）
-  │                        12. msg 301: 心跳（每 11s）
+  │                        12. msg 3: 心跳（每 10s，{clientTime, deviceType, deviceId}）
 ```
 
 ### 5.1 登录认证 (msg 10000)
@@ -349,7 +349,7 @@ CDP 桥接模式            直连模式（curl_cffi）
     "playerId": 105452510,
     "jwtToken": "eyJhbGciOiJIUzI1NiJ9...",
     "deviceType": 15,
-    "deviceId": "1782535310058674277-11335781",
+    "deviceId": "1784893260093339843-95557669-55953617",
     "identity": 0,
     "vipMode": 0,
     "gameTypeId": 2001,
@@ -555,7 +555,7 @@ wss://wsproxy.{backendDomainUrl}/
 | 要素 | 规则 | 缺失后果 |
 |:----|:----|:--------|
 | host | `wsproxy.` + backendDomainUrl **原样**（含端口，如 `6pwn4i.com:4999`） | 写死端口 18026 → TCP 超时/RST |
-| `deviceId` | `{13位ms时间戳}{6位随机}-{8位随机}`（`Date.now()+Math.floor(1e5*(9*Math.random()+1))` + `"-"` + `Math.floor(1e7*(9*Math.random()+1))`） | 旧版无 deviceId → 拒连 |
+| `deviceId` | 三段式 `{13位ms时间戳}{6位随机}-{8位随机}-{8位随机}`：前两段为持久化 `fixedDeviceId`（`Date.now()+Math.floor(1e5*(9*Math.random()+1))` + `"-"` + `Math.floor(1e7*(9*Math.random()+1))`），第三段每条 WS 连接重新随机（hdata `ensure_device_id_suffix()` 复刻，2026-07-24 抓包实录） | 旧版无 deviceId → 拒连 |
 | `platformId=1&applicationId=5&version=v1.0.5` | `Q9.STATIC_KEY_PREFIX + Q9.KEY_VERSION` 常量 | **缺失 → 握手 HTTP 500** |
 | ~~`deviceType=2&platform=6`~~ | 旧文档写法，浏览器实际不发 | 多余但无害 |
 
@@ -656,8 +656,8 @@ Login(10000) → 大厅推送
 | 10052 | 大厅桌台快照 | 推送 | `gameTableMap{tableId:{gameTypeId,gameStatus,roadPaper,...}}` |
 | 401 | NEW_INTER_GAME | 请求/响应 | 普通百家乐进桌，serviceTypeId=3(GAME) |
 | 101 | INTER_GAME | 请求/响应 | VIP/竞价等(notForceExitArr)进桌 |
-| 102 | OUT_GAME | 请求 | 离桌 |
-| **123** | **KICK_OUT_GAME** | 推送 | **桌台级踢出（连续5局未投注触发，实测 ~240s 被踢 1 次）** |
+| 102 | OUT_GAME | 请求/推送 | 离桌；推送时 `leaveTableType` 区分：1=主动离桌(noticeId=21001)，2=长时间未下注被踢(noticeId=21003) |
+| **123** | **系统通知** | 推送 | **连续 3 局未下注预警（noticeId=21002），仅提醒不踢人** |
 | 10026 | KICK_NOTICE | 推送 | 会话级踢出（token 失效，需重新登录） |
 | 116 | ROAD_PAPER | 推送 | 路纸数据（bigRoad 等 base64 位图） |
 | 110 | 桌台动态 | 推送 | roundId/在线人数/投注额/奖池 |
@@ -672,11 +672,13 @@ Login(10000) → 大厅推送
  "gameCasinoId": 0, "deviceType": 15, "deviceId": "..."}
 ```
 
-**5局未投注踢出应对**（用户实测规则 + 本框架验证）：
+**5局未投注踢出应对**（2026-07 实测修正，替代旧的"123=踢出"说法）：
 
-- 纯监听不下注时，服务器约每 ~4-5 局发 `KICK_OUT_GAME(123)` 踢出桌台；
-- **会话不断**：123 只踢桌台，WS 连接与登录态保持；
-- 策略：**收 123 → 立即重发 401 进同一张桌**（`smoke_ws_table.py` 已实现并验证，重进后牌局帧继续）；
+- 纯监听不下注时，连续满 **3 局**未下注服务器推 `123` 预警（noticeId=21002，**仅提醒不踢人**）；
+- 满 **5 局**未下注服务器推 `102` 离桌通知（`leaveTableType=2` 被踢，noticeId=21003；`leaveTableType=1` 为主动离桌确认）；
+- **会话不断**：踢出只针对桌台，WS 连接与登录态保持；
+- 已实测：被踢**前**重发 401 **不能**避免踢出，只能被踢后重新进桌；
+- 策略：**收 102（leaveTableType=2）→ 重发 401 进同一张桌**（hdata `kick_policy="stay"` 默认自动重进）；
 - 与 10026 区分：10026 是 token 级踢出，必须走 `refresh_game_session` 重新登录。
 
 ### 9.6 域名动态化（2026-07-18 加固 ✅）
@@ -833,7 +835,8 @@ base64 解码 → 字节按 MSB-first 拼成位串 → 游标顺序读位
 
 | protocolId | 级别 | 含义 | 处理 |
 |:-----------|:-----|:-----|:-----|
-| 123 | 桌台级 | 连续 5 局未投注被踢出该桌 | 自动重进即可，会话不受影响 |
+| 123 | 桌台级 | 连续 3 局未投注预警（noticeId=21002），仅提醒不踢人 | 无需动作（或按需补投注） |
+| 102 | 桌台级 | 连续 5 局未投注被踢出该桌（leaveTableType=2，noticeId=21003） | 自动重进即可，会话不受影响 |
 | 10026 | 会话级 | token 失效/被顶替 | 必须 `refresh_game_session` 后重登 |
 
 ### 12.6 对外公共 API（`hdata/client.py`）

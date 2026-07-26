@@ -46,6 +46,10 @@ WebSocket 连接（2026-07-17 已打通，见 leyu-protocol-complete.md §9）:
 
 ## 文件结构
 
+> **【2026-07-25 加注】** `hdt/` 已更名重构为 `hdata/` 包（`hdata/auth/`、
+> `hdata/protocol/`、`hdata/client.py`），打码链 geepass 优先、jfbym 备选；
+> 现行结构见《平台接入机制.md》§0。以下为 07-17 时的历史布局。
+
 ```
 hdt/auth/
   token_manager.py     # 多账号 TokenManager + CLI
@@ -61,9 +65,14 @@ hdt/sources/
 
 ## 剩余工作
 
-1. **validateGeeCheckV2 对接** — 将 verify 成功后的 captcha_output 发送到 /site/api/v1/user/member/validateGeeCheckV2，获取 X-API-TOKEN
-2. **WS 直连** — 测试 curl_cffi 连接 wsproxy 是否可用
-3. **X-API-XXX 自动化** — 签名动态提取或再生
+> **【2026-07-25 加注：三项均已完成】** validateGeeCheckV2 对接与
+> X-API-XXX wasm 动态签名于 2026-07-17 落地，WS 直连同日打通
+> （原生 websockets，URL 完整即可，无需 curl_cffi 指纹）。
+> 以下为历史待办存档。
+
+1. ~~**validateGeeCheckV2 对接**~~（已完成）
+2. ~~**WS 直连**~~（已完成）
+3. ~~**X-API-XXX 自动化**~~（已完成）
 
 ---
 

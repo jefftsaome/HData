@@ -106,6 +106,12 @@ CDP 事件序列:
 
 ### 4. w 参数生成（浏览器 SDK 内部）
 
+> **【后续修正，读本节必看】** 本节结构为早期逆向稿：w 总长已从 1568 hex
+> 变迁为 **1216 hex**（480B AES + 128B RSA）；`gee_guard`/`biht`/`ZAhG`
+> 字段浏览器已停发（新构建常量为 `nqfq`/`EKAI`）；userresponse 改为
+> 0–10000 归一化坐标。**以文末附录（2026-07-17 运行时实测）和
+> 《极验4验证码破解与排查.md》§2 为准。**
+
 SDK 接收到点击后，内部生成 w 参数。这是 GeeTest v4 的核心加密：
 
 ```
@@ -169,7 +175,11 @@ botion_xxx({
 })
 ```
 
-**captcha_output：** verify 返回的 data 中某个字段（或整个结果）的编码/加密形式，312 bytes URL-safe base64 编码二进制数据。**这是 SDK 内部生成的值，无法在纯 Python 中复现。** 这就是纯 HTTP 方案卡住的地方。
+**captcha_output：** ~~verify 返回的 data 中某个字段（或整个结果）的编码/加密形式，312 bytes~~
+**【2026-07-17 起已推翻】** `captcha_output` 由 verify 响应 `data.seccode` **直接返回**
+（连同 `gen_time`/`pass_token` 三件套），**不需要本地生成、纯 Python 可完成**；
+当前实测 512 base64url chars = **384 bytes**（312 为更旧的值）。
+纯 HTTP 打码登录全链路已打通，详见《极验4验证码破解与排查.md》。
 
 ### 6. kaptchcate — 验证码预注册
 
@@ -264,7 +274,9 @@ captcha_output + lot_number  → validateGeeCheckV2         → {"result": "succ
 
 ## 关键结论
 
-1. **captcha_output 只能在浏览器中生成**。它是 SDK 内部对 verify 响应的加密结果。312 bytes 二进制，非 UTF-8，纯 Python 无法复现。
+1. **~~captcha_output 只能在浏览器中生成~~【已推翻】**。它由 verify 响应
+   seccode 直接返回（当前 384 bytes），纯 Python 打码登录已全链路打通
+   （`http_login.py`，见《极验4验证码破解与排查.md》）。
 
 2. **我们的角色是"代点"**。不需要自己调 verify、kaptchcate、validateGeeCheckV2——浏览器的 GeeTest SDK 全包了。我们只需要把坐标点对。
 
@@ -305,5 +317,8 @@ captcha_output + lot_number  → validateGeeCheckV2         → {"result": "succ
 6. AES IV = **ASCII `'0'×16`**（不是 `\x00×16`！旧代码恰好用的就是 ASCII 零，歪打正着）。
 7. 字段顺序与浏览器一致（passtime 在最前）。
 
-**端到端验证状态**：真实挑战 + 错误坐标 → verify 返回 `{"status":"success","data":{"result":"fail","fail_count":1}}`，
-即服务端正常解密并进入判分流程 = **w 格式已被接受**。待正确坐标做最终成功验证。
+**端到端验证状态**：~~真实挑战 + 错误坐标 → verify 返回 `{"status":"success","data":{"result":"fail","fail_count":1}}`，
+即服务端正常解密并进入判分流程 = **w 格式已被接受**。待正确坐标做最终成功验证。~~
+**【已完成】** 正确坐标的最终成功验证已通过：纯 HTTP 打码登录全链路
+（load → 打码 → w → verify → validateGeeCheckV2 → login → jwt → venue/launch）
+实测拿到 token（2026-07-24 运维记录复测端到端通过）。
