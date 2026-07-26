@@ -295,6 +295,13 @@ async def refresh_game_session(account: str, session: dict) -> dict:
     Raises:
         TokenRefreshError: API 调用或解密失败
     """
+    # 留底上下文：独立调用（WS 重连刷新等）时事件也带账号与出口标识
+    with login_trace.bind(account=account, proxy=session.get("proxy") or ""):
+        return await _refresh_game_session_inner(account, session)
+
+
+async def _refresh_game_session_inner(account: str, session: dict) -> dict:
+    """refresh_game_session 的实现体（留底上下文由外层绑定）。"""
     domain = session.get("domain", "")
     if not domain:
         raise TokenRefreshError(f"[{account}] session 缺少 domain")
@@ -614,6 +621,22 @@ async def get_login(account: str, password: str = "",
     Raises:
         LoginError: 所有登录方式均失败
     """
+    # 留底上下文：全路径（cache/refresh/HTTP/浏览器）事件都带账号与出口标识
+    _lt_tok = login_trace.push_context(account=account, proxy=proxy or "")
+    try:
+        return await _get_login_inner(
+            account, password, entry_url, force_refresh,
+            captcha_token, geepass_token, jfbym_token, proxy)
+    finally:
+        login_trace.pop_context(_lt_tok)
+
+
+async def _get_login_inner(account: str, password: str = "",
+                           entry_url: str = "", force_refresh: bool = False,
+                           captcha_token: str = "", geepass_token: str = "",
+                           jfbym_token: str = "",
+                           proxy: str | None = None) -> dict:
+    """get_login 的实现体（留底上下文由外层绑定）。"""
     # ── 1. 读缓存 ──
     if not force_refresh:
         cache = get_cached_session(account)

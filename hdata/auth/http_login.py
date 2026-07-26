@@ -508,8 +508,8 @@ async def login(
     Returns:
         {"token": ..., "uuid": ..., "domain": ..., "lot_number": ...} 或 None
     """
-    # 绑定留底上下文：整条链路（打码/校验/登录/JWT）的埋点事件都带账号
-    with login_trace.bind(account=user):
+    # 绑定留底上下文：整条链路（打码/校验/登录/JWT）的埋点事件都带账号与出口
+    with login_trace.bind(account=user, proxy=proxy or ""):
         return await _login_inner(
             user, pwd, captcha_token,
             geepass_token=geepass_token, jfbym_token=jfbym_token,

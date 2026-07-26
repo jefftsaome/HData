@@ -10,7 +10,7 @@
 
 使用流程:
     pool = ProxyPool.from_file("data/proxies.json", cap_per_proxy=10)
-    await pool.health_check()                 # 剔除死代理
+    await pool.health_check()                 # 剔除死代理，记录各出口实测 IP
     mapping = pool.assign(["acc_a", "acc_b"]) # 粘性均衡分配
     # 把 mapping[acc] 写进各账号的 cred["proxy"]，之后
     # GameClient(proxy=...) / monitor_tables(accounts) 自动继承
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from htools.utils.logger import get_logger
@@ -34,11 +35,24 @@ logger = get_logger(__name__)
 # 硬上限未知，见 平台边界试探.md §2.2）；探针压测前不建议调大
 DEFAULT_CAP_PER_PROXY = 10
 
+_IPV4_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 
-def _probe_sync(proxy: str, timeout: float) -> bool:
+
+def _extract_ip(text: str) -> str | None:
+    """从 echo 服务返回体里抠第一个 IPv4 地址。"""
+    m = _IPV4_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def _probe_sync(proxy: str, timeout: float) -> tuple[bool, str | None]:
     """HTTP 出口探测（同步，供 asyncio.to_thread 包装）。
 
-    依次尝试多个 echo 服务，任一返回 200 即视为存活。
+    依次尝试多个 echo 服务，任一返回 200 即视为存活；并从返回体
+    解析真实出口 IP（myip.ipip.net 为含 IP 文本，httpbin.org/ip 为
+    JSON {"origin": ...}）。解析不到 IP 但 200 的算存活、IP 记 None。
+
+    Returns:
+        (存活, 出口IP|None)
     """
     from curl_cffi import requests
     endpoints = ["https://myip.ipip.net", "http://httpbin.org/ip"]
@@ -47,11 +61,20 @@ def _probe_sync(proxy: str, timeout: float) -> bool:
             r = requests.get(
                 url, timeout=timeout,
                 proxies={"http": proxy, "https": proxy})
-            if r.status_code == 200:
-                return True
+            if r.status_code != 200:
+                continue
+            ip: str | None = None
+            if "httpbin" in url:
+                try:
+                    ip = _extract_ip(str(r.json().get("origin", "")))
+                except Exception:
+                    ip = None
+            else:
+                ip = _extract_ip(r.text)
+            return True, ip
         except Exception:
             continue
-    return False
+    return False, None
 
 
 class ProxyPool:
@@ -66,6 +89,7 @@ class ProxyPool:
         self._cap = cap_per_proxy
         self._dead: set[str] = set()
         self._bindings: dict[str, str] = {}      # account -> proxy
+        self._exit_ips: dict[str, str | None] = {}  # proxy -> 实测出口IP
 
     # ── 加载 ──────────────────────────────────────────
 
@@ -100,8 +124,22 @@ class ProxyPool:
         return [p for p in self._proxies if p not in self._dead]
 
     @property
+    def proxies(self) -> list[str]:
+        """全部出口列表（保序，含已剔除的）。"""
+        return list(self._proxies)
+
+    @property
     def cap_per_proxy(self) -> int:
         return self._cap
+
+    @property
+    def exit_ips(self) -> dict[str, str | None]:
+        """各出口最近一次健康检查实测的出口 IP（未探测过的不在列）。"""
+        return dict(self._exit_ips)
+
+    def exit_ip(self, proxy: str) -> str | None:
+        """单个出口的实测 IP（未探测 / 探测失败 / 解析不到均为 None）。"""
+        return self._exit_ips.get(proxy)
 
     def _load(self, proxy: str) -> int:
         return sum(1 for p in self._bindings.values() if p == proxy)
@@ -143,6 +181,7 @@ class ProxyPool:
         （账号需经新出口重新登录拿新 token，token 绑 IP）。
         """
         self._dead.add(proxy)
+        self._exit_ips[proxy] = None
         affected = [a for a, p in self._bindings.items() if p == proxy]
         for a in affected:
             del self._bindings[a]
@@ -154,25 +193,33 @@ class ProxyPool:
     # ── 健康检查 ──────────────────────────────────────
 
     async def health_check(self, timeout: float = 10.0,
-                           probe=None) -> dict[str, bool]:
-        """逐出口探测存活，失败出口自动 mark_dead。
+                           probe=None) -> dict[str, dict]:
+        """逐出口探测存活并记录真实出口 IP，失败出口自动 mark_dead。
 
         Args:
             timeout: 单出口探测超时（秒）
-            probe: 可注入的探测函数 (proxy, timeout) -> bool，
-                   默认 HTTP echo 探测（测试时可替换）
+            probe: 可注入的探测函数 (proxy, timeout) -> bool（旧式，IP 记
+                   None）或 (bool, 出口IP|None)，默认 HTTP echo 探测
 
         Returns:
-            {proxy: True/False}
+            {proxy: {"ok": bool, "ip": 出口IP|None}}——死出口 ip 恒 None
         """
         probe = probe or _probe_sync
-        results: dict[str, bool] = {}
+        results: dict[str, dict] = {}
         for p in self._proxies:
+            ok, ip = False, None
             try:
-                ok = await asyncio.to_thread(probe, p, timeout)
+                res = await asyncio.to_thread(probe, p, timeout)
+                if isinstance(res, tuple):
+                    ok, ip = bool(res[0]), (res[1] or None)
+                else:
+                    ok = bool(res)
             except Exception:
-                ok = False
-            results[p] = ok
+                ok, ip = False, None
+            if not ok:
+                ip = None
+            results[p] = {"ok": ok, "ip": ip}
+            self._exit_ips[p] = ip
             if not ok:
                 self.mark_dead(p)
                 logger.warning(f"[ProxyPool] 出口探测失败已剔除: {p}")

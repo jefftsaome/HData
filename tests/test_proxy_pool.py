@@ -1,11 +1,15 @@
-"""ProxyPool 单元测试（不触网，health_check 注入假探测）。"""
+"""ProxyPool 单元测试（不触网，health_check 注入假探测）。
+
+_probe_sync 的出口 IP 解析用 curl_cffi 打桩测试；测试代理一律用
+RFC 5737 文档保留地址（203.0.113.x / 198.51.100.x / 192.0.2.x）。
+"""
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from hdata.proxy import ProxyPool
+from hdata.proxy import ProxyPool, _probe_sync
 
 P1 = "http://u1:p1@1.1.1.1:8001"
 P2 = "http://u2:p2@2.2.2.2:8002"
@@ -91,8 +95,9 @@ class TestHealthCheck:
     async def test_dead_marked(self):
         pool = ProxyPool([P1, P2], cap_per_proxy=5)
         results = await pool.health_check(
-            probe=lambda p, t: p != P1)     # P1 假死
-        assert results == {P1: False, P2: True}
+            probe=lambda p, t: p != P1)     # P1 假死（旧式 bool 探测→IP 记 None）
+        assert results == {P1: {"ok": False, "ip": None},
+                           P2: {"ok": True, "ip": None}}
         assert pool.alive == [P2]
 
     async def test_probe_exception_counts_dead(self):
@@ -102,5 +107,81 @@ class TestHealthCheck:
             raise RuntimeError("net down")
 
         results = await pool.health_check(probe=boom)
-        assert results[P1] is False
+        assert results[P1]["ok"] is False
         assert pool.alive == []
+
+
+class TestExitIP:
+    async def test_tuple_probe_records_exit_ip(self):
+        pool = ProxyPool([P1, P2], cap_per_proxy=5)
+        results = await pool.health_check(
+            probe=lambda p, t: (True, "9.9.9.9") if p == P1
+            else (False, None))
+        assert results[P1] == {"ok": True, "ip": "9.9.9.9"}
+        assert results[P2] == {"ok": False, "ip": None}
+        assert pool.exit_ip(P1) == "9.9.9.9"
+        assert pool.exit_ip(P2) is None
+        assert pool.exit_ips == {P1: "9.9.9.9", P2: None}
+
+    async def test_alive_but_ip_unparseable_records_none(self):
+        pool = ProxyPool([P1])
+        results = await pool.health_check(probe=lambda p, t: (True, None))
+        assert results[P1] == {"ok": True, "ip": None}
+        assert pool.alive == [P1]       # 200 但解析不到 IP：算存活、IP 记 None
+
+
+class TestProbeSyncParsing:
+    """_probe_sync 出口 IP 解析（curl_cffi 打桩，不触网）。"""
+
+    FAKE_PROXY = "http://u:p@203.0.113.9:8011"     # RFC 5737 文档地址
+
+    @staticmethod
+    def _install(monkeypatch, handler):
+        from curl_cffi import requests as _rq
+        monkeypatch.setattr(_rq, "get", handler)
+
+    def test_ipip_text_endpoint(self, monkeypatch):
+        class R:
+            status_code = 200
+            text = "当前 IP：9.8.7.6  来自于：中国 广东 广州 电信"
+
+        self._install(monkeypatch, lambda url, timeout, proxies: R())
+        ok, ip = _probe_sync(self.FAKE_PROXY, 1.0)
+        assert (ok, ip) == (True, "9.8.7.6")
+
+    def test_httpbin_json_endpoint(self, monkeypatch):
+        class R:
+            status_code = 200
+            text = '{"origin": "9.8.7.7"}'
+
+            def json(self):
+                return {"origin": "9.8.7.7"}
+
+        def fake(url, timeout, proxies):
+            if "ipip" in url:
+                raise RuntimeError("ipip down")    # 首端点失败回落 httpbin
+            return R()
+
+        self._install(monkeypatch, fake)
+        ok, ip = _probe_sync(self.FAKE_PROXY, 1.0)
+        assert (ok, ip) == (True, "9.8.7.7")
+
+    def test_200_unparseable_alive_ip_none(self, monkeypatch):
+        class R:
+            status_code = 200
+            text = "no ip here"
+
+            def json(self):
+                return {}
+
+        self._install(monkeypatch, lambda url, timeout, proxies: R())
+        ok, ip = _probe_sync(self.FAKE_PROXY, 1.0)
+        assert (ok, ip) == (True, None)
+
+    def test_all_endpoints_fail(self, monkeypatch):
+        def fake(url, timeout, proxies):
+            raise RuntimeError("dead")
+
+        self._install(monkeypatch, fake)
+        ok, ip = _probe_sync(self.FAKE_PROXY, 1.0)
+        assert (ok, ip) == (False, None)

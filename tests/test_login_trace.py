@@ -8,12 +8,14 @@ from hdata.auth import login_trace
 
 @pytest.fixture(autouse=True)
 def _clean_sink():
-    """每个用例前后清 sink 与缓冲，避免串场。"""
+    """每个用例前后清 sink / 缓冲 / 持久上下文，避免串场。"""
     login_trace.clear_sink()
     login_trace._buf.clear()
+    login_trace._ctx.set({})
     yield
     login_trace.clear_sink()
     login_trace._buf.clear()
+    login_trace._ctx.set({})
 
 
 # ---------------------------------------------------------------- URL 脱敏
@@ -127,3 +129,41 @@ def test_emit_never_breaks_on_bad_input():
     # summary 传不可 JSON 化的对象也不允许炸
     login_trace.emit("x", summary=object())
     assert len(got) == 1
+
+
+# ---------------------------------------------------------------- 出口标识
+def test_bind_proxy_masked_host_only():
+    # 测试代理一律用 RFC 5737 文档保留地址，绝不写真代理
+    with login_trace.bind(account="acc1",
+                          proxy="http://user:pass@203.0.113.9:8011"):
+        ev = login_trace.emit("login", method="POST",
+                              url="https://x.com/login", ok=True)
+    assert ev["proxy"] == "203.0.113.9:8011"
+    assert "user" not in ev["proxy"] and "pass" not in ev["proxy"]
+
+
+def test_bind_proxy_no_credentials_passthrough():
+    with login_trace.bind(proxy="198.51.100.7:8011"):
+        ev = login_trace.emit("login_path", method="-")
+    assert ev["proxy"] == "198.51.100.7:8011"     # 无账密形式原样保留
+
+
+def test_set_context_proxy_masked():
+    login_trace.set_context(proxy="socks5://u2:p2@192.0.2.1:1080")
+    ev = login_trace.emit("token_refresh", account="a1")
+    assert ev["proxy"] == "192.0.2.1:1080"
+
+
+def test_push_pop_context_roundtrip():
+    tok = login_trace.push_context(account="acc9",
+                                   proxy="http://u:p@203.0.113.20:8011")
+    ev = login_trace.emit("token_refresh")
+    assert ev["account"] == "acc9" and ev["proxy"] == "203.0.113.20:8011"
+    login_trace.pop_context(tok)
+    ev2 = login_trace.emit("token_refresh")
+    assert ev2["proxy"] == ""                      # pop 后不残留
+
+
+def test_no_proxy_context_empty_string():
+    ev = login_trace.emit("login", account="a1")
+    assert ev["proxy"] == ""

@@ -7,7 +7,7 @@
 
 事件字段（与 login_events 表一一对应）：
     ts / account / stage / method / url / status / elapsed_ms / ok /
-    summary / strategy / run_id / source
+    summary / strategy / run_id / source / proxy
 
 脱敏口径（留底可审计、不泄露凭证）：
   - URL：保留 scheme://host/path；query 里敏感键（token/sign/seccode/w/
@@ -65,9 +65,19 @@ MAX_DEPTH = 3               # 摘要递归深度
 
 # ---------------------------------------------------------------- 上下文
 
+def mask_proxy(proxy: str) -> str:
+    """出口标识脱敏：只留 host:port，代理账密绝不进事件/上下文。"""
+    if not proxy:
+        return ""
+    return str(proxy).split("@")[-1]
+
+
 @contextmanager
-def bind(account: str = "", strategy: str = "", run_id=None):
-    """绑定调用上下文：with 块内产生的埋点事件自动带 account/strategy/run_id。"""
+def bind(account: str = "", strategy: str = "", run_id=None, proxy: str = ""):
+    """绑定调用上下文：with 块内产生的埋点事件自动带 account/strategy/run_id/proxy。
+
+    proxy 存脱敏后的 host:port（不含账密）。
+    """
     merged = {**_ctx.get()}
     if account:
         merged["account"] = account
@@ -75,6 +85,8 @@ def bind(account: str = "", strategy: str = "", run_id=None):
         merged["strategy"] = strategy
     if run_id is not None:
         merged["run_id"] = run_id
+    if proxy:
+        merged["proxy"] = mask_proxy(proxy)
     token = _ctx.set(merged)
     try:
         yield
@@ -88,10 +100,28 @@ def set_context(**kv) -> None:
     供采集入口在创建子任务前调用（contextvars 会随任务创建传播），
     用法：login_trace.set_context(strategy="streak")；
     account/run_id 等随调用点变化的字段仍用 bind() 临时绑定。
+    proxy 值一律脱敏为 host:port。
     """
     merged = {**_ctx.get()}
-    merged.update({k: v for k, v in kv.items() if v not in (None, "")})
+    merged.update({k: (mask_proxy(v) if k == "proxy" else v)
+                   for k, v in kv.items() if v not in (None, "")})
     _ctx.set(merged)
+
+
+def push_context(**kv):
+    """压入上下文并返回 token，配 pop_context(token) 复位。
+
+    供不便用 with 块的长函数在入口/出口成对调用（get_login 等）。
+    """
+    merged = {**_ctx.get()}
+    merged.update({k: (mask_proxy(v) if k == "proxy" else v)
+                   for k, v in kv.items() if v not in (None, "")})
+    return _ctx.set(merged)
+
+
+def pop_context(token) -> None:
+    """复位 push_context 压入的上下文。"""
+    _ctx.reset(token)
 
 
 def set_sink(fn) -> None:
@@ -213,6 +243,7 @@ def emit(stage: str, *, method: str = "", url: str = "",
             "strategy": ctx.get("strategy", ""),
             "run_id": ctx.get("run_id"),
             "source": source,
+            "proxy": mask_proxy(ctx.get("proxy", "")),   # 双保险：再脱敏一次
         }
     except Exception:
         return {}                    # 构造事件本身失败：静默丢弃
