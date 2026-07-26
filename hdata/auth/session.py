@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -119,6 +120,40 @@ def _refresh_error(
     if exc is not None:
         fields.append(f"exception={type(exc).__name__}")
     return TokenRefreshError("refresh " + " ".join(fields))
+
+
+# ── token 错峰刷新 ────────────────────────────────────
+#
+# 30 账号同时登录 → token 同时到期 → 每天集体刷新/重登（集体打码，
+# 2026-07-27 静默事件复盘整改项）。刷新触发点加**确定性抖动**：
+# TTL 的 75%~90% 区间按 (账号, iat, exp) 哈希取点，到点即主动走
+# venue/launch 刷新（廉价，不打码），新 token 的 TTL 窗口从各自
+# 抖动点起算，各账号后续到期时刻天然散开。
+# 硬底不变：validate_game_token 的 1h 阈值仍是最后防线。
+
+_REFRESH_JITTER_LO = 0.75      # 错峰区间下界（TTL 比例）
+_REFRESH_JITTER_HI = 0.90      # 错峰区间上界
+
+
+def _refresh_jitter_point(account: str, iat: int, exp: int) -> float:
+    """每账号每张 token 的确定性刷新触发时刻（epoch 秒）。"""
+    ttl = max(0, exp - iat)
+    h = hashlib.sha256(f"{account}|{iat}|{exp}".encode()).hexdigest()
+    frac = _REFRESH_JITTER_LO + \
+        (int(h[:8], 16) / 0xFFFFFFFF) * (_REFRESH_JITTER_HI - _REFRESH_JITTER_LO)
+    return iat + ttl * frac
+
+
+def token_refresh_due(account: str, token: str) -> bool:
+    """该账号这张 game JWT 是否已到错峰刷新点（应主动刷新）。
+
+    解析不出 iat/exp 时按"已到点"处理（走廉价刷新自愈，不打码）。
+    """
+    info = decode_jwt(token) or {}
+    iat, exp = info.get("iat", 0) or 0, info.get("exp", 0) or 0
+    if not iat or not exp or iat >= exp:
+        return True
+    return time.time() >= _refresh_jitter_point(account, iat, exp)
 
 
 # ── 域名 ──────────────────────────────────────────────
@@ -444,9 +479,10 @@ async def get_game_session(account: str) -> dict:
     Raises:
         SessionError: 无法获取有效会话
     """
-    # L0: 缓存 game_token 有效 → 直接返回
+    # L0: 缓存 game_token 有效且未到错峰刷新点 → 直接返回
     cache = get_cached_session(account)
-    if cache and validate_game_token(cache.get("game_token", "")):
+    if cache and validate_game_token(cache.get("game_token", "")) \
+            and not token_refresh_due(account, cache["game_token"]):
         logger.info(f"[{account}] L0 hit: cached game_token is valid")
         return {
             "game_token": cache["game_token"],
@@ -643,13 +679,18 @@ async def _get_login_inner(account: str, password: str = "",
         if cache and cache.get("domain") and cache.get("token"):
             cache["proxy"] = proxy or ""     # 运行时属性，不落盘
             game_token = cache.get("game_token", "")
-            if game_token and validate_game_token(game_token):
+            if game_token and validate_game_token(game_token) \
+                    and not token_refresh_due(account, game_token):
                 logger.info(f"[{account}] get_login: cache hit")
                 login_trace.emit(
                     "login_path", method="-", account=account, ok=True,
                     summary={"path": "cache_hit"}, source="session")
                 cache["account"] = account
                 return cache
+            if game_token and validate_game_token(game_token):
+                # token 仍有效但已到本账号的错峰刷新点：主动刷新把
+                # 各账号到期时刻散开（防集体重登，廉价 venue/launch）
+                logger.info(f"[{account}] get_login: 到错峰刷新点，主动刷新")
             # 缓存有 session 但 game_token 过期 → 尝试刷新
             if game_token:
                 logger.info(f"[{account}] get_login: cached session valid, refreshing game_token")

@@ -75,9 +75,11 @@ _FORCE_101_GAME_TYPES = {2003, 2004, 2014, 2020}
 _HT_SEAT = 1
 _PT_BASE = 2
 
-# TableMonitor 分片建连控制（实测同 IP 密集建连会被 WAF 403/短封；
-# 3s 间隔实测可稳定建 11 条并发连接）
-_SHARD_CONNECT_INTERVAL_S = 3.0   # 分片建连间隔（秒）
+# TableMonitor 分片建连控制（实测同 IP 密集建连会被 WAF 403/短封）。
+# 2026-07-27 静默事件后改为**按代理出口分组限速**：同一出口下的
+# 连接串行、间隔 _SHARD_CONNECT_INTERVAL_S（3s→18s 上调）；不同
+# 出口的连接并行建；无代理（直连）全部视为同一组。
+_SHARD_CONNECT_INTERVAL_S = 18.0  # 同一代理出口的 WS 建连间隔（秒）
 _SHARD_CONNECT_RETRIES = 3        # 单分片失败重试次数
 _SHARD_RETRY_BACKOFF_S = 5.0      # 退避基数（第 n 次失败睡 n×base 秒）
 
@@ -506,7 +508,8 @@ class GameClient:
 
     async def monitor_tables(self, tables: list[dict],
                              accounts: list[dict] | None = None,
-                             kick_policy: str = "stay"
+                             kick_policy: str = "stay",
+                             connect_interval_s: float = 0
                              ) -> "TableMonitor":
         """创建持续桌台监控（人为主动控制退出，无自动超时）。
 
@@ -530,6 +533,9 @@ class GameClient:
                 "rotate"：被踢后换另一个账号分片重进该桌（降低单账号
                     反复被踢的曝光；仅一个存活分片时退回同账号重进）；
                 "follow_system"：遵循系统踢出，该桌停止监控。
+            connect_interval_s: 同一代理出口的 WS 建连间隔（秒），
+                <=0 时用模块默认 _SHARD_CONNECT_INTERVAL_S（18s）。
+                不同出口的连接并行建立；无代理全部视为同一组。
 
         Returns:
             TableMonitor — `async with` 进入后持续运行:
@@ -577,7 +583,8 @@ class GameClient:
         for sess, ts in zip(sessions, groups):
             conn = _WSConnection(sess, on_before_connect=self._make_refresh_cb())
             shards.append(MultiTableSession(conn, ts, kick_policy=kick_policy))
-        return TableMonitor(shards, self._make_refresh_cb)
+        return TableMonitor(shards, self._make_refresh_cb,
+                            connect_interval_s=connect_interval_s)
 
     def _make_refresh_cb(self):
         """生成与账号无关的刷新回调（复用 _refresh_cb 的兜底逻辑）。"""
@@ -1364,27 +1371,53 @@ class TableMonitor:
     **不内置任何自动退出**——leave_table()/aclose() 由调用方控制。
     """
 
-    def __init__(self, shards: list[MultiTableSession], refresh_cb_factory):
+    def __init__(self, shards: list[MultiTableSession], refresh_cb_factory,
+                 connect_interval_s: float = 0):
         self._shards = shards
         self._refresh_cb_factory = refresh_cb_factory
         self._closed = False
         self._rotate = bool(shards) and shards[0].kick_policy == "rotate"
+        self._connect_interval_s = (connect_interval_s
+                                    if connect_interval_s > 0
+                                    else _SHARD_CONNECT_INTERVAL_S)
 
     # ── 生命周期 ──
 
     async def __aenter__(self) -> "TableMonitor":
-        """逐分片建连：限速 + 重试 + 失败降级（防 WAF 连接风暴）。
+        """分片建连：**按代理出口分组限速**（防 WAF 连接风暴）。
 
         实测平台对同 IP 的 WS 新建连有速率/并发限制（密集建连会
-        收到 HTTP 403 并可能触发短时封禁）。因此分片间间隔
-        _SHARD_CONNECT_INTERVAL_S 秒，失败按指数退避重试
-        _SHARD_CONNECT_RETRIES 次；仍失败的分片剔除出列表降级运行
-        （其初始桌会丢失，日志告警）。全部分片失败才抛 LoginError。
+        收到 HTTP 403 并可能触发短时封禁；2026-07-27 30 账号经 3 出口
+        集中建连后整批会话被静默）。同一出口下的分片串行、间隔
+        connect_interval_s 秒（默认 18s）；不同出口的分片并行建连；
+        无代理（直连）全部视为同一组。单分片失败指数退避重试
+        _SHARD_CONNECT_RETRIES 次；仍失败的分片剔除降级运行
+        （其初始桌丢失，日志告警）。全部分片失败才抛 LoginError。
         """
+        groups: dict[str, list[MultiTableSession]] = {}
+        for shard in self._shards:
+            key = shard._conn._session.get("proxy") or ""   # 空=直连组
+            groups.setdefault(key, []).append(shard)
+        nested = await asyncio.gather(
+            *(self._connect_group(g) for g in groups.values()))
+        live = [s for g in nested for s in g]
+        if not live:
+            raise LoginError("TableMonitor: 所有分片连接均失败")
+        if len(live) < len(self._shards):
+            logger.warning(
+                f"[TableMonitor] {len(self._shards) - len(live)} 个分片"
+                f"被剔除，以 {len(live)} 个分片降级运行")
+        self._shards = live
+        return self
+
+    async def _connect_group(self,
+                             shards: list[MultiTableSession]
+                             ) -> list[MultiTableSession]:
+        """同一出口的分片串行建连：限速 + 重试 + 失败剔除。"""
         live: list[MultiTableSession] = []
-        for i, shard in enumerate(self._shards):
+        for i, shard in enumerate(shards):
             if i:
-                await asyncio.sleep(_SHARD_CONNECT_INTERVAL_S)
+                await asyncio.sleep(self._connect_interval_s)
             err: Exception | None = None
             for attempt in range(_SHARD_CONNECT_RETRIES):
                 try:
@@ -1405,14 +1438,7 @@ class TableMonitor:
                     await shard.__aexit__(None, None, None)
                 except Exception:
                     pass
-        if not live:
-            raise LoginError("TableMonitor: 所有分片连接均失败")
-        if len(live) < len(self._shards):
-            logger.warning(
-                f"[TableMonitor] {len(self._shards) - len(live)} 个分片"
-                f"被剔除，以 {len(live)} 个分片降级运行")
-        self._shards = live
-        return self
+        return live
 
     async def __aexit__(self, *exc):
         await self.aclose()
