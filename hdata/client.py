@@ -34,7 +34,9 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
@@ -509,7 +511,9 @@ class GameClient:
     async def monitor_tables(self, tables: list[dict],
                              accounts: list[dict] | None = None,
                              kick_policy: str = "stay",
-                             connect_interval_s: float = 0
+                             connect_interval_s: float = 0,
+                             readd_interval_s: float = 18.0,
+                             readd_jitter_s: float = 5.0
                              ) -> "TableMonitor":
         """创建持续桌台监控（人为主动控制退出，无自动超时）。
 
@@ -536,6 +540,11 @@ class GameClient:
             connect_interval_s: 同一代理出口的 WS 建连间隔（秒），
                 <=0 时用模块默认 _SHARD_CONNECT_INTERVAL_S（18s）。
                 不同出口的连接并行建立；无代理全部视为同一组。
+            readd_interval_s: **每账号**进桌间隔均值（秒，默认 18）。
+                各分片独立节奏器并行：同一账号的进桌指令（首轮铺桌/
+                补桌/被踢 rotate/失效接管四路统一排队）按
+                readd_interval_s ± readd_jitter_s 随机间隔串行发送。
+            readd_jitter_s: 进桌间隔随机抖动幅度（秒，默认 ±5）。
 
         Returns:
             TableMonitor — `async with` 进入后持续运行:
@@ -582,7 +591,10 @@ class GameClient:
         shards: list[MultiTableSession] = []
         for sess, ts in zip(sessions, groups):
             conn = _WSConnection(sess, on_before_connect=self._make_refresh_cb())
-            shards.append(MultiTableSession(conn, ts, kick_policy=kick_policy))
+            shards.append(MultiTableSession(
+                conn, ts, kick_policy=kick_policy,
+                readd_interval_s=readd_interval_s,
+                readd_jitter_s=readd_jitter_s))
         return TableMonitor(shards, self._make_refresh_cb,
                             connect_interval_s=connect_interval_s)
 
@@ -1128,6 +1140,116 @@ class TableSession:
             }
 
 
+# ── _EnterPacer（每账号进桌节奏器） ────────────────────
+
+
+class _EnterPacer:
+    """单连接进桌节奏器：队列 + 后台 worker，按账号维度限速发进桌指令。
+
+    所有动态进桌路径（首轮铺桌/重分片补桌/被踢 rotate 重进/失效接管
+    重进）统一经 MultiTableSession.request_enter() 汇入本队列——同一
+    账号的进桌指令绝不并发发出；不同账号（分片）各有独立节奏器，
+    天然并行。节奏模型：
+      - 分片首条指令立即发送；
+      - 之后每条距上条成功发送间隔 uniform(interval-jitter,
+        interval+jitter) 秒（下限 _MIN_GAP_S），逐条独立随机；
+      - urgent=True（被踢/接管类重进）插队到队头，但仍受最小间隔
+        约束，不提前发送；
+      - 发送失败重排队尾再试一次，再失败丢弃并告警（桌台簿记留在
+        MultiTableSession._tables，交上层收场/重建逻辑处理）。
+    """
+
+    _MIN_GAP_S = 1.0
+
+    def __init__(self, enter_fn, interval_s: float = 18.0,
+                 jitter_s: float = 5.0, rng: random.Random | None = None):
+        self._enter_fn = enter_fn
+        self._interval = float(interval_s)
+        self._jitter = max(0.0, float(jitter_s))
+        self._rng = rng or random.Random()
+        self._queue: deque[tuple[dict, bool]] = deque()  # (桌, 已重试过)
+        self._wake = asyncio.Event()
+        self._task: asyncio.Task | None = None
+        self._last_send = 0.0   # monotonic 时刻；0=从未发送（首条立即）
+        self._closing = False
+
+    @property
+    def started(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    @property
+    def pending(self) -> int:
+        return len(self._queue)
+
+    def start(self):
+        if not self.started:
+            self._closing = False
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self):
+        """停 worker 并丢弃未发队列（连接关闭后补发无意义）。幂等。"""
+        self._closing = True
+        self._queue.clear()
+        self._wake.set()
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+    def note_sent(self):
+        """直发路径（初始桌/未 start 的降级直发）后同步节拍基准。"""
+        self._last_send = time.monotonic()
+
+    def push(self, t: dict, urgent: bool = False):
+        if urgent:
+            self._queue.appendleft((t, False))
+        else:
+            self._queue.append((t, False))
+        self._wake.set()
+
+    def _next_gap(self) -> float:
+        # 下限防误配（interval 配成 0 之类），但不超过 interval 本身，
+        # 以免抹掉测试/特殊场景的小间隔配置
+        floor = min(self._MIN_GAP_S, self._interval)
+        return max(floor, self._rng.uniform(
+            self._interval - self._jitter, self._interval + self._jitter))
+
+    async def _run(self):
+        while True:
+            while not self._queue:
+                self._wake.clear()
+                await self._wake.wait()
+            if self._closing:
+                return
+            # 最小间隔：urgent 也不提前，只是排在队头先走
+            if self._last_send:
+                wait = self._next_gap() \
+                    - (time.monotonic() - self._last_send)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            if self._closing or not self._queue:
+                continue
+            t, retried = self._queue.popleft()
+            try:
+                await self._enter_fn(t)
+            except Exception as e:
+                if not retried and not self._closing:
+                    self._queue.append((t, True))
+                    logger.warning(f"[EnterPacer] 桌{t.get('table_id')} "
+                                   f"进桌发送失败，重排队尾再试一次: {e}")
+                else:
+                    logger.warning(f"[EnterPacer] 桌{t.get('table_id')} "
+                                   f"进桌指令两次发送失败，丢弃"
+                                   f"（桌台簿记保留，交上层收场）: {e}")
+            else:
+                self._last_send = time.monotonic()
+
+
 # ── MultiTableSession ────────────────────────────────
 
 
@@ -1143,7 +1265,10 @@ class MultiTableSession:
     """
 
     def __init__(self, conn: "_WSConnection", tables: list[dict],
-                 kick_policy: str = "stay"):
+                 kick_policy: str = "stay",
+                 readd_interval_s: float = 18.0,
+                 readd_jitter_s: float = 5.0,
+                 rng: random.Random | None = None):
         self._conn = conn
         self._tables: list[dict] = [
             {"table_id": int(t["table_id"]),
@@ -1154,6 +1279,10 @@ class MultiTableSession:
             raise ValueError(
                 "kick_policy 只能是 'stay' / 'follow_system' / 'rotate'")
         self.kick_policy = kick_policy
+        # 每账号（本分片）进桌节奏器：动态进桌统一经 request_enter()
+        # 排队，均值 readd_interval_s ± readd_jitter_s 随机间隔串行发送
+        self._pacer = _EnterPacer(self._enter_one, readd_interval_s,
+                                  readd_jitter_s, rng)
         self.snapshots: dict[int, dict] = {}
         self._entered: set[int] = set()
         self._leaving: set[int] = set()   # 主动离桌中的桌（防误判为被踢）
@@ -1167,11 +1296,15 @@ class MultiTableSession:
 
     async def __aenter__(self) -> "MultiTableSession":
         await self._conn.__aenter__()
+        self._pacer.start()
         for t in self._tables:
-            await self._enter_one(t)
+            await self._enter_one(t)   # 初始桌随建连直发（动态进桌才走节奏器）
+        if self._tables:
+            self._pacer.note_sent()    # 后续排队指令与初始桌保持间隔
         return self
 
     async def __aexit__(self, *exc):
+        await self._pacer.stop()       # 撤销未发的排队进桌指令
         for t in self._tables:
             await self._leave_one(t)
         await self._conn.__aexit__(*exc)
@@ -1197,6 +1330,21 @@ class MultiTableSession:
             service_type_id=OT_GAME))
         self._entered.add(t["table_id"])
         # 快照通过事件循环里的 401 响应异步填充（见 events/_fill_snapshot）
+
+    async def request_enter(self, t: dict, urgent: bool = False):
+        """动态进桌统一入口（四路收敛点）：节奏器排队限速发送。
+
+        节奏器运行中（__aenter__ 之后）：入队即返回，后台 worker 按
+        readd_interval_s ± readd_jitter_s 随机间隔串行发送；
+        urgent=True（被踢 rotate / 失效接管类重进）插队队头，仍受
+        最小间隔约束。节奏器未启动（未进 __aenter__ 的直驱用法）
+        降级为同步直发，保持旧语义。
+        """
+        if self._pacer.started:
+            self._pacer.push(t, urgent=urgent)
+        else:
+            await self._enter_one(t)
+            self._pacer.note_sent()
 
     async def _leave_one(self, t: dict):
         if t["table_id"] not in self._entered:
@@ -1310,12 +1458,12 @@ class MultiTableSession:
                     if not self._tables and self.kick_policy == "follow_system":
                         return
                     continue
-                # stay：自动重进该桌
+                # stay：自动重进该桌（经节奏器，与其他进桌路径同一队列）
                 self._entered.discard(table_id)
                 t = next((x for x in self._tables
                           if x["table_id"] == table_id), None)
                 if t:
-                    await self._enter_one(t)
+                    await self.request_enter(t, urgent=True)
                 yield {"type": "kick", "protocol_id": pid,
                        "table_id": table_id,
                        "data": {"action": "auto_reenter", "dropped": False,
@@ -1478,13 +1626,17 @@ class TableMonitor:
 
     # ── 动态控制 ──
 
-    async def add_table(self, table: dict):
-        """动态加入一张桌（分配到负载最小的分片）。"""
+    async def add_table(self, table: dict, urgent: bool = False):
+        """动态加入一张桌（分配到负载最小的分片，经该分片节奏器限速进桌）。
+
+        urgent=True（失效接管/断线重进类）插队到目标分片队头，
+        仍受该账号最小进桌间隔约束。
+        """
         shard = min(self._shards, key=lambda s: len(s._tables))
         t = {"table_id": int(table["table_id"]),
              "game_type_id": int(table.get("game_type_id", 2001))}
         shard._tables.append(t)
-        await shard._enter_one(t)
+        await shard.request_enter(t, urgent=urgent)
 
     async def leave_table(self, table_id: int):
         """主动退出某桌（其他桌不受影响）。"""
@@ -1505,8 +1657,10 @@ class TableMonitor:
 
         目标分片 = 源分片以外负载最小者；仅一个存活分片时退回源分片
         原账号重进（action="auto_reenter"，保监控连续性）。重进指令
-        发送失败则把桌从目标分片撤回，事件标记 rotate_failed 交给
-        调用方收场/重建逻辑处理。
+        经目标分片节奏器 **urgent 插队**发送（入队成功即标记
+        rotated/auto_reenter）；排队后的发送失败由节奏器重试一次再
+        丢弃告警（桌留目标分片簿记）。仅节奏器未启动的降级直发路径
+        会同步失败：撤回该桌、事件标记 rotate_failed 交调用方收场。
         """
         t = ev["data"].get("table")
         if not t:
@@ -1517,7 +1671,7 @@ class TableMonitor:
               "game_type_id": int(t.get("game_type_id", 2001))}
         target._tables.append(nt)
         try:
-            await target._enter_one(nt)
+            await target.request_enter(nt, urgent=True)
         except Exception as e:
             target._tables.remove(nt)
             logger.warning(f"[TableMonitor] 轮转重进失败 桌{nt['table_id']}"
