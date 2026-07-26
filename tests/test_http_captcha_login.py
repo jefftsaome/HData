@@ -4,6 +4,19 @@ from types import SimpleNamespace
 
 import pytest
 
+
+@pytest.fixture
+def logcap():
+    """直接挂 loguru sink 捕获日志（loguru 默认 sink 绑定真实 stderr，
+    capsys/capfd 在异步测试组合下会受 pytest 全局捕获状态影响，不可靠）。"""
+    from loguru import logger as _lg
+    msgs = []
+    sink = _lg.add(lambda m: msgs.append(str(m)), level="DEBUG")
+    try:
+        yield SimpleNamespace(text=lambda: "".join(msgs))
+    finally:
+        _lg.remove(sink)
+
 from hdata.auth.captcha_solver import (
     CaptchaChallenge,
     CaptchaSolution,
@@ -555,7 +568,7 @@ async def test_verify_rejects_nonmapping_protocol_values(monkeypatch, body, expe
 
 
 @pytest.mark.asyncio
-async def test_login_verify_diagnostics_redact_server_response(monkeypatch, capsys):
+async def test_login_verify_diagnostics_redact_server_response(monkeypatch, logcap):
     from hdata.auth import http_login
 
     sentinel = "server-response-secret"
@@ -591,7 +604,7 @@ async def test_login_verify_diagnostics_redact_server_response(monkeypatch, caps
     )
 
     assert await http_login.login("account", "password", geepass_token="token", max_retries=1) is None
-    output = capsys.readouterr().out
+    output = logcap.text()
     assert sentinel not in output
     assert "result=unexpected_result" in output
     assert "e_obj_bytes=12" in output
@@ -654,7 +667,7 @@ async def test_refresh_game_token_rejects_nonmapping_decrypted_params(monkeypatc
     assert "stage=params_decrypt_parse" in str(exc_info.value)
 
 
-def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monkeypatch, capsys):
+def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monkeypatch, logcap):
     from hdata.auth import http_login
 
     sentinel = "validate-login-uuid-server-secret"
@@ -677,14 +690,14 @@ def test_http_login_stage_output_redacts_server_message_and_uuid_exception(monke
     )
     assert http_login._get_uuid("https://safe.example", "site-token") == ""
 
-    output = capsys.readouterr().out
+    output = logcap.text()
     assert sentinel not in output
     assert "stage=validate" in output
     assert "stage=login" in output
     assert "stage=uuid" in output
 
 
-def test_http_login_stage_output_normalizes_untrusted_status(monkeypatch, capsys):
+def test_http_login_stage_output_normalizes_untrusted_status(monkeypatch, logcap):
     from hdata.auth import http_login
 
     sentinel = "status-code-secret"
@@ -700,12 +713,12 @@ def test_http_login_stage_output_normalizes_untrusted_status(monkeypatch, capsys
     assert not http_login._validate_geecheck("https://safe.example", "lot", {})
     assert http_login._do_login("https://safe.example", "user", "hash", "lot") is None
 
-    output = capsys.readouterr().out
+    output = logcap.text()
     assert sentinel not in output
     assert output.count("status=unexpected_status") == 2
 
 
-def test_http_login_stage_output_redacts_request_exceptions(monkeypatch, capsys):
+def test_http_login_stage_output_redacts_request_exceptions(monkeypatch, logcap):
     from hdata.auth import http_login
 
     sentinel = "validate-login-request-secret"
@@ -718,7 +731,7 @@ def test_http_login_stage_output_redacts_request_exceptions(monkeypatch, capsys)
     assert not http_login._validate_geecheck("https://safe.example", "lot", {})
     assert http_login._do_login("https://safe.example", "user", "hash", "lot") is None
 
-    output = capsys.readouterr().out
+    output = logcap.text()
     assert sentinel not in output
     assert "stage=validate" in output
     assert "stage=login" in output

@@ -31,6 +31,7 @@ import urllib.parse
 from typing import Optional
 
 from curl_cffi import requests as cr
+from loguru import logger
 
 from hdata.auth.captcha import fetch_captcha as _fetch_captcha
 from hdata.auth.captcha_solver import (
@@ -207,7 +208,7 @@ def _safe_status_code(value: object) -> int | str:
     return value if type(value) is int else "unexpected_status"
 
 
-def _kaptchcate(domain: str, proxy: str = "") -> bool:
+def _kaptchcate(domain: str, proxy: str = "", tag: str = "") -> bool:
     """验证码预注册（浏览器在每次弹验证码前必调，status_code 6022 为成功）。"""
     try:
         resp = cr.post(
@@ -221,10 +222,11 @@ def _kaptchcate(domain: str, proxy: str = "") -> bool:
         )
         body = resp.json()
         ok = isinstance(body, Mapping) and body.get("status_code") == 6022
-        print(f"  kaptchcate: {'success' if ok else 'unexpected ' + str(body.get('status_code'))}")
+        logger.debug("{}kaptchcate: {}",
+                     tag, "success" if ok else f"unexpected {body.get('status_code')}")
         return ok
     except Exception as exc:
-        print(f"  kaptchcate: failed exception={type(exc).__name__}")
+        logger.warning("{}kaptchcate: failed exception={}", tag, type(exc).__name__)
         return False
 
 
@@ -238,7 +240,7 @@ def _local_tz_offset() -> int:
 
 
 def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
-                       proxy: str = "") -> str:
+                       proxy: str = "", tag: str = "") -> str:
     """调用 validateGeeCheckV2 API 验证验证码。成功返回 user_ip，失败返回 ''。"""
     validate_url = f"{domain}/site/api/v1/user/member/validateGeeCheckV2"
     validate_body = {
@@ -261,13 +263,15 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
             proxies=_px(proxy),
         )
     except Exception as exc:
-        print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
+        logger.warning("{}validateGeeCheckV2: failed stage=validate exception={}",
+                       tag, type(exc).__name__)
         return ""
 
     try:
         vresp = resp.json()
     except Exception as exc:
-        print(f"  validateGeeCheckV2: failed stage=validate exception={type(exc).__name__}")
+        logger.warning("{}validateGeeCheckV2: failed stage=validate exception={}",
+                       tag, type(exc).__name__)
         return ""
     raw_status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
     status_code = _safe_status_code(raw_status_code)
@@ -277,14 +281,15 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
         data = vresp.get("data", {}) if isinstance(vresp, Mapping) else {}
         args = data.get("captcha_args", {}) if isinstance(data, Mapping) else {}
         user_ip = args.get("user_ip", "") if isinstance(args, Mapping) else ""
-        print(f"  validateGeeCheckV2: success")
+        logger.debug("{}validateGeeCheckV2: success", tag)
         return user_ip or "ok"
 
-    print(f"  validateGeeCheckV2: failed stage=validate status={status_code}")
+    logger.warning("{}validateGeeCheckV2: failed stage=validate status={}",
+                   tag, status_code)
     return ""
 
 
-def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: str = "", proxy: str = "") -> Optional[str]:
+def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: str = "", proxy: str = "", tag: str = "") -> Optional[str]:
     """调用 login API 获取 X-API-TOKEN。"""
     login_url = f"{domain}/site/api/v1/user/login"
     login_body = {
@@ -314,32 +319,32 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
             proxies=_px(proxy),
         )
     except Exception as exc:
-        print(f"  login: failed stage=login exception={type(exc).__name__}")
+        logger.warning("{}login: failed stage=login exception={}", tag, type(exc).__name__)
         return None
 
     try:
         lresp = resp.json()
     except Exception as exc:
-        print(f"  login: failed stage=login exception={type(exc).__name__}")
+        logger.warning("{}login: failed stage=login exception={}", tag, type(exc).__name__)
         return None
 
     raw_status_code = lresp.get("status_code") if isinstance(lresp, Mapping) else None
     status_code = _safe_status_code(raw_status_code)
     if status_code != 6000:
-        print(f"  login: failed stage=login status={status_code}")
+        logger.warning("{}login: failed stage=login status={}", tag, status_code)
         return None
 
     login_data = lresp.get("data", {}) if isinstance(lresp, Mapping) else {}
     token = login_data.get("token", "") if isinstance(login_data, Mapping) else ""
     if not token:
-        print("  login: no token in response")
+        logger.warning("{}login: no token in response", tag)
         return None
 
-    print(f"  login: success")
+    logger.debug("{}login: success", tag)
     return token
 
 
-def _get_uuid(domain: str, api_token: str, proxy: str = "") -> str:
+def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "") -> str:
     """从 JWT API 获取 UUID。"""
     try:
         resp = cr.post(
@@ -363,7 +368,7 @@ def _get_uuid(domain: str, api_token: str, proxy: str = "") -> str:
                     )
                     return payload.get("uuid", "")
     except Exception as exc:
-        print(f"  UUID 获取失败: stage=uuid exception={type(exc).__name__}")
+        logger.warning("{}UUID 获取失败: stage=uuid exception={}", tag, type(exc).__name__)
 
     return ""
 
@@ -400,11 +405,12 @@ async def login(
     Returns:
         {"token": ..., "uuid": ..., "domain": ..., "lot_number": ...} 或 None
     """
+    tag = f"[{user}] "
     pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
     domain = _get_domain()
 
     if not domain:
-        print("❌ 无法解析域名")
+        logger.error("{}无法解析域名", tag)
         return None
 
     # 解析 token：显式专用 token 优先；旧版 token 仅映射到 jfbym。
@@ -418,29 +424,29 @@ async def login(
     solvers = _build_solvers(gp_token, jf_token)
 
     if not gp_token and not jf_token:
-        print("❌ 没有提供任何打码平台 token")
+        logger.error("{}没有提供任何打码平台 token", tag)
         return None
 
-    print(f"域名: {domain}")
+    logger.info("{}域名: {}", tag, domain)
 
     for retry in range(max_retries):
-        print(f"\n--- 第 {retry + 1}/{max_retries} 次尝试 ---")
+        logger.info("{}--- 第 {}/{} 次尝试 ---", tag, retry + 1, max_retries)
 
         # 0. 验证码预注册（浏览器每次弹验证码前必调）
-        print("[0/6] kaptchcate 预注册...")
-        _kaptchcate(domain, proxy)  # 失败不阻断，与浏览器容错行为一致
+        logger.info("{}[0/6] kaptchcate 预注册...", tag)
+        _kaptchcate(domain, proxy, tag)  # 失败不阻断，与浏览器容错行为一致
 
         # 1. 获取验证码
-        print("[1/6] 获取验证码...")
+        logger.info("{}[1/6] 获取验证码...", tag)
         load_data = _fetch_captcha(proxy=proxy)
         if not load_data:
-            print("  ❌ fetch_captcha 失败")
+            logger.warning("{}fetch_captcha 失败", tag)
             continue
 
-        print(f"  ✅ lot_number: {load_data['lot_number'][:20]}...")
+        logger.debug("{}lot_number: {}...", tag, load_data["lot_number"][:20])
 
         # 2. 识别坐标
-        print("[2/5] 识别验证码...")
+        logger.info("{}[2/6] 识别验证码...", tag)
         challenge = CaptchaChallenge(
             lot_number=load_data["lot_number"],
             payload=load_data["payload"],
@@ -459,52 +465,53 @@ async def login(
             continue
         coords = solution.coords
         if not coords:
-            print("  ❌ 验证码识别失败")
+            logger.warning("{}验证码识别失败", tag)
             continue
 
-        print(f"  ✅ 坐标: {coords}")
+        logger.debug("{}坐标: {}", tag, coords)
 
         # 3. Verify
-        print("[3/6] 验证验证码...")
+        logger.info("{}[3/6] 验证验证码...", tag)
         try:
             seccode = await _verify_captcha(load_data, coords, proxy)
         except VerifyError as exc:
             fields = ",".join(exc.diagnostics.get("e_obj_fields", []))
             size = exc.diagnostics.get("e_obj_bytes", 0)
-            print(
-                f"  verify failed: result={exc.result}, "
-                f"fail_count={exc.fail_count}, lot={load_data['lot_number'][:8]}..., "
-                f"e_obj_bytes={size}, e_obj_fields={fields}"
+            logger.warning(
+                "{}verify failed: result={}, fail_count={}, lot={}..., "
+                "e_obj_bytes={}, e_obj_fields={}",
+                tag, exc.result, exc.fail_count, load_data["lot_number"][:8],
+                size, fields,
             )
             continue
 
         if not seccode:
             continue
 
-        print("  ✅ seccode obtained")
+        logger.debug("{}seccode obtained", tag)
 
         # 4. Validate（返回 user_ip 用于计算 X-API-FINGER）
-        print("[4/6] 校验验证码...")
+        logger.info("{}[4/6] 校验验证码...", tag)
         user_ip = _validate_geecheck(
-            domain, load_data["lot_number"], seccode, proxy)
+            domain, load_data["lot_number"], seccode, proxy, tag)
         if not user_ip:
-            print("  ❌ validateGeeCheckV2 失败")
+            logger.warning("{}validateGeeCheckV2 失败", tag)
             continue
 
         # 5. Login
-        print("[5/6] 登录...")
+        logger.info("{}[5/6] 登录...", tag)
         api_token = _do_login(
             domain, user, pwd_md5, load_data["lot_number"],
             user_ip=user_ip if "." in user_ip else "",
-            proxy=proxy,
+            proxy=proxy, tag=tag,
         )
         if not api_token:
-            print("  ❌ 登录失败")
+            logger.warning("{}登录失败", tag)
             continue
 
         # 6. 获取 UUID
-        print("[6/6] 获取 UUID...")
-        uuid_val = _get_uuid(domain, api_token, proxy)
+        logger.info("{}[6/6] 获取 UUID...", tag)
+        uuid_val = _get_uuid(domain, api_token, proxy, tag)
 
         result = {
             "token": api_token,
@@ -513,12 +520,11 @@ async def login(
             "lot_number": load_data["lot_number"],
         }
 
-        print(f"\n✅ 登录成功!")
-        print(f"   UUID:  {uuid_val}")
+        logger.success("{}HTTP 打码登录成功 (uuid={})", tag, uuid_val)
 
         return result
 
-    print(f"\n❌ 所有 {max_retries} 次尝试均失败")
+    logger.error("{}所有 {} 次尝试均失败", tag, max_retries)
     return None
 
 
