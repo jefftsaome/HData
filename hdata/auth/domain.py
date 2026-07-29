@@ -25,7 +25,9 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
-_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / ".cache"
+from hdata.paths import cache_dir as _cache_dir
+
+_CACHE_DIR = _cache_dir()
 
 DEFAULT_ENTRIES = [
     "https://leyu.com",

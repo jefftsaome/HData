@@ -61,8 +61,9 @@ DEFAULT_ENTRY_URL = "https://leyu.me"
 CHROME_PROFILE_DIR = _PROJ_ROOT / ".chrome_profile"
 # 默认认证缓存路径
 AUTH_CACHE_PATH = _PROJ_ROOT / ".auth_cache.json"
-# 缓存目录
-CACHE_DIR = _PROJ_ROOT / ".cache"
+# 缓存目录（用户 home 下，跨平台，与包安装位置解耦）
+from hdata.paths import cache_dir as _cache_dir
+CACHE_DIR = _cache_dir()
 # 等待人工登录时的日志心跳间隔（秒）
 WAIT_HEARTBEAT_S = 30
 # 已登录但未捕获到 params 时，重导航大厅的间隔（秒）

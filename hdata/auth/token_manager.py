@@ -39,14 +39,15 @@ from hdata.auth.params import (
 )
 from htools.utils.logger import get_logger
 
+from hdata.paths import cache_dir as _cache_dir
+
 logger = get_logger(__name__)
 
 # ═══════════════════════════════════════════════════════════
 # 常量
 # ═══════════════════════════════════════════════════════════
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent.parent
-CACHE_DIR = _PROJ_ROOT / ".cache"
+CACHE_DIR = _cache_dir()
 PROFILE_ROOT = CACHE_DIR / "browser_profiles"
 
 AES_KEY = b"ZFRYCMdFYGf0i5HgO0oWvFV0terUABU0"

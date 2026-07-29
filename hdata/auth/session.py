@@ -37,10 +37,11 @@ from hdata.auth.params import (
 from hdata.auth import login_trace
 from htools.utils.logger import get_logger
 
+from hdata.paths import cache_dir as _cache_dir
+
 logger = get_logger(__name__)
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent.parent
-CACHE_DIR = _PROJ_ROOT / ".cache"
+CACHE_DIR = _cache_dir()
 
 # WS 端口：不再写死。游戏前端（egret index release js）的拼接规则是
 #   socketServer = `wss://wsproxy.${params.backendDomainUrl.trim()}`
@@ -846,10 +847,8 @@ async def _get_login_inner(account: str, password: str = "",
     logger.info(f"[{account}] get_login: launching browser, domain={domain or '(will auto-detect)'}")
 
     from hdata.auth.browser_login import GameBrowserLogin
-    from pathlib import Path as _Path
 
-    PROJ_ROOT = _Path(__file__).resolve().parent.parent.parent
-    profile_dir = PROJ_ROOT / ".cache" / "browser_profiles" / account
+    profile_dir = CACHE_DIR / "browser_profiles" / account
     auth_cache_path = _cache_path(account)
 
     bot = GameBrowserLogin(

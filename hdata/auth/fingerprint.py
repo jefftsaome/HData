@@ -29,9 +29,9 @@ RESOLUTION_POOL: list[tuple[int, int]] = [
     (2560, 1440),
 ]
 
-_FINGER_PROFILE_DIR = (
-    Path(__file__).resolve().parent.parent.parent / ".cache"
-)
+from hdata.paths import cache_dir as _cache_dir
+
+_FINGER_PROFILE_DIR = _cache_dir()
 
 
 def get_finger_profile(account: str) -> dict:

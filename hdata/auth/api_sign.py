@@ -17,12 +17,15 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 # 签名脚本真源随包分发（hdata/auth/）；项目根 scripts/ 仅为开发期转发入口，
-# 作 fallback 保险。_ROOT 仍用于 uuid 缓存定位。
+# 作 fallback 保险。_ROOT 仍用于签名脚本 fallback 定位。
 _SIGN_JS_PKG = Path(__file__).resolve().parent / "sign_wasm.cjs"
 _SIGN_JS_DEV = _ROOT / "scripts" / "sign_wasm.cjs"
 _SIGN_JS = _SIGN_JS_PKG if _SIGN_JS_PKG.exists() else _SIGN_JS_DEV
-_UUID_CACHE = _ROOT / ".cache" / "api_uuid.txt"
-_UUID_CACHE_DIR = _ROOT / ".cache"
+
+from hdata.paths import cache_dir as _cache_dir
+
+_UUID_CACHE_DIR = _cache_dir()
+_UUID_CACHE = _UUID_CACHE_DIR / "api_uuid.txt"
 
 _NODE = shutil.which("node")
 
