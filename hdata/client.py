@@ -714,9 +714,13 @@ class _WSConnection:
                                "沿用现有 token 尝试连接")
         self._rebuild_cfg()
         self._player_id = self._session.get("game_player_id", 0)
+        from hdata.auth.fingerprint import get_ua
         self._ws = await websockets.connect(
             self._cfg["ws_url"], open_timeout=12, close_timeout=3,
             max_size=50 * 1024 * 1024,
+            additional_headers={
+                "User-Agent": get_ua(self._session.get("account", "")),
+            },
             proxy=self._session.get("proxy") or None)
         await self._login()
         self._hb_task = asyncio.create_task(self._heartbeat_loop())
@@ -1783,9 +1787,10 @@ def _gateway_request(method: str, url: str, payload: dict | None,
         body = enc.encode()
 
     proxy = session.get("proxy") or ""
+    from hdata.auth.fingerprint import get_impersonate
     resp = requests.request(
         method, url, data=body, headers=headers,
-        impersonate="chrome110", timeout=15,
+        impersonate=get_impersonate(session.get("account", "")), timeout=15,
         proxies={"http": proxy, "https": proxy} if proxy else None)
     resp.raise_for_status()
     text = resp.text

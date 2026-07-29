@@ -38,6 +38,7 @@ from hdata.auth import login_trace
 from htools.utils.logger import get_logger
 
 from hdata.paths import cache_dir as _cache_dir
+from hdata.auth.fingerprint import get_impersonate
 
 logger = get_logger(__name__)
 
@@ -281,6 +282,21 @@ def _device_uuid_for(session: dict) -> str:
     return session.get("uuid", "")
 
 
+def _ua_for(session: dict) -> str:
+    """User-Agent 取值：按账号取指纹画像 UA（与 TLS impersonate 版本一致），
+    无账号上下文时给默认最新版 Windows Chrome UA。"""
+    try:
+        from hdata.auth.fingerprint import get_ua
+
+        return get_ua(session.get("account", ""))
+    except Exception:
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0.0.0 Safari/537.36"
+        )
+
+
 def _api_headers(session: dict, url: str) -> dict:
     """构造乐鱼 API 请求头（含 X-API-XXX 签名）。
 
@@ -332,7 +348,7 @@ def _api_headers(session: dict, url: str) -> dict:
         "X-API-VERSION": "2.0.0",
         "Content-Type": "application/json",
         "Referer": session.get("domain", "") + "/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        "User-Agent": _ua_for(session),
         "Cookie": session.get("cookies", ""),
     }
 
@@ -373,7 +389,7 @@ async def _refresh_game_session_inner(account: str, session: dict) -> dict:
             url,
             headers=headers,
             json={"enName": "YBZR"},
-            impersonate="chrome110",
+            impersonate=get_impersonate(session.get("account", "")),
             timeout=15,
             proxies=proxies,
         )

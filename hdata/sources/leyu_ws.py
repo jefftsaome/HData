@@ -24,6 +24,7 @@ from typing import AsyncIterator, Callable
 
 from hdata.adapters.leyu_adapter import LeyuAdapter
 from hdata.capture.direct_client import WSClient
+from hdata.auth.fingerprint import get_ua
 from htools.interfaces import DataSource, SourceStatus
 from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
@@ -215,7 +216,9 @@ class WSSource(DataSource):
         for i, url in enumerate(candidates):
             if i > 0:
                 logger.info("尝试备用域名 ({}/{}): {}", i + 1, len(candidates), url[:80])
-            self._client = WSClient(url)
+            self._client = WSClient(
+                url,
+                user_agent=get_ua(self._game_session.get("account", "")))
             if await self._client.connect():
                 self._ws_url = url
                 logger.info("WS 连接成功: {}", url[:80])

@@ -15,6 +15,8 @@ import subprocess
 import uuid as _uuid_mod
 from pathlib import Path
 
+from hdata.auth.fingerprint import get_ua
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
 # 签名脚本真源随包分发（hdata/auth/）；项目根 scripts/ 仅为开发期转发入口，
 # 作 fallback 保险。_ROOT 仍用于签名脚本 fallback 定位。
@@ -128,11 +130,7 @@ def common_headers(
         "X-API-VERSION": "2.0.0",
         "X-API-SITE": "2001",
         "X-API-UUID": get_uuid(account),
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/149.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": get_ua(account),
     }
     if token:
         headers["X-API-TOKEN"] = token

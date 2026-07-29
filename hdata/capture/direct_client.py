@@ -16,8 +16,9 @@ class WSClient:
     key=iv="ED7AA06BD8628B55"，无任何明文协议头。
     """
 
-    def __init__(self, ws_url: str):
+    def __init__(self, ws_url: str, user_agent: str = ""):
         self._ws_url = ws_url
+        self._user_agent = user_agent
         self._ws: Any = None
         self._running = False
         self._on_message: Callable | None = None
@@ -30,9 +31,13 @@ class WSClient:
         """连接到 WS 代理服务器。"""
         try:
             import websockets
+            from hdata.auth.fingerprint import get_ua
             self._ws = await websockets.connect(
                 self._ws_url, open_timeout=12, close_timeout=3,
                 max_size=50 * 1024 * 1024,
+                additional_headers={
+                    "User-Agent": self._user_agent or get_ua(),
+                },
             )
             self._running = True
             logger.info("WS connected: {}", self._ws_url[:80])

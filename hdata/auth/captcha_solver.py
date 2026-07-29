@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from hdata.auth.fingerprint import get_impersonate
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -231,7 +233,7 @@ class JfbymSolver(CaptchaSolver):
         # 1. 下载背景图
         try:
             bg_b64 = base64.b64encode(
-                cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
+                cr.get(challenge.bg_url, impersonate=get_impersonate(), timeout=15).content
             ).decode()
         except Exception as exc:
             raise CaptchaSolveError(
@@ -250,7 +252,7 @@ class JfbymSolver(CaptchaSolver):
         for i, url in enumerate(challenge.ques_urls):
             try:
                 ref_b64 = base64.b64encode(
-                    cr.get(url, impersonate="chrome110", timeout=10).content
+                    cr.get(url, impersonate=get_impersonate(), timeout=10).content
                 ).decode()
             except Exception as exc:
                 raise CaptchaSolveError(
@@ -389,7 +391,7 @@ class GeepassSolver(CaptchaSolver):
         # 1. 下载背景图
         try:
             bg_b64 = base64.b64encode(
-                cr.get(challenge.bg_url, impersonate="chrome110", timeout=15).content
+                cr.get(challenge.bg_url, impersonate=get_impersonate(), timeout=15).content
             ).decode()
         except Exception as exc:
             raise CaptchaSolveError(
@@ -403,7 +405,7 @@ class GeepassSolver(CaptchaSolver):
         for url in challenge.ques_urls:
             try:
                 ref_b64 = base64.b64encode(
-                    cr.get(url, impersonate="chrome110", timeout=10).content
+                    cr.get(url, impersonate=get_impersonate(), timeout=10).content
                 ).decode()
             except Exception as exc:
                 raise CaptchaSolveError(

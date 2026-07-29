@@ -15,6 +15,7 @@ from curl_cffi import requests as cr
 from htools.utils.time import now_ms
 
 from hdata.auth import login_trace
+from hdata.auth.fingerprint import get_impersonate
 
 BOTION_LOAD = "https://bcaptcha.botion.com/load"
 BOTION_STATIC = "https://static.botion.com"
@@ -23,7 +24,7 @@ JFB_API = "http://api.jfbym.com/api/YmServer/customApi"
 
 
 def _get_domain() -> str:
-    resp = cr.get("https://leyu.me", impersonate="chrome110",
+    resp = cr.get("https://leyu.me", impersonate=get_impersonate(),
                   timeout=10, allow_redirects=True)
     m = re.match(r"https://[^/]+", resp.url)
     return m.group(0) if m else ""
@@ -43,7 +44,7 @@ def fetch_captcha(page_url: str = "", proxy: str = "") -> dict | None:
     proxies = {"http": proxy, "https": proxy} if proxy else None
     t0 = time.monotonic()
     try:
-        resp = cr.get(url, impersonate="chrome110", headers={"Referer": page_url},
+        resp = cr.get(url, impersonate=get_impersonate(), headers={"Referer": page_url},
                       timeout=15, proxies=proxies)
     except Exception as exc:
         login_trace.emit(
@@ -96,7 +97,7 @@ def ocr_ques(ques_urls: list[str], token: str) -> list[str]:
     """jfbym 10118 识别参考字，返回按序文字列表。"""
     chars = []
     for url in ques_urls:
-        img = cr.get(url, impersonate="chrome110", timeout=10).content
+        img = cr.get(url, impersonate=get_impersonate(), timeout=10).content
         b64 = base64.b64encode(img).decode()
         for attempt in range(3):
             try:
@@ -129,12 +130,12 @@ def solve(bg_url: str, ques_urls: list[str], token: str, bg_base64: str = "") ->
         bg_b64 = bg_base64
     else:
         bg_b64 = base64.b64encode(
-            cr.get(bg_url, impersonate="chrome110", timeout=15).content).decode()
+            cr.get(bg_url, impersonate=get_impersonate(), timeout=15).content).decode()
 
     body = {"token": token, "type": "31111", "image": bg_b64, "extra": "je4_click"}
     for i, url in enumerate(ques_urls):
         ref_b64 = base64.b64encode(
-            cr.get(url, impersonate="chrome110", timeout=10).content).decode()
+            cr.get(url, impersonate=get_impersonate(), timeout=10).content).decode()
         body[f"image_label{i+1}"] = ref_b64
 
     for attempt in range(6):

@@ -45,7 +45,8 @@ from hdata.auth.captcha_solver import (
 from hdata.auth.domain import resolve_domain as _resolve_domain
 from hdata.auth.geetest_signer import generate_w
 from hdata.auth.api_sign import common_headers
-from hdata.auth.fingerprint import leyu_finger, get_finger_profile
+from hdata.auth.fingerprint import (
+    leyu_finger, get_finger_profile, get_ua, get_impersonate)
 from hdata.auth import login_trace
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
@@ -84,7 +85,7 @@ def _get_domain() -> str:
         return domain
 
     # 兜底：直接从入口站重定向获取
-    resp = cr.get("https://leyu.me", impersonate="chrome110",
+    resp = cr.get("https://leyu.me", impersonate=get_impersonate(),
                   timeout=10, allow_redirects=True)
     m = re.match(r"https://[^/]+", resp.url)
     return m.group(0) if m else ""
@@ -152,11 +153,7 @@ async def _verify_captcha(load_data: dict, coords: str,
 
     headers = {
         "Referer": "https://www.leyu.me/",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/149.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": get_ua(),
         "Accept": "*/*",
         "Accept-Language": "zh-CN,zh;q=0.9",
     }
@@ -164,7 +161,7 @@ async def _verify_captcha(load_data: dict, coords: str,
     network_error = ""
     t0 = time.monotonic()
     try:
-        text = cr.get(url, impersonate="chrome110", headers=headers,
+        text = cr.get(url, impersonate=get_impersonate(), headers=headers,
                       timeout=30, proxies=_px(proxy)).text
     except Exception as exc:
         network_error = type(exc).__name__
@@ -260,7 +257,7 @@ def _kaptchcate(domain: str, proxy: str = "", tag: str = "", account: str = "") 
             json={"kType": 4},
             headers=common_headers("/site/api/v1/user/member/kaptchcate",
                                    domain=domain, account=account),
-            impersonate="chrome110",
+            impersonate=get_impersonate(account),
             timeout=15,
             proxies=_px(proxy),
         )
@@ -312,7 +309,7 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
                 "/site/api/v1/user/member/validateGeeCheckV2", domain=domain,
                 account=account,
             ),
-            impersonate="chrome110",
+            impersonate=get_impersonate(account),
             timeout=15,
             proxies=_px(proxy),
         )
@@ -395,7 +392,7 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
                 "/site/api/v1/user/login", domain=domain, finger=finger,
                 account=user,
             ),
-            impersonate="chrome110",
+            impersonate=get_impersonate(user),
             timeout=15,
             proxies=_px(proxy),
         )
@@ -452,7 +449,7 @@ def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "", accou
                 referer_path="/", account=account,
             ),
             json={},
-            impersonate="chrome110",
+            impersonate=get_impersonate(account),
             timeout=15,
             proxies=_px(proxy),
         )

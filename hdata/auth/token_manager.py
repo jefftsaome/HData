@@ -40,6 +40,7 @@ from hdata.auth.params import (
 from htools.utils.logger import get_logger
 
 from hdata.paths import cache_dir as _cache_dir
+from hdata.auth.fingerprint import get_impersonate
 
 logger = get_logger(__name__)
 
@@ -538,7 +539,7 @@ class TokenManager:
             "pt": ld.get("pt", "1"), "w": w,
         }
         url = "https://bcaptcha.botion.com/verify?" + urllib.parse.urlencode(params)
-        resp = cr.get(url, impersonate="chrome110",
+        resp = cr.get(url, impersonate=get_impersonate(self.account),
                       headers={"Referer": "https://www.leyu.me/"}, timeout=30)
         text = resp.text
 
@@ -568,7 +569,7 @@ class TokenManager:
         resp = cr.post(validate_url, json=validate_body,
                        headers={"Content-Type": "application/json",
                                 "Referer": f"{domain}/"},
-                       impersonate="chrome110", timeout=15)
+                       impersonate=get_impersonate(self.account), timeout=15)
         vresp = resp.json()
         if vresp.get("status_code") != 6000:
             logger.error(f"[{self.account}] validateGeeCheckV2 failed: {vresp}")
@@ -586,7 +587,7 @@ class TokenManager:
                        json=login_body,
                        headers={"Content-Type": "application/json",
                                 "Referer": f"{domain}/"},
-                       impersonate="chrome110", timeout=15)
+                       impersonate=get_impersonate(self.account), timeout=15)
         lresp = resp.json()
         token = (lresp.get("data", {}) or {}).get("token", "")
         if lresp.get("status_code") == 6000 and token:
@@ -724,13 +725,27 @@ class TokenManager:
 
         account = session.get("account", "") or self.account
         uuid_val = session.get("uuid", "")
+        ua_val = ""
         if account:
             try:
                 from hdata.auth.api_sign import get_uuid
+                from hdata.auth.fingerprint import get_ua
 
                 uuid_val = get_uuid(account) or uuid_val
+                ua_val = get_ua(account)
             except Exception:
                 pass
+        if not ua_val:
+            try:
+                from hdata.auth.fingerprint import get_ua
+
+                ua_val = get_ua("")
+            except Exception:
+                ua_val = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/146.0.0.0 Safari/537.36"
+                )
 
         return {
             "X-API-TOKEN": session.get("token", ""),
@@ -741,7 +756,7 @@ class TokenManager:
             "X-API-VERSION": "2.0.0",
             "Content-Type": "application/json",
             "Referer": session.get("domain", "") + "/",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            "User-Agent": ua_val,
             "Cookie": session.get("cookies", ""),
         }
 

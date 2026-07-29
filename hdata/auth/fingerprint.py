@@ -33,37 +33,71 @@ from hdata.paths import cache_dir as _cache_dir
 
 _FINGER_PROFILE_DIR = _cache_dir()
 
+# Chrome 版本池：curl_cffi 0.15 可模拟的最高指纹是 chrome146，池内
+# 142/145/146 都有对应的 TLS 指纹目标，UA 大版本必须与 impersonate
+# 一致（UA 写 149 而 JA3 是 chrome110 这种自相矛盾会露馅）。
+# 权重偏最新版（真实用户集中在最新两三个版本）。
+CHROME_VERSION_POOL: list[int] = [146, 146, 146, 145, 142]
+DEFAULT_CHROME_VERSION = 146
 
-def get_finger_profile(account: str) -> dict:
-    """每账号固定一份指纹画像（分辨率等），首次调用从池中抽取并持久化。
+_UA_TEMPLATE = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/{ver}.0.0.0 Safari/537.36"
+)
 
-    与浏览器行为对齐：同一台设备的分辨率长期不变，所以同账号必须
-    恒定；不同账号抽不同分辨率，避免多账号 finger 完全一致被聚类。
-    account 为空时返回 1920x1080 默认画像（不持久化）。
-    """
-    default = {
+
+def ua_for_version(version: int) -> str:
+    """Windows 桌面 Chrome UA 串。"""
+    return _UA_TEMPLATE.format(ver=version)
+
+
+def impersonate_for_version(version: int) -> str:
+    """curl_cffi impersonate 目标（与 UA 大版本一一对应）。"""
+    return f"chrome{version}"
+
+
+def _default_profile() -> dict:
+    return {
         "width": 1920, "height": 1080,
         "color_depth": 24, "max_touch_points": 0,
+        "chrome_version": DEFAULT_CHROME_VERSION,
+        "ua": ua_for_version(DEFAULT_CHROME_VERSION),
     }
+
+
+def get_finger_profile(account: str) -> dict:
+    """每账号固定一份指纹画像（分辨率/UA 等），首次调用从池中抽取并持久化。
+
+    与浏览器行为对齐：同一台设备的分辨率与浏览器大版本短期不变，
+    所以同账号必须恒定；不同账号抽不同组合，避免多账号指纹完全
+    一致被聚类。account 为空时返回默认画像（不持久化）。
+    """
     if not account:
-        return default
+        return _default_profile()
     path = _FINGER_PROFILE_DIR / f"finger_profile_{account}.json"
     try:
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict) and data.get("width") and data.get("height"):
+                ver = int(data.get("chrome_version", DEFAULT_CHROME_VERSION))
                 return {
                     "width": int(data["width"]),
                     "height": int(data["height"]),
                     "color_depth": int(data.get("color_depth", 24)),
                     "max_touch_points": int(data.get("max_touch_points", 0)),
+                    "chrome_version": ver,
+                    "ua": data.get("ua") or ua_for_version(ver),
                 }
     except (OSError, ValueError):
         pass
     w, h = random.choice(RESOLUTION_POOL)
+    ver = random.choice(CHROME_VERSION_POOL)
     profile = {
         "width": w, "height": h,
         "color_depth": 24, "max_touch_points": 0,
+        "chrome_version": ver,
+        "ua": ua_for_version(ver),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +105,20 @@ def get_finger_profile(account: str) -> dict:
     except OSError:
         pass
     return profile
+
+
+def get_ua(account: str = "") -> str:
+    """该账号的 User-Agent（无账号时给默认最新版）。"""
+    return get_finger_profile(account)["ua"] if account else ua_for_version(DEFAULT_CHROME_VERSION)
+
+
+def get_impersonate(account: str = "") -> str:
+    """该账号的 curl_cffi impersonate 目标（与 UA 大版本一致）。"""
+    ver = (
+        get_finger_profile(account)["chrome_version"] if account
+        else DEFAULT_CHROME_VERSION
+    )
+    return impersonate_for_version(ver)
 
 
 def _rotl(x: int, r: int) -> int:
