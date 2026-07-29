@@ -45,7 +45,7 @@ from hdata.auth.captcha_solver import (
 from hdata.auth.domain import resolve_domain as _resolve_domain
 from hdata.auth.geetest_signer import generate_w
 from hdata.auth.api_sign import common_headers
-from hdata.auth.fingerprint import leyu_finger
+from hdata.auth.fingerprint import leyu_finger, get_finger_profile
 from hdata.auth import login_trace
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
@@ -369,11 +369,20 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
         "codeId": lot_number,
     }
 
-    # X-API-FINGER: fingerprintjs2 x64hash128（仅 login 携带）
+    # X-API-FINGER: fingerprintjs2 x64hash128（仅 login 携带）；
+    # 分辨率按账号取固定画像（get_finger_profile），同账号恒定、跨账号不同。
     finger = ""
     if user_ip:
         try:
-            finger = leyu_finger(user_ip, timezone_offset=_local_tz_offset())
+            profile = get_finger_profile(user)
+            finger = leyu_finger(
+                user_ip,
+                width=profile["width"],
+                height=profile["height"],
+                color_depth=profile["color_depth"],
+                timezone_offset=_local_tz_offset(),
+                max_touch_points=profile["max_touch_points"],
+            )
         except Exception:
             finger = ""
 

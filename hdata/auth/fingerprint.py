@@ -9,7 +9,68 @@
 """
 from __future__ import annotations
 
+import json
+import random
+from pathlib import Path
+
 _MASK = 0xFFFFFFFFFFFFFFFF
+
+# 桌面主流分辨率池（2026 中国大陆桌面统计口径，1920x1080 占绝对多数）。
+# 注意：colorDepth 桌面浏览器几乎恒为 24、触屏恒为 0/false/false，
+# 这两项随机化反而会与桌面 UA 自相矛盾，故只有分辨率入池。
+RESOLUTION_POOL: list[tuple[int, int]] = [
+    (1920, 1080),  # 最常见，权重最高（重复占位实现加权）
+    (1920, 1080),
+    (1920, 1080),
+    (1366, 768),
+    (1536, 864),   # 1080p 屏 125% 缩放的常见逻辑分辨率
+    (1440, 900),
+    (1600, 900),
+    (2560, 1440),
+]
+
+_FINGER_PROFILE_DIR = (
+    Path(__file__).resolve().parent.parent.parent / ".cache"
+)
+
+
+def get_finger_profile(account: str) -> dict:
+    """每账号固定一份指纹画像（分辨率等），首次调用从池中抽取并持久化。
+
+    与浏览器行为对齐：同一台设备的分辨率长期不变，所以同账号必须
+    恒定；不同账号抽不同分辨率，避免多账号 finger 完全一致被聚类。
+    account 为空时返回 1920x1080 默认画像（不持久化）。
+    """
+    default = {
+        "width": 1920, "height": 1080,
+        "color_depth": 24, "max_touch_points": 0,
+    }
+    if not account:
+        return default
+    path = _FINGER_PROFILE_DIR / f"finger_profile_{account}.json"
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("width") and data.get("height"):
+                return {
+                    "width": int(data["width"]),
+                    "height": int(data["height"]),
+                    "color_depth": int(data.get("color_depth", 24)),
+                    "max_touch_points": int(data.get("max_touch_points", 0)),
+                }
+    except (OSError, ValueError):
+        pass
+    w, h = random.choice(RESOLUTION_POOL)
+    profile = {
+        "width": w, "height": h,
+        "color_depth": 24, "max_touch_points": 0,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(profile), encoding="utf-8")
+    except OSError:
+        pass
+    return profile
 
 
 def _rotl(x: int, r: int) -> int:
