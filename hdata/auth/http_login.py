@@ -250,7 +250,7 @@ def _safe_status_code(value: object) -> int | str:
     return value if type(value) is int else "unexpected_status"
 
 
-def _kaptchcate(domain: str, proxy: str = "", tag: str = "") -> bool:
+def _kaptchcate(domain: str, proxy: str = "", tag: str = "", account: str = "") -> bool:
     """验证码预注册（浏览器在每次弹验证码前必调，status_code 6022 为成功）。"""
     url = f"{domain}/site/api/v1/user/member/kaptchcate"
     t0 = time.monotonic()
@@ -259,7 +259,7 @@ def _kaptchcate(domain: str, proxy: str = "", tag: str = "") -> bool:
             url,
             json={"kType": 4},
             headers=common_headers("/site/api/v1/user/member/kaptchcate",
-                                   domain=domain),
+                                   domain=domain, account=account),
             impersonate="chrome110",
             timeout=15,
             proxies=_px(proxy),
@@ -292,7 +292,7 @@ def _local_tz_offset() -> int:
 
 
 def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
-                       proxy: str = "", tag: str = "") -> str:
+                       proxy: str = "", tag: str = "", account: str = "") -> str:
     """调用 validateGeeCheckV2 API 验证验证码。成功返回 user_ip，失败返回 ''。"""
     validate_url = f"{domain}/site/api/v1/user/member/validateGeeCheckV2"
     validate_body = {
@@ -309,7 +309,8 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
             validate_url,
             json=validate_body,
             headers=common_headers(
-                "/site/api/v1/user/member/validateGeeCheckV2", domain=domain
+                "/site/api/v1/user/member/validateGeeCheckV2", domain=domain,
+                account=account,
             ),
             impersonate="chrome110",
             timeout=15,
@@ -382,7 +383,8 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
             login_url,
             json=login_body,
             headers=common_headers(
-                "/site/api/v1/user/login", domain=domain, finger=finger
+                "/site/api/v1/user/login", domain=domain, finger=finger,
+                account=user,
             ),
             impersonate="chrome110",
             timeout=15,
@@ -429,7 +431,7 @@ def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: st
     return token
 
 
-def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "") -> str:
+def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "", account: str = "") -> str:
     """从 JWT API 获取 UUID。"""
     url = f"{domain}/site/api/v1/user/member/jwt"
     t0 = time.monotonic()
@@ -438,7 +440,7 @@ def _get_uuid(domain: str, api_token: str, proxy: str = "", tag: str = "") -> st
             url,
             headers=common_headers(
                 "/site/api/v1/user/member/jwt", token=api_token, domain=domain,
-                referer_path="/",
+                referer_path="/", account=account,
             ),
             json={},
             impersonate="chrome110",
@@ -549,26 +551,26 @@ async def _login_inner(
         logger.error("{}没有提供任何打码平台 token", tag)
         return None
 
-    logger.info("{}域名: {}", tag, domain)
+    logger.info("{}HTTP 登录开始（domain={}）", tag, domain)
 
     for retry in range(max_retries):
-        logger.info("{}--- 第 {}/{} 次尝试 ---", tag, retry + 1, max_retries)
+        logger.debug("{}--- 第 {}/{} 次尝试 ---", tag, retry + 1, max_retries)
 
         # 0. 验证码预注册（浏览器每次弹验证码前必调）
-        logger.info("{}[0/6] kaptchcate 预注册...", tag)
-        _kaptchcate(domain, proxy, tag)  # 失败不阻断，与浏览器容错行为一致
+        logger.debug("{}[0/6] kaptchcate 预注册...", tag)
+        _kaptchcate(domain, proxy, tag, account=user)  # 失败不阻断，与浏览器容错行为一致
 
         # 1. 获取验证码
-        logger.info("{}[1/6] 获取验证码...", tag)
+        logger.debug("{}[1/6] 获取验证码...", tag)
         load_data = _fetch_captcha(proxy=proxy)
         if not load_data:
-            logger.warning("{}fetch_captcha 失败", tag)
+            logger.debug("{}fetch_captcha 失败", tag)
             continue
 
         logger.debug("{}lot_number: {}...", tag, load_data["lot_number"][:20])
 
         # 2. 识别坐标
-        logger.info("{}[2/6] 识别验证码...", tag)
+        logger.debug("{}[2/6] 识别验证码...", tag)
         challenge = CaptchaChallenge(
             lot_number=load_data["lot_number"],
             payload=load_data["payload"],
@@ -584,22 +586,23 @@ async def _login_inner(
         try:
             solution = await _solve_captcha(challenge, solvers)
         except CaptchaSolveError:
+            logger.debug("{}打码平台全部失败", tag)
             continue
         coords = solution.coords
         if not coords:
-            logger.warning("{}验证码识别失败", tag)
+            logger.debug("{}验证码识别失败", tag)
             continue
 
         logger.debug("{}坐标: {}", tag, coords)
 
         # 3. Verify
-        logger.info("{}[3/6] 验证验证码...", tag)
+        logger.debug("{}[3/6] 验证验证码...", tag)
         try:
             seccode = await _verify_captcha(load_data, coords, proxy)
         except VerifyError as exc:
             fields = ",".join(exc.diagnostics.get("e_obj_fields", []))
             size = exc.diagnostics.get("e_obj_bytes", 0)
-            logger.warning(
+            logger.debug(
                 "{}verify failed: result={}, fail_count={}, lot={}..., "
                 "e_obj_bytes={}, e_obj_fields={}",
                 tag, exc.result, exc.fail_count, load_data["lot_number"][:8],
@@ -613,27 +616,27 @@ async def _login_inner(
         logger.debug("{}seccode obtained", tag)
 
         # 4. Validate（返回 user_ip 用于计算 X-API-FINGER）
-        logger.info("{}[4/6] 校验验证码...", tag)
+        logger.debug("{}[4/6] 校验验证码...", tag)
         user_ip = _validate_geecheck(
-            domain, load_data["lot_number"], seccode, proxy, tag)
+            domain, load_data["lot_number"], seccode, proxy, tag, account=user)
         if not user_ip:
-            logger.warning("{}validateGeeCheckV2 失败", tag)
+            logger.debug("{}validateGeeCheckV2 失败", tag)
             continue
 
         # 5. Login
-        logger.info("{}[5/6] 登录...", tag)
+        logger.debug("{}[5/6] 登录...", tag)
         api_token = _do_login(
             domain, user, pwd_md5, load_data["lot_number"],
             user_ip=user_ip if "." in user_ip else "",
             proxy=proxy, tag=tag,
         )
         if not api_token:
-            logger.warning("{}登录失败", tag)
+            logger.debug("{}登录失败", tag)
             continue
 
         # 6. 获取 UUID
-        logger.info("{}[6/6] 获取 UUID...", tag)
-        uuid_val = _get_uuid(domain, api_token, proxy, tag)
+        logger.debug("{}[6/6] 获取 UUID...", tag)
+        uuid_val = _get_uuid(domain, api_token, proxy, tag, account=user)
 
         result = {
             "token": api_token,
@@ -642,11 +645,11 @@ async def _login_inner(
             "lot_number": load_data["lot_number"],
         }
 
-        logger.success("{}HTTP 打码登录成功 (uuid={})", tag, uuid_val)
+        logger.success("{}HTTP 登录成功", tag)
 
         return result
 
-    logger.error("{}所有 {} 次尝试均失败", tag, max_retries)
+    logger.error("{}HTTP 登录失败（已重试 {} 次）", tag, max_retries)
     return None
 
 

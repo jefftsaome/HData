@@ -721,9 +721,19 @@ class TokenManager:
                 except Exception:
                     pass
 
+        account = session.get("account", "") or self.account
+        uuid_val = session.get("uuid", "")
+        if account:
+            try:
+                from hdata.auth.api_sign import get_uuid
+
+                uuid_val = get_uuid(account) or uuid_val
+            except Exception:
+                pass
+
         return {
             "X-API-TOKEN": session.get("token", ""),
-            "X-API-UUID": session.get("uuid", ""),
+            "X-API-UUID": uuid_val,
             "X-API-XXX": xxx,
             "X-API-CLIENT": "web",
             "X-API-SITE": "2001",

@@ -22,6 +22,7 @@ _SIGN_JS_PKG = Path(__file__).resolve().parent / "sign_wasm.cjs"
 _SIGN_JS_DEV = _ROOT / "scripts" / "sign_wasm.cjs"
 _SIGN_JS = _SIGN_JS_PKG if _SIGN_JS_PKG.exists() else _SIGN_JS_DEV
 _UUID_CACHE = _ROOT / ".cache" / "api_uuid.txt"
+_UUID_CACHE_DIR = _ROOT / ".cache"
 
 _NODE = shutil.which("node")
 
@@ -68,19 +69,28 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
     return sig
 
 
-def get_uuid() -> str:
-    """X-API-UUID — 持久化大写 UUID（模拟浏览器 localStorage._uuid）。"""
+def get_uuid(account: str = "") -> str:
+    """X-API-UUID — 持久化大写 UUID（模拟浏览器 localStorage._uuid）。
+
+    浏览器端 _uuid 是设备级指纹，一台设备一份且长期不变。
+    2026-07-29 起按账号隔离：每个账号独立生成并持久化到
+    .cache/api_uuid_{account}.txt，避免多账号共用同一设备指纹被风控聚类。
+    account 为空时保持旧行为（共享 api_uuid.txt），仅作向后兼容。
+    """
+    cache = (
+        _UUID_CACHE_DIR / f"api_uuid_{account}.txt" if account else _UUID_CACHE
+    )
     try:
-        if _UUID_CACHE.exists():
-            val = _UUID_CACHE.read_text(encoding="utf-8").strip()
+        if cache.exists():
+            val = cache.read_text(encoding="utf-8").strip()
             if val:
                 return val
     except OSError:
         pass
     val = str(_uuid_mod.uuid4()).upper()
     try:
-        _UUID_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        _UUID_CACHE.write_text(val, encoding="utf-8")
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(val, encoding="utf-8")
     except OSError:
         pass
     return val
@@ -93,6 +103,7 @@ def common_headers(
     finger: str = "",
     domain: str = "",
     referer_path: str = "/user/login",
+    account: str = "",
 ) -> dict:
     """构造站点 API 公共请求头（与浏览器一致）。
 
@@ -101,6 +112,7 @@ def common_headers(
         token: X-API-TOKEN（登录前可为空或旧值）
         finger: X-API-FINGER（仅 login 接口需要）
         domain: 站点域名（用于 Referer，可选）
+        account: 账号标识，X-API-UUID 按账号隔离生成（可选，空为旧共享行为）
     """
     # 浏览器签名输入是路径前两段，如 "/site/api"
     parts = [s for s in path.split("/") if s]
@@ -112,7 +124,7 @@ def common_headers(
         "X-API-XXX": sign_path(prefix),
         "X-API-VERSION": "2.0.0",
         "X-API-SITE": "2001",
-        "X-API-UUID": get_uuid(),
+        "X-API-UUID": get_uuid(account),
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "

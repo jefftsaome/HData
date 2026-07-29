@@ -262,6 +262,24 @@ def save_session(account: str, data: dict) -> dict:
 # ── API 签名头 ────────────────────────────────────────
 
 
+def _device_uuid_for(session: dict) -> str:
+    """X-API-UUID 取值：优先按账号取设备级 UUID（api_sign.get_uuid，
+    2026-07-29 起按账号隔离持久化）；无账号上下文时回退会话里的
+    uuid（JWT 回显值），保持旧会话兼容。
+    """
+    account = session.get("account", "")
+    if account:
+        try:
+            from hdata.auth.api_sign import get_uuid
+
+            val = get_uuid(account)
+            if val:
+                return val
+        except Exception:
+            pass
+    return session.get("uuid", "")
+
+
 def _api_headers(session: dict, url: str) -> dict:
     """构造乐鱼 API 请求头（含 X-API-XXX 签名）。
 
@@ -306,7 +324,7 @@ def _api_headers(session: dict, url: str) -> dict:
 
     return {
         "X-API-TOKEN": session.get("token", ""),
-        "X-API-UUID": session.get("uuid", ""),
+        "X-API-UUID": _device_uuid_for(session),
         "X-API-XXX": xxx,
         "X-API-CLIENT": "web",
         "X-API-SITE": "2001",
