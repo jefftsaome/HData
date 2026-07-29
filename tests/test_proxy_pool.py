@@ -185,3 +185,54 @@ class TestProbeSyncParsing:
         self._install(monkeypatch, fake)
         ok, ip = _probe_sync(self.FAKE_PROXY, 1.0)
         assert (ok, ip) == (False, None)
+
+
+class TestPreferredIds:
+    """proxy_id 显式绑定（2026-07-29 粘性出口语义）。"""
+
+    def _pool_with_ids(self, tmp_path):
+        f = tmp_path / "proxies.json"
+        f.write_text(json.dumps([
+            {"id": "exit-1", "name": "出口一", "url": P1},
+            {"id": "exit-2", "name": "出口二", "url": P2},
+            {"id": "exit-3", "url": P3},          # name 可缺
+        ]), encoding="utf-8")
+        return ProxyPool.from_file(f, cap_per_proxy=1)
+
+    def test_preferred_binding_wins(self, tmp_path):
+        pool = self._pool_with_ids(tmp_path)
+        m = pool.assign(["a", "b"], preferred_ids={"a": "exit-2"})
+        assert m["a"] == P2                  # 显式绑定优先于均衡
+        assert m["b"] == P1                  # 未绑定的自动落位
+
+    def test_preferred_ignores_cap(self, tmp_path):
+        pool = self._pool_with_ids(tmp_path)  # cap=1
+        m = pool.assign(["a", "b"],
+                        preferred_ids={"a": "exit-1", "b": "exit-1"})
+        assert m["a"] == P1 and m["b"] == P1  # 显式绑定不受 cap 限制
+
+    def test_preferred_dead_exit_not_migrated(self, tmp_path):
+        pool = self._pool_with_ids(tmp_path)
+        pool.mark_dead(P2)
+        m = pool.assign(["a", "b"], preferred_ids={"a": "exit-2"})
+        assert m["a"] is None                # 绑死出口不静默迁移
+        assert m["b"] == P1                  # 未绑定账号不受影响
+
+    def test_preferred_unknown_id(self, tmp_path):
+        pool = self._pool_with_ids(tmp_path)
+        m = pool.assign(["a"], preferred_ids={"a": "exit-99"})
+        assert m["a"] is None
+
+    def test_id_url_lookup(self, tmp_path):
+        pool = self._pool_with_ids(tmp_path)
+        assert pool.url_for_id("exit-3") == P3
+        assert pool.url_for_id("nope") is None
+        assert pool.id_of(P2) == "exit-2"
+        assert pool.id_of("http://x@9.9.9.9:1") is None
+
+    def test_default_id_when_missing(self, tmp_path):
+        f = tmp_path / "proxies.json"
+        f.write_text(json.dumps([{"name": "x", "url": P1}]),
+                     encoding="utf-8")
+        pool = ProxyPool.from_file(f)
+        assert pool.url_for_id("exit-1") == P1   # 缺 id 退化为序号

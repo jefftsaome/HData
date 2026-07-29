@@ -81,7 +81,8 @@ class ProxyPool:
     """出口代理池（粘性分配 + 容量预算 + 失败摘除）。"""
 
     def __init__(self, proxies: list[str],
-                 cap_per_proxy: int = DEFAULT_CAP_PER_PROXY):
+                 cap_per_proxy: int = DEFAULT_CAP_PER_PROXY,
+                 ids: dict[str, str] | None = None):
         if cap_per_proxy < 1:
             raise ValueError("cap_per_proxy 必须 >= 1")
         # 去重保序
@@ -90,6 +91,7 @@ class ProxyPool:
         self._dead: set[str] = set()
         self._bindings: dict[str, str] = {}      # account -> proxy
         self._exit_ips: dict[str, str | None] = {}  # proxy -> 实测出口IP
+        self._ids: dict[str, str] = dict(ids or {})  # 出口 id -> proxy url
 
     # ── 加载 ──────────────────────────────────────────
 
@@ -101,20 +103,26 @@ class ProxyPool:
 
         支持两种元素形式:
           ["http://user:pass@host:port", ...]
-          [{"name": "xxx", "url": "http://..."}, ...]（name 仅展示用）
+          [{"id": "exit-1", "name": "xxx", "url": "http://..."}, ...]
+          （id 为稳定出口标识，账号 proxy_id 绑定它；name 仅展示用；
+          id 缺失时退化为该条目在列表中的序号 "exit-{i+1}"）
         """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(data, list):
             raise ValueError(f"{path}: 代理文件必须是 JSON 数组")
         urls: list[str] = []
+        ids: dict[str, str] = {}
         for i, item in enumerate(data):
             if isinstance(item, str):
                 urls.append(item)
             elif isinstance(item, dict) and item.get("url"):
-                urls.append(str(item["url"]))
+                url = str(item["url"])
+                urls.append(url)
+                pid = str(item.get("id") or f"exit-{i + 1}")
+                ids[pid] = url
             else:
                 raise ValueError(f"{path}: 第 {i + 1} 项无法解析为代理 URL")
-        return cls(urls, cap_per_proxy=cap_per_proxy)
+        return cls(urls, cap_per_proxy=cap_per_proxy, ids=ids)
 
     # ── 状态 ──────────────────────────────────────────
 
@@ -141,14 +149,31 @@ class ProxyPool:
         """单个出口的实测 IP（未探测 / 探测失败 / 解析不到均为 None）。"""
         return self._exit_ips.get(proxy)
 
+    def url_for_id(self, proxy_id: str) -> str | None:
+        """出口 id → URL（未知 id 返回 None）。"""
+        return self._ids.get(proxy_id)
+
+    def id_of(self, proxy: str) -> str | None:
+        """URL → 出口 id（无 id 配置的出口返回 None）。"""
+        for pid, url in self._ids.items():
+            if url == proxy:
+                return pid
+        return None
+
     def _load(self, proxy: str) -> int:
         return sum(1 for p in self._bindings.values() if p == proxy)
 
     # ── 分配 ──────────────────────────────────────────
 
-    def assign(self, accounts: list[str]) -> dict[str, str | None]:
+    def assign(self, accounts: list[str],
+               preferred_ids: dict[str, str] | None = None
+               ) -> dict[str, str | None]:
         """粘性均衡分配账号到出口。
 
+        - preferred_ids：{account: 出口 id} 显式绑定（config.json 的
+          proxy_id）。显式绑定最优先：出口存活即绑定之（不受 cap 限制，
+          超 cap 打 warning）；出口已死则映射 None + warning，
+          **不静默迁移到其他出口**（避免账号在出口间乱跳）；
         - 已有绑定的账号保持不变（粘性，出口仍存活时）；
         - 新账号分给当前绑定数最少且未满预算的存活出口；
         - 总容量不足时多出的账号映射为 None（调用方告警/弃用）。
@@ -157,7 +182,29 @@ class ProxyPool:
             {account: proxy_url | None}
         """
         result: dict[str, str | None] = {}
+        preferred_ids = preferred_ids or {}
         for acc in accounts:
+            pid = preferred_ids.get(acc)
+            if pid:
+                url = self._ids.get(pid)
+                if url is None:
+                    logger.warning(f"[ProxyPool] {acc} 绑定的出口 id "
+                                   f"'{pid}' 在代理文件中不存在")
+                    result[acc] = None
+                    continue
+                if url not in self.alive:
+                    logger.warning(f"[ProxyPool] {acc} 绑定的出口 "
+                                   f"'{pid}' 探测已死，不自动迁移，"
+                                   "等代理文件更新 IP 后复活")
+                    result[acc] = None
+                    continue
+                self._bindings[acc] = url
+                result[acc] = url
+                if self._load(url) > self._cap:
+                    logger.warning(f"[ProxyPool] 出口 '{pid}' 显式绑定 "
+                                   f"{self._load(url)} 个账号，超 cap "
+                                   f"{self._cap}（显式绑定不受限，注意密度）")
+                continue
             bound = self._bindings.get(acc)
             if bound and bound in self.alive:
                 result[acc] = bound
