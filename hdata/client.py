@@ -1333,6 +1333,7 @@ class MultiTableSession:
             game_type_id=t["game_type_id"], table_id=t["table_id"],
             service_type_id=OT_GAME))
         self._entered.add(t["table_id"])
+        logger.info(f"[进桌] {self.account} 进入 桌{t['table_id']}")
         # 快照通过事件循环里的 401 响应异步填充（见 events/_fill_snapshot）
 
     async def request_enter(self, t: dict, urgent: bool = False):
@@ -1454,6 +1455,9 @@ class MultiTableSession:
                                     if x["table_id"] != table_id]
                     self._entered.discard(table_id)
                     self._road_accum.pop(table_id, None)
+                    logger.info(f"[被踢] 桌{table_id} 将 {self.account} 踢出"
+                                f"（leaveTableType="
+                                f"{payload.get('leaveTableType')}）")
                     yield {"type": "kick", "protocol_id": pid,
                            "table_id": table_id,
                            "data": {"action": "dropped", "dropped": True,
@@ -1468,6 +1472,8 @@ class MultiTableSession:
                           if x["table_id"] == table_id), None)
                 if t:
                     await self.request_enter(t, urgent=True)
+                logger.info(f"[被踢] 桌{table_id} 将 {self.account} 踢出，"
+                            "原地排队重进")
                 yield {"type": "kick", "protocol_id": pid,
                        "table_id": table_id,
                        "data": {"action": "auto_reenter", "dropped": False,
@@ -1691,9 +1697,9 @@ class TableMonitor:
             "from_account": ev["data"].get("account"),
             "to_account": target.account,
             **({} if rotated else {"note": "仅一个存活分片，原账号重进"})})
-        logger.info(f"[TableMonitor] 桌{nt['table_id']} 被踢，"
-                    f"{ev['data']['from_account']} → {target.account}"
-                    f"（{ev['data']['action']}）")
+        logger.info(f"[轮换] 桌{nt['table_id']} 被踢："
+                    f"{ev['data']['from_account']} 出局，"
+                    f"{target.account} 接替进桌（{ev['data']['action']}）")
 
     async def events(self) -> AsyncIterator[dict]:
         """全部分片合并的统一事件流。
