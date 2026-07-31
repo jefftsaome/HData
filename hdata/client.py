@@ -76,6 +76,7 @@ _QS_NEW_INTER_GAME = 401
 _QS_INTER_GAME = 101
 _QS_OUT_GAME = 102
 _QS_NOTICE = 123      # 系统通知推送（含连续3局未下注预警 noticeId=21002）
+_QS_PROT_DECODE_CONFIG = 10115  # 服务器推送协议 schema 配置（热更新版本指纹）
 _FORCE_101_GAME_TYPES = {2003, 2004, 2014, 2020}
 
 _HT_SEAT = 1
@@ -840,7 +841,40 @@ class _WSConnection:
         raw = await self._ws.recv()
         if isinstance(raw, str):
             return None
-        return decode_frame(raw)
+        frame = decode_frame(raw)
+        if frame.get("protocolId") == _QS_PROT_DECODE_CONFIG:
+            self._on_prot_decode_config(frame)
+        return frame
+
+    def _on_prot_decode_config(self, frame: dict):
+        """处理 10115 PROT_DECODE_CONFIG：服务器热更新 schema 指纹。
+
+        载荷形态（JS 静态分析，未抓包实测，解析务必宽容）:
+            {"protocolCodecConfig": {"10089_7": {"version": "...", "state": 1, ...}}}
+        state=1(ENABLE) 更新、state=0(DISABLE) 摘除。失败只告警不抛错，
+        绝不能让收帧主循环崩掉。
+        """
+        try:
+            from hdata.protocol.codec import update_protocol_codec_config
+            info = extract_param(frame)
+            data = info.get("param") or info.get("data")
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                return
+            cfg = data.get("protocolCodecConfig")
+            if not isinstance(cfg, dict):
+                return
+            changes = update_protocol_codec_config(cfg)
+            account = (self._session or {}).get("account", "?")
+            if changes:
+                logger.warning(
+                    "[%s] 10115 schema 指纹热更新: %s", account,
+                    {k: {"old": v[0], "new": v[1]} for k, v in changes.items()})
+            else:
+                logger.debug("[%s] 10115 schema 配置与本地一致", account)
+        except Exception as e:  # noqa: BLE001 — 解析未知形态只告警
+            logger.warning("10115 schema 配置解析失败（忽略）: %r", e)
 
     async def recv_until(self, predicate, timeout: float) -> dict | None:
         """持续收帧直到 predicate(frame) 为真或超时。"""

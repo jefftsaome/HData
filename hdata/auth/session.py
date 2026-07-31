@@ -95,6 +95,41 @@ def ensure_device_id_suffix(device_id: str) -> str:
     return f"{device_id}-{_rand_digits(8)}"
 
 
+# ── deviceId 按账号持久化（对齐官方 fixedDeviceId 持久性）──────────────────
+# 官方：fixedDeviceId（两段式）存 localStorage 永久复用，每条 WS 连接再随机
+# 补第三段。若同账号每连接都全随机三段，等于不停换"设备"，比共用更显眼。
+_DEVICE_ID_DIR = _cache_dir()
+
+
+def get_persistent_device_id(account: str) -> str:
+    """按账号返回持久化的两段式 fixedDeviceId，首次生成后写缓存文件复用。
+
+    account 为空时退化为一次性生成（不写盘）。返回的两段式交给
+    ensure_device_id_suffix() 在每条连接上补随机第三段。
+    """
+    import time as _t
+
+    def _new_fixed() -> str:
+        return "%d%s-%s" % (int(_t.time() * 1000), _rand_digits(6), _rand_digits(8))
+
+    if not account:
+        return _new_fixed()
+    path = _DEVICE_ID_DIR / ("device_id_%s.txt" % account)
+    try:
+        fixed = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        fixed = ""
+    # 只接受两段式（旧的三段式缓存视为无效，重新生成并覆盖）
+    if fixed.count("-") != 1 or not fixed.split("-")[0].isdigit():
+        fixed = _new_fixed()
+        try:
+            _DEVICE_ID_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_text(fixed, encoding="utf-8")
+        except OSError:
+            pass
+    return fixed
+
+
 # ── 异常 ──────────────────────────────────────────────
 
 
@@ -606,7 +641,10 @@ def build_ws_config(game_session: dict) -> dict:
     token = game_session.get("game_token", "")
     player_id = game_session.get("game_player_id", 0)
     backend = (game_session.get("game_backend", "") or "").strip()
-    device_id = ensure_device_id_suffix(game_session.get("device_id", ""))
+    device_id = ensure_device_id_suffix(
+        game_session.get("device_id", "")
+        or get_persistent_device_id(game_session.get("account", ""))
+    )
 
     # backend 形如 "6pwn4i.com:4999"；wsproxy 子域 + 原端口
     backend_host = backend.split(":")[0] if backend else ""

@@ -32,6 +32,8 @@ import time
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from hdata.paths import cache_dir as _cache_dir
+
 # DataHandle._defaultKey（游戏前端硬编码）
 AES_KEY = b"ED7AA06BD8628B55"
 
@@ -148,7 +150,7 @@ def build_message(protocol_id: int, data: dict, *,
 # 与 .cache/h3_schemas.json 各协议 version 字段逐字一致。
 # 键为 {protocolId}_{schema版本}；值为静态值，仅当平台升级协议 schema 时才变，
 # 届时需重新抓包更新（见 docs/数据样本.md"登录请求帧"一节）。
-PROTOCOL_CODEC_CONFIG = {
+_DEFAULT_PROTOCOL_CODEC_CONFIG = {
     "10053_7": "26695a937138721cdec2878bf9ca16ada04535f16cd1d83d115c95548c558a38",
     "10089_7": "da3d29a428cf043dbd86724edac7f25c2e9c185ca986812c01003aaf2fce8548",
     "10073_7": "a5e098a48a2f406aaeac90ff7c7ff5f1832b098507b0e60c7cb0a014c9f5c127",
@@ -156,6 +158,72 @@ PROTOCOL_CODEC_CONFIG = {
     "301_2": "0ea525bf9283b3d65a008cbb340a093d994d7c2862fdf34bebbbadfc92bcc075",
     "302_2": "5de34be7725f7feca1bcdb09876abcaa804bc9d414837c9b7c040e9c30899927",
 }
+
+# 服务器 10115 PROT_DECODE_CONFIG 推送的更新写这个缓存文件，
+# 下次进程启动直接生效（官方客户端同款自愈机制：localStorage saveConfig）
+_PROTO_CODEC_CACHE = _cache_dir() / "protocol_codec_config.json"
+
+
+def _load_protocol_codec_config() -> dict:
+    cfg = dict(_DEFAULT_PROTOCOL_CODEC_CONFIG)
+    try:
+        if _PROTO_CODEC_CACHE.exists():
+            data = json.loads(_PROTO_CODEC_CACHE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                cfg.update({str(k): str(v) for k, v in data.items()
+                            if isinstance(v, str)})
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+PROTOCOL_CODEC_CONFIG = _load_protocol_codec_config()
+
+
+def update_protocol_codec_config(server_cfg: dict) -> dict:
+    """处理服务器 10115 PROT_DECODE_CONFIG 推送，热更新 schema 版本指纹。
+
+    官方客户端 syncProtocolConfig 的对应物：服务器在登录后推送
+    protocolCodecConfig，不一致的协议客户端热更新；state=0(DISABLE)
+    的协议从上报表中摘除。变更持久化到 .cache/protocol_codec_config.json，
+    下次登录上报新哈希（build_login_msg 读 PROTOCOL_CODEC_CONFIG）。
+
+    Args:
+        server_cfg: {"10089_7": {"version": "...", "state": 1, ...}, ...}
+                    （宽容支持 {"10089_7": "hash"} 简表）
+
+    Returns:
+        变更表 {key: (old, new)}；new 为 None 表示被服务器禁用摘除。
+    """
+    if not isinstance(server_cfg, dict):
+        return {}
+    changed: dict = {}
+    for key, entry in server_cfg.items():
+        key = str(key)
+        if isinstance(entry, dict):
+            state = entry.get("state", 1)
+            version = entry.get("version")
+        else:
+            state, version = 1, entry
+        old = PROTOCOL_CODEC_CONFIG.get(key)
+        if state == 0:                       # DISABLE：摘除
+            if old is not None:
+                PROTOCOL_CODEC_CONFIG.pop(key, None)
+                changed[key] = (old, None)
+            continue
+        if not isinstance(version, str) or not version:
+            continue
+        if old != version:
+            PROTOCOL_CODEC_CONFIG[key] = version
+            changed[key] = (old, version)
+    if changed:
+        try:
+            _PROTO_CODEC_CACHE.write_text(
+                json.dumps(PROTOCOL_CODEC_CONFIG, indent=1),
+                encoding="utf-8")
+        except OSError:
+            pass
+    return changed
 
 
 def build_login_msg(token: str, player_id: int, device_id: str,
