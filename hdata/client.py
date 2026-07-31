@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from collections import deque
@@ -66,6 +67,9 @@ logger = get_logger(__name__)
 # ── 协议常量（内部使用，不导出） ──
 _QS_TABLE_LIST_ALL = 10089
 _QS_TABLE_LIST_LIMIT = 10053   # 分页桌台元数据（二进制 schema 帧）
+_QS_GAME_LIST_SWITCH_TAB = 10027  # GAME_LIST_SWITCH_TAB 大厅订阅（官方进大厅第一步）
+_QS_TABLE_DATA_UPDATE = 10052  # TABLE_DATA_UPDATE 桌台增量推送（10027 订阅后下发）
+_YT_ALL_GAME = 41              # Yt.ALL_GAME — 大厅 groupId 全集
 _QS_HEARTBEAT = 3              # 协议心跳（pid=3，与官方前端一致）
 _HEARTBEAT_INTERVAL = 10       # 秒
 _QS_NEW_INTER_GAME = 401
@@ -187,6 +191,59 @@ class _RefreshThrottle:
             if wait > 0:
                 await asyncio.sleep(wait)
             cls._last_ts = time.monotonic()
+
+
+def build_hall_switch_msg(player_id: int, device_id: str) -> dict:
+    """构造大厅订阅消息（GAME_LIST_SWITCH_TAB=10027，groupId=41 全集）。
+
+    官方客户端进大厅流程（release.js request()）：先 sendSwitch(Yt.ALL_GAME)
+    订阅大厅推送，再 sendGetHallListAll() 拉全量桌台；之后服务器持续推
+    10052 TABLE_DATA_UPDATE 增量。只发 10089 不发 10027 时，服务器可能
+    不下发/不下全 10052 推送（2026-08-01 静态分析发现，见 docs/数据样本.md）。
+    """
+    offset = -time.timezone // 60 if time.daylight == 0 else -time.altzone // 60
+    return build_message(
+        _QS_GAME_LIST_SWITCH_TAB,
+        {"groupId": _YT_ALL_GAME, "isAll": 1,
+         "deviceType": DEVICE_TYPE_PC, "deviceId": device_id,
+         "timeZoneArea": "Asia/Shanghai", "offsetMinutes": offset},
+        player_id=player_id, game_type_id=2013,
+        table_id=0, service_type_id=OT_HALL)
+
+
+def _extract_lobby_tables(data: Any) -> dict:
+    """从 10089/10052 帧载荷提取桌台表（宽容解析，未知结构返回 {}）。
+
+    已见结构：{"gameTableMap": {"<tid>": {...}}}（10052 增量）。
+    10089 响应结构未实测，按候选字段（gameTableMap / tableIds /
+    tableIdList / tables / list / ids）宽容提取；元素可以是桌台 id
+    整数或含 tableId/gameTypeId 的 dict。返回值统一为
+    {str(tid): {...}}，缺省字段的给 {"tableId": tid}。
+    """
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return {}
+    if not isinstance(data, dict):
+        return {}
+    gtm = data.get("gameTableMap")
+    if isinstance(gtm, dict):
+        return gtm
+    for key in ("tableIds", "tableIdList", "tables", "list", "ids",
+                "allTableIds", "tableList"):
+        items = data.get(key)
+        if not isinstance(items, list):
+            continue
+        out: dict = {}
+        for it in items:
+            if isinstance(it, int):
+                out[str(it)] = {"tableId": it}
+            elif isinstance(it, dict) and it.get("tableId") is not None:
+                out[str(it["tableId"])] = it
+        if out:
+            return out
+    return {}
 
 
 class GameClient:
@@ -799,15 +856,21 @@ class _WSConnection:
         return None
 
     async def fetch_table_map(self) -> dict:
-        """拉取大厅桌台快照 gameTableMap（聚合多帧 10052 增量）。"""
+        """拉取大厅桌台快照（先 10027 订阅，再 10089；聚合 10089 响应 + 10052 增量）。"""
+        # 官方流程：先 10027 订阅大厅推送，再 10089 拉全量桌台；
+        # 只发 10089 服务器可能不下发/不下全 10052 增量
+        await self.send(build_hall_switch_msg(self._player_id,
+                                              self._device_id))
         await self.send(build_message(
             _QS_TABLE_LIST_ALL, {"labelTypeId": 1},
             player_id=self._player_id, game_type_id=2013,
             service_type_id=OT_HALL))
         gtm: dict = {}
         end = time.time() + 20
-        # 10052 分批增量推送；持续收直到超时或长时间无新桌
+        # 10089 响应（全量桌台）+ 10052 分批增量推送；
+        # 持续收直到超时或长时间无新桌
         last_new = time.time()
+        logged_10089 = False
         while time.time() < end:
             try:
                 frame = await asyncio.wait_for(
@@ -816,14 +879,20 @@ class _WSConnection:
                 if time.time() - last_new > 3:
                     break
                 continue
-            if not frame or frame.get("protocolId") != 10052:
+            if not frame:
+                continue
+            pid = frame.get("protocolId")
+            if pid not in (_QS_TABLE_LIST_ALL, _QS_TABLE_DATA_UPDATE):
                 continue
             info = extract_param(frame) or {}
             data = info.get("param") or info.get("data")
-            import json as _json
-            if isinstance(data, str):
-                data = _json.loads(data)
-            new = (data or {}).get("gameTableMap") or {}
+            new = _extract_lobby_tables(data)
+            if pid == _QS_TABLE_LIST_ALL and not logged_10089:
+                logged_10089 = True
+                keys = sorted(data.keys()) if isinstance(data, dict) \
+                    else type(data).__name__
+                logger.info(f"[大厅] 10089 响应帧：提取 {len(new)} 桌"
+                            f"（载荷字段: {keys}）")
             if new:
                 gtm.update(new)
                 last_new = time.time()
