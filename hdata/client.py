@@ -1242,6 +1242,11 @@ class _EnterPacer:
             try:
                 await self._enter_fn(t)
             except Exception as e:
+                # 失败也算一拍（2026-07-31 修复）：连接已死时若不更新
+                # _last_send，循环会无间隔地把整队全部烧掉（首轮 200 桌
+                # 入队后连接被掐，10 桌 1ms 内全部"两次失败丢弃"）。
+                # 记一拍后重试按正常节奏排队尾，给分片重建留出时间窗。
+                self._last_send = time.monotonic()
                 if not retried and not self._closing:
                     self._queue.append((t, True))
                     logger.warning(f"[EnterPacer] 桌{t.get('table_id')} "
