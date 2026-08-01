@@ -1655,6 +1655,9 @@ class MultiTableSession:
                 "type": _classify_event(pid),
                 "protocol_id": pid,
                 "table_id": table_id,
+                # 服务端逐帧递增序号（官方客户端严格定序依据），供落库
+                # 留底——历史回放按它排序才能复刻官方客户端视角
+                "frame_version": frame.get("serverLastVersion"),
                 "data": payload if isinstance(payload, dict) else {"raw": payload},
             }
 
