@@ -80,6 +80,23 @@ class TestLoad:
         pool = ProxyPool.from_file(f)
         assert pool.alive == [P1, P2]
 
+    def test_from_file_wuyou_native(self, tmp_path):
+        """无忧 IP 平台原生导出格式：直接粘贴即可用。"""
+        f = tmp_path / "proxies.json"
+        f.write_text(json.dumps([
+            {"number": 1, "region": "无锡电信家庭", "ip": "1.2.3.4",
+             "port": "8011", "account": "u1", "password": "p1",
+             "datetime": "2026-08-06 16:26:37"},
+            {"number": 12, "region": "瓶窑区电信20", "ip": "5.6.7.8",
+             "port": "8011", "account": "u2", "password": "p2",
+             "datetime": "2026-08-31 16:54:20"},
+        ]), encoding="utf-8")
+        pool = ProxyPool.from_file(f)
+        assert pool.alive == ["socks5h://u1:p1@1.2.3.4:8011",
+                              "socks5h://u2:p2@5.6.7.8:8011"]
+        assert pool.url_for_id("exit-1") == "socks5h://u1:p1@1.2.3.4:8011"
+        assert pool.url_for_id("exit-12") == "socks5h://u2:p2@5.6.7.8:8011"
+
     def test_from_file_bad_item(self, tmp_path):
         f = tmp_path / "proxies.json"
         f.write_text(json.dumps([{"name": "x"}]), encoding="utf-8")

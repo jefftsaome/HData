@@ -121,9 +121,13 @@ class ProxyPool:
                   ) -> "ProxyPool":
         """从 JSON 文件加载代理列表。
 
-        支持两种元素形式:
+        支持三种元素形式:
           ["http://user:pass@host:port", ...]
           [{"id": "exit-1", "name": "xxx", "url": "http://..."}, ...]
+          [{"number": 1, "region": "xxx", "ip": "1.2.3.4", "port": "8011",
+            "account": "u", "password": "p", ...}, ...]
+          （无忧 IP 平台原生导出格式，直接粘贴即可用，无需转换；
+          id 取 "exit-{number}"，name 取 region）
           （id 为稳定出口标识，账号 proxy_id 绑定它；name 仅展示用；
           id 缺失时退化为该条目在列表中的序号 "exit-{i+1}"）
         """
@@ -139,6 +143,14 @@ class ProxyPool:
                 url = str(item["url"])
                 urls.append(url)
                 pid = str(item.get("id") or f"exit-{i + 1}")
+                ids[pid] = url
+            elif isinstance(item, dict) and item.get("ip") and item.get("port"):
+                # 无忧 IP 平台原生导出格式
+                url = (f"socks5h://{item.get('account', '')}:"
+                       f"{item.get('password', '')}"
+                       f"@{item['ip']}:{item['port']}")
+                urls.append(url)
+                pid = f"exit-{item.get('number', i + 1)}"
                 ids[pid] = url
             else:
                 raise ValueError(f"{path}: 第 {i + 1} 项无法解析为代理 URL")
