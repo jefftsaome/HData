@@ -44,6 +44,26 @@ def _extract_ip(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+async def probe_exit_connect(proxy: str, dest_host: str, dest_port: int,
+                             timeout: float = 12.0) -> bool:
+    """SOCKS5 建连探测：通过出口实际 TCP 连接目标站点，通 = 存活。
+
+    比 HTTP echo 探测更贴近真实用途（echo 通不代表能到平台），且
+    单点单测 ~1s，适合并行全量预检。python-socks 不认 socks5h
+    scheme（h=域名在代理侧解析），这里统一降级为 socks5（本地解析，
+    对"域名绑 IP"的出口形式等价）。
+    """
+    from python_socks.async_.asyncio import Proxy
+    try:
+        p = Proxy.from_url(proxy.replace("socks5h://", "socks5://"))
+        sock = await asyncio.wait_for(
+            p.connect(dest_host=dest_host, dest_port=dest_port), timeout)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
 def _probe_sync(proxy: str, timeout: float) -> tuple[bool, str | None]:
     """HTTP 出口探测（同步，供 asyncio.to_thread 包装）。
 
@@ -240,37 +260,109 @@ class ProxyPool:
     # ── 健康检查 ──────────────────────────────────────
 
     async def health_check(self, timeout: float = 10.0,
-                           probe=None) -> dict[str, dict]:
-        """逐出口探测存活并记录真实出口 IP，失败出口自动 mark_dead。
+                           probe=None,
+                           connect_dest: tuple[str, int] | None = None,
+                           retry: int = 1) -> dict[str, dict]:
+        """并行探测全部出口存活并记录实测 IP，失败出口自动 mark_dead。
 
         Args:
-            timeout: 单出口探测超时（秒）
+            timeout: 单出口单次探测超时（秒）
             probe: 可注入的探测函数 (proxy, timeout) -> bool（旧式，IP 记
                    None）或 (bool, 出口IP|None)，默认 HTTP echo 探测
+            connect_dest: (host, port) 提供时改用 SOCKS5 建连探测
+                          （probe_exit_connect，并行、贴真实目标站），
+                          IP 记 None
+            retry: 失败重试次数（总尝试 = retry；仅 connect 模式）
 
         Returns:
             {proxy: {"ok": bool, "ip": 出口IP|None}}——死出口 ip 恒 None
         """
-        probe = probe or _probe_sync
+        async def one(p: str) -> tuple[bool, str | None]:
+            attempts = max(1, retry if connect_dest else 1)
+            for i in range(attempts):
+                try:
+                    if connect_dest:
+                        ok = await probe_exit_connect(
+                            p, connect_dest[0], connect_dest[1], timeout)
+                        if ok:
+                            return True, None
+                    else:
+                        res = await asyncio.to_thread(
+                            probe or _probe_sync, p, timeout)
+                        if isinstance(res, tuple):
+                            if res[0]:
+                                return True, (res[1] or None)
+                        elif res:
+                            return True, None
+                except Exception:
+                    pass
+                if i + 1 < attempts:
+                    await asyncio.sleep(2)
+            return False, None
+
+        pairs = await asyncio.gather(*[one(p) for p in self._proxies])
         results: dict[str, dict] = {}
-        for p in self._proxies:
-            ok, ip = False, None
-            try:
-                res = await asyncio.to_thread(probe, p, timeout)
-                if isinstance(res, tuple):
-                    ok, ip = bool(res[0]), (res[1] or None)
-                else:
-                    ok = bool(res)
-            except Exception:
-                ok, ip = False, None
-            if not ok:
-                ip = None
-            results[p] = {"ok": ok, "ip": ip}
-            self._exit_ips[p] = ip
-            if not ok:
+        for p, (ok, ip) in zip(self._proxies, pairs):
+            results[p] = {"ok": ok, "ip": ip if ok else None}
+            self._exit_ips[p] = results[p]["ip"]
+            if ok:
+                # 复活：之前被判死的出口这次通了（代理商切了 IP 映射）
+                if p in self._dead:
+                    self._dead.discard(p)
+                    logger.info(f"[ProxyPool] 出口复活: {p}")
+            else:
                 self.mark_dead(p)
                 logger.warning(f"[ProxyPool] 出口探测失败已剔除: {p}")
         return results
+
+    def mark_alive(self, proxy: str) -> bool:
+        """出口复活（运行期复探测通后调用），返回是否从死集里捞回。"""
+        if proxy in self._dead:
+            self._dead.discard(proxy)
+            logger.info(f"[ProxyPool] 出口复活: {proxy}")
+            return True
+        return False
+
+    async def probe_dead_revive(self, connect_dest: tuple[str, int],
+                                timeout: float = 12.0) -> list[str]:
+        """运行期复活巡检：只对死出口做 SOCKS5 建连复探，通的标活并
+        返回复活列表（挂起账号由调用方归队）。"""
+        revived: list[str] = []
+        if not self._dead:
+            return revived
+        oks = await asyncio.gather(*[
+            probe_exit_connect(p, connect_dest[0], connect_dest[1], timeout)
+            for p in sorted(self._dead)])
+        for p, ok in zip(sorted(self._dead), oks):
+            if ok and self.mark_alive(p):
+                revived.append(p)
+        return revived
+
+    # ── 状态持久化（sidecar，不改代理文件）──────────────
+
+    def save_state(self, path: str | Path):
+        """把死出口集合与实测 IP 写 sidecar JSON（下次启动免重复打码
+        试探死线；复活信息不持久——以启动 health_check 实测为准）。"""
+        import time as _t
+        data = {"ts": int(_t.time()),
+                "dead": sorted(self._dead),
+                "exit_ips": self._exit_ips}
+        Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+
+    def load_state(self, path: str | Path):
+        """从 sidecar 恢复死出口集合与实测 IP（启动 health_check 之前的
+        先验；health_check 实测会覆盖/复活）。"""
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for p in data.get("dead") or []:
+            if p in self._proxies:
+                self._dead.add(p)
+        for p, ip in (data.get("exit_ips") or {}).items():
+            if p in self._proxies and p not in self._exit_ips:
+                self._exit_ips[p] = ip
 
     def __repr__(self):
         return (f"ProxyPool(alive={len(self.alive)}/{len(self._proxies)}, "
