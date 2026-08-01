@@ -748,6 +748,12 @@ class _WSConnection:
         self._ws: Any = None
         self._device_id = ""
         self._player_id = session.get("game_player_id", 0)
+        # 是否预期有下行流量（由上层 MultiTableSession 按在监桌数同步）。
+        # 空闲分片（0 桌）收不到任何帧是正常态——心跳是客户端单向发送、
+        # 服务端不回，若照样按收帧静默判死，会把全部空闲分片每 120s
+        # 误杀重建一轮（2026-08-02 02:25 凌晨桌少时实测发生）。空闲片
+        # 无桌可损，且 TCP 半死会在 10s 心跳发送侧暴露，无需看门狗。
+        self.expect_traffic = True
 
     def _rebuild_cfg(self):
         self._cfg = build_ws_config({
@@ -808,13 +814,16 @@ class _WSConnection:
         健康连接订阅着桌台/大厅，推送不断；静默超过 _RECV_SILENCE_S
         说明底层 TCP 已半死（无关闭帧的断连不会有任何异常抛出），
         主动关闭让 recv 侧抛 ConnectionClosed，走既有分片重建链路。
+
+        expect_traffic=False（空闲分片，0 桌在监）跳过判死：收不到
+        帧是正常态，误杀会白刷一轮重建+强制会话刷新（徒增风控指纹）。
         """
         try:
             while True:
                 await asyncio.sleep(10)
                 silence = time.monotonic() - getattr(
                     self, "_last_recv", time.monotonic())
-                if silence > _RECV_SILENCE_S:
+                if silence > _RECV_SILENCE_S and self.expect_traffic:
                     logger.warning(
                         f"[{self._session.get('account', '?')}] "
                         f"收帧静默 {silence:.0f}s 判连接死亡，主动断开重建")
@@ -1433,6 +1442,16 @@ class MultiTableSession:
         self._leaving: set[int] = set()   # 主动离桌中的桌（防误判为被踢）
         self._road_accum: dict[int, list] = {}   # 每桌珠盘累积（116重置/107追加）
         self._last_round_id: dict[int, int] = {}   # 每桌已入路的最大 roundId
+        self._sync_expect_traffic()
+
+    def _sync_expect_traffic(self):
+        """按在监桌数同步连接的收帧静默看门狗开关。
+
+        0 桌空闲分片收不到任何帧属正常（心跳单向无回包），看门狗
+        必须关闭，否则每 120s 误杀重建一轮；有桌即打开。_tables
+        的每个变更点（含外部直改 append 的调用方）都要调本方法。
+        """
+        self._conn.expect_traffic = bool(self._tables)
 
     @property
     def account(self) -> str:
@@ -1441,6 +1460,7 @@ class MultiTableSession:
 
     async def __aenter__(self) -> "MultiTableSession":
         await self._conn.__aenter__()
+        self._sync_expect_traffic()   # 分片重建换新连接后默认 True，需按桌数纠正
         self._pacer.start()
         for t in self._tables:
             await self._enter_one(t)   # 初始桌随建连直发（动态进桌才走节奏器）
@@ -1594,6 +1614,7 @@ class MultiTableSession:
                               if x["table_id"] == table_id), None)
                     self._tables = [x for x in self._tables
                                     if x["table_id"] != table_id]
+                    self._sync_expect_traffic()
                     self._entered.discard(table_id)
                     self._road_accum.pop(table_id, None)
                     logger.info(f"[被踢] 桌{table_id} 将 {self.account} 踢出"
@@ -1790,6 +1811,7 @@ class TableMonitor:
         t = {"table_id": int(table["table_id"]),
              "game_type_id": int(table.get("game_type_id", 2001))}
         shard._tables.append(t)
+        shard._sync_expect_traffic()
         await shard.request_enter(t, urgent=urgent)
 
     async def leave_table(self, table_id: int):
@@ -1800,6 +1822,7 @@ class TableMonitor:
             if t:
                 await shard._leave_one(t)
                 shard._tables.remove(t)
+                shard._sync_expect_traffic()
                 shard.snapshots.pop(table_id, None)
                 shard._road_accum.pop(table_id, None)
                 return
@@ -1824,10 +1847,12 @@ class TableMonitor:
         nt = {"table_id": int(t["table_id"]),
               "game_type_id": int(t.get("game_type_id", 2001))}
         target._tables.append(nt)
+        target._sync_expect_traffic()
         try:
             await target.request_enter(nt, urgent=True)
         except Exception as e:
             target._tables.remove(nt)
+            target._sync_expect_traffic()
             logger.warning(f"[TableMonitor] 轮转重进失败 桌{nt['table_id']}"
                            f" → {target.account}: {e}")
             ev["data"].update({"action": "rotate_failed",
