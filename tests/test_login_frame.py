@@ -19,10 +19,10 @@ def _login_param(msg: dict) -> dict:
 
 
 class TestProtocolCodecConfig:
-    def test_login_msg_carries_six_hashes(self):
+    def test_login_msg_carries_seven_hashes(self):
         param = _login_param(build_login_msg("tok", 1, "dev"))
         cfg = param["protocolCodecConfig"]
-        assert len(cfg) == 6
+        assert len(cfg) == 7
         for key, val in cfg.items():
             # 键形态 {protocolId}_{schema版本}
             assert re.fullmatch(r"\d+_\d+", key), key

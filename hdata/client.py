@@ -2027,6 +2027,102 @@ def _json_loads(s: str):
     return _j.loads(s)
 
 
+# ── 多台模式（INTER_MULTIPLE=301）全桌订阅会话 ──
+
+_QS_INTER_MULTIPLE = 301   # INTER_MULTIPLE 进入多台模式（Qs）
+_OT_MULTIPLE = 2           # Ot.MULTIPLE — serviceTypeId 多台
+_IT_MULTIPLAY = 2013       # It.MULTIPLAY — gameTypeId 多台
+
+
+class MultiplaySession:
+    """多台模式（301, serviceTypeId=2）全桌台订阅会话。
+
+    官方客户端"多台下注"通道：单条 WS 发一次 301 订阅后，服务器持续
+    推送全平台桌台的实时牌局帧（103 新靴 / 104 新局 / 106 发牌 /
+    107 结算 / 160 状态 / 161 路纸），载荷均为明文 JSON（codecFlag
+    为 false 的协议）。2026-08-02 实测：单账号同时 170+ 桌有实时
+    数据流，无单桌模式（101/401, Ot.GAME）的"每账号 ~2 桌实时流"
+    配额与 5 局未下注踢出（102）。
+
+    events() 产出与 TableSession 同构的事件 dict。迭代因连接断开
+    而结束时自然返回（上层负责重建会话）；10026 会话被踢抛
+    LoginError。
+    """
+
+    def __init__(self, session: dict, group_id: int = 21,
+                 on_before_connect=None):
+        self._session = session
+        self._group_id = group_id
+        self._conn = _WSConnection(session,
+                                   on_before_connect=on_before_connect)
+        self._closed = False
+
+    async def __aenter__(self) -> "MultiplaySession":
+        await self._conn.__aenter__()
+        await self._conn.send(build_message(
+            _QS_INTER_MULTIPLE,
+            {"groupId": self._group_id, "sort": 0, "gameTypeIds": []},
+            player_id=self._conn._player_id, game_type_id=_IT_MULTIPLAY,
+            service_type_id=_OT_MULTIPLE))
+        return self
+
+    async def __aexit__(self, *exc):
+        self._closed = True
+        await self._conn.__aexit__(*exc)
+
+    async def subscribe_lobby(self):
+        """在同一连接上追加大厅订阅（10027），接收 10052 桌台增量
+        （在线人数/桌状态/路纸摘要），用于补充多台帧缺失的桌台元数据。"""
+        await self._conn.send(build_hall_switch_msg(self._conn._player_id,
+                                                    self._conn.device_id))
+
+    async def events(self) -> AsyncIterator[dict]:
+        """持续产出多台牌局事件（异步迭代器）。
+
+        每个事件:
+          {
+            "type": str,         # boot / round / card / road / status / lobby / other
+            "protocol_id": int,
+            "table_id": int|None,
+            "data": dict,
+          }
+        """
+        while True:
+            try:
+                frame = await self._conn.recv()
+            except Exception:
+                return
+            if not frame:
+                continue
+            pid = frame.get("protocolId")
+            if pid == 10026:
+                raise LoginError("会话被踢（token 失效），请重新 login()")
+            info = extract_param(frame) or {}
+            payload = info.get("param") or info.get("data")
+            if isinstance(payload, str):
+                if frame.get("codecFlag"):
+                    try:
+                        payload = schema_decode(
+                            f"{pid}_{frame.get('serviceTypeId', _OT_MULTIPLE)}",
+                            payload)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        payload = _json_loads(payload)
+                    except Exception:
+                        pass
+            if not isinstance(payload, dict):
+                continue
+            tid = payload.get("tableId")
+            yield {
+                "type": _classify_event(pid),
+                "protocol_id": pid,
+                "table_id": tid if isinstance(tid, int) and tid > 0 else None,
+                "data": payload,
+            }
+
+
 def _classify_event(protocol_id: int) -> str:
     """协议号 → 事件类型名。"""
     return {

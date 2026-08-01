@@ -86,7 +86,7 @@ def codec_state(tmp_path, monkeypatch):
 class TestUpdateProtocolCodecConfig:
     def test_string_shorthand_updates(self, codec_state):
         changes = codec_mod.update_protocol_codec_config({"10089_7": "newhash"})
-        assert changes == {"10089_7": ("da3d29a428cf043dbd86724edac7f25c2e9c185ca986812c01003aaf2fce8548", "newhash")}
+        assert changes == {"10089_7": ("488198aea6cc35d50f84b2cc327c1d68f7f26edf40fc83ae9d45a057a743a6a0", "newhash")}
         assert codec_mod.PROTOCOL_CODEC_CONFIG["10089_7"] == "newhash"
 
     def test_dict_form_updates(self, codec_state):
@@ -98,7 +98,7 @@ class TestUpdateProtocolCodecConfig:
     def test_state_zero_removes_key(self, codec_state):
         changes = codec_mod.update_protocol_codec_config(
             {"301_2": {"version": "x", "state": 0}})
-        assert changes == {"301_2": ("0ea525bf9283b3d65a008cbb340a093d994d7c2862fdf34bebbbadfc92bcc075", None)}
+        assert changes == {"301_2": ("05af08d70e640b244d96da4e9e9f29aeddac6c102685fe6aa5c762d2dc7ce64e", None)}
         assert "301_2" not in codec_mod.PROTOCOL_CODEC_CONFIG
 
     def test_no_change_returns_empty_and_no_file(self, codec_state):
@@ -113,7 +113,7 @@ class TestUpdateProtocolCodecConfig:
         assert data["9999_7"] == "zzz"
         # 默认表里的键也一并持久化
         assert data["10089_7"] == \
-            "da3d29a428cf043dbd86724edac7f25c2e9c185ca986812c01003aaf2fce8548"
+            "488198aea6cc35d50f84b2cc327c1d68f7f26edf40fc83ae9d45a057a743a6a0"
 
     def test_bad_input_tolerated(self, codec_state):
         assert codec_mod.update_protocol_codec_config(None) == {}
