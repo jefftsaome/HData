@@ -262,7 +262,9 @@ class ProxyPool:
     async def health_check(self, timeout: float = 10.0,
                            probe=None,
                            connect_dest: tuple[str, int] | None = None,
-                           retry: int = 1) -> dict[str, dict]:
+                           retry: int = 1,
+                           extra_warn_dests: list[tuple[str, int]] | None = None
+                           ) -> dict[str, dict]:
         """并行探测全部出口存活并记录实测 IP，失败出口自动 mark_dead。
 
         Args:
@@ -273,6 +275,11 @@ class ProxyPool:
                           （probe_exit_connect，并行、贴真实目标站），
                           IP 记 None
             retry: 失败重试次数（总尝试 = retry；仅 connect 模式）
+            extra_warn_dests: 附加建连探测目标列表（如验证码服务
+                          bcaptcha.botion.com:443）。主探测存活的出口若
+                          到这些目标不通，**不判死**（采集链路不受影响），
+                          仅记 warning——该出口"能采不能登"，完整重登
+                          打码会失败。
 
         Returns:
             {proxy: {"ok": bool, "ip": 出口IP|None}}——死出口 ip 恒 None
@@ -313,6 +320,23 @@ class ProxyPool:
             else:
                 self.mark_dead(p)
                 logger.warning(f"[ProxyPool] 出口探测失败已剔除: {p}")
+
+        # 附加目标探测（如验证码服务）：不通不判死，仅警告"能采不能登"
+        if extra_warn_dests:
+            alive = [p for p in self._proxies if results[p]["ok"]]
+
+            async def warn_probe(p: str, host: str, port: int) -> bool:
+                return await probe_exit_connect(p, host, port, timeout)
+
+            for host, port in extra_warn_dests:
+                checks = await asyncio.gather(
+                    *[warn_probe(p, host, port) for p in alive])
+                bad = [p for p, ok in zip(alive, checks) if not ok]
+                if bad:
+                    logger.warning(
+                        f"[ProxyPool] {len(bad)} 条出口到 {host}:{port} 不通"
+                        f"（能采不能登，完整重登会失败，建议在代理商后台"
+                        f"切换 IP 映射）: {bad}")
         return results
 
     def mark_alive(self, proxy: str) -> bool:

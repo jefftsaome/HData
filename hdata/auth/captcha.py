@@ -13,6 +13,7 @@ import time
 import uuid
 from curl_cffi import requests as cr
 from htools.utils.time import now_ms
+from loguru import logger
 
 from hdata.auth import login_trace
 from hdata.auth.fingerprint import get_impersonate
@@ -47,12 +48,16 @@ def fetch_captcha(page_url: str = "", proxy: str = "") -> dict | None:
         resp = cr.get(url, impersonate=get_impersonate(), headers={"Referer": page_url},
                       timeout=15, proxies=proxies)
     except Exception as exc:
+        elapsed = int((time.monotonic() - t0) * 1000)
+        logger.debug("fetch_captcha 请求异常: {}: {} ({}ms, proxy={})",
+                     type(exc).__name__, exc, elapsed, proxy or "直连")
         login_trace.emit(
             "captcha_load", method="GET", url=url,
-            elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+            elapsed_ms=elapsed, ok=False,
             summary={"error": type(exc).__name__}, source="http_login")
         return None
     if resp.status_code != 200:
+        logger.debug("fetch_captcha HTTP {} (proxy={})", resp.status_code, proxy or "直连")
         login_trace.emit(
             "captcha_load", method="GET", url=url, status=resp.status_code,
             elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
@@ -60,6 +65,7 @@ def fetch_captcha(page_url: str = "", proxy: str = "") -> dict | None:
         return None
     m = re.search(r"\((.*)\)$", resp.text, re.DOTALL)
     if not m:
+        logger.debug("fetch_captcha JSONP 解析失败: {} (proxy={})", resp.text[:200], proxy or "直连")
         login_trace.emit(
             "captcha_load", method="GET", url=url, status=resp.status_code,
             elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
@@ -67,6 +73,7 @@ def fetch_captcha(page_url: str = "", proxy: str = "") -> dict | None:
         return None
     outer = json.loads(m.group(1))
     if outer.get("status") != "success":
+        logger.debug("fetch_captcha 业务失败: {} (proxy={})", outer, proxy or "直连")
         login_trace.emit(
             "captcha_load", method="GET", url=url, status=resp.status_code,
             elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
