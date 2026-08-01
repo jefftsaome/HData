@@ -1959,6 +1959,7 @@ def _classify_event(protocol_id: int) -> str:
     """协议号 → 事件类型名。"""
     return {
         102: "leave",      # 离桌推送（主动/被踢，leaveTableType 区分）
+        103: "boot",       # 新靴/洗牌开始（客户端置 SHUFFLE 清空路纸）
         104: "round",      # 局状态（roundNo/countdown/bootIndex）
         106: "card",       # 发牌
         107: "card",       # 牌局事件
@@ -1968,6 +1969,7 @@ def _classify_event(protocol_id: int) -> str:
         160: "road",       # 路纸更新
         161: "road",       # 路纸更新
         171: "status",     # 桌台状态
+        305: "status",     # 桌台故障状态变更（TABLEFAULT_STATUS_CHANGE）
         10052: "lobby",    # 大厅快照
     }.get(protocol_id, "other")
 
