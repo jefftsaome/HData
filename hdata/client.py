@@ -72,6 +72,7 @@ _QS_TABLE_DATA_UPDATE = 10052  # TABLE_DATA_UPDATE 桌台增量推送（10027 �
 _YT_ALL_GAME = 41              # Yt.ALL_GAME — 大厅 groupId 全集
 _QS_HEARTBEAT = 3              # 协议心跳（pid=3，与官方前端一致）
 _HEARTBEAT_INTERVAL = 10       # 秒
+_RECV_SILENCE_S = 120          # 收帧静默判死窗口（秒，关闭传输层 ping 后启用）
 _QS_NEW_INTER_GAME = 401
 _QS_INTER_GAME = 101
 _QS_OUT_GAME = 102
@@ -764,34 +765,65 @@ class _WSConnection:
     async def __aenter__(self) -> "_WSConnection":
         import websockets
         if self._on_before_connect:
-            try:
-                self._session = await self._on_before_connect(self._session)
-            except Exception as e:
-                logger.warning(f"[{self._session.get('account', '?')}] "
-                               f"建连前回调失败（{type(e).__name__}: {e}），"
-                               "沿用现有 token 尝试连接")
+            # 刷新/重登全部失败时**不沿用旧 token 建连**——旧 token 建连
+            # 可能 WS 登录成功但会话已作废，进桌全哑（2026-08-01 22:52
+            # 全体断连后 14 账号静默假死事故的机制）。宁可本片建连失败
+            # 走死片/顶替/修复链路，也不产出"连接活着但没数据"的哑片。
+            self._session = await self._on_before_connect(self._session)
         self._rebuild_cfg()
         self._player_id = self._session.get("game_player_id", 0)
         from hdata.auth.fingerprint import get_ua
         self._ws = await websockets.connect(
             self._cfg["ws_url"], open_timeout=12, close_timeout=3,
             max_size=50 * 1024 * 1024,
+            # 关闭传输层 ping：官方浏览器客户端不发 WS ping 帧（JS 无此
+            # 能力），库的默认 20s ping/pong 既是多余指纹，又会在事件
+            # 循环被进桌风暴打满时 pong 排队超时，把全部连接以 1011
+            # 自杀（2026-08-01 两次全体断连的直接凶手）。保活完全靠
+            # 应用层 10s 心跳（pid=3）+ 收帧静默看门狗。
+            ping_interval=None,
             additional_headers={
                 "User-Agent": get_ua(self._session.get("account", "")),
             },
             proxy=self._session.get("proxy") or None)
         await self._login()
+        self._last_recv = time.monotonic()
         self._hb_task = asyncio.create_task(self._heartbeat_loop())
+        self._wd_task = asyncio.create_task(self._silence_watchdog())
         return self
 
     async def __aexit__(self, *exc):
-        task = getattr(self, "_hb_task", None)
-        if task:
-            task.cancel()
-            self._hb_task = None
+        for attr in ("_hb_task", "_wd_task"):
+            task = getattr(self, attr, None)
+            if task:
+                task.cancel()
+                setattr(self, attr, None)
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+    async def _silence_watchdog(self):
+        """收帧静默判死（关闭传输层 ping 后的连接死活检测）。
+
+        健康连接订阅着桌台/大厅，推送不断；静默超过 _RECV_SILENCE_S
+        说明底层 TCP 已半死（无关闭帧的断连不会有任何异常抛出），
+        主动关闭让 recv 侧抛 ConnectionClosed，走既有分片重建链路。
+        """
+        try:
+            while True:
+                await asyncio.sleep(10)
+                silence = time.monotonic() - getattr(
+                    self, "_last_recv", time.monotonic())
+                if silence > _RECV_SILENCE_S:
+                    logger.warning(
+                        f"[{self._session.get('account', '?')}] "
+                        f"收帧静默 {silence:.0f}s 判连接死亡，主动断开重建")
+                    await self._ws.close()
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
 
     async def _heartbeat_loop(self):
         """协议级心跳保活（pid=3，与官方前端一致）。
@@ -839,6 +871,7 @@ class _WSConnection:
 
     async def recv(self) -> dict | None:
         raw = await self._ws.recv()
+        self._last_recv = time.monotonic()
         if isinstance(raw, str):
             return None
         frame = decode_frame(raw)
