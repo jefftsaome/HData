@@ -150,13 +150,18 @@ def build_message(protocol_id: int, data: dict, *,
 # 与 .cache/h3_schemas.json 各协议 version 字段逐字一致。
 # 键为 {protocolId}_{schema版本}；值为静态值，仅当平台升级协议 schema 时才变，
 # 届时需重新抓包更新（见 docs/数据样本.md"登录请求帧"一节）。
+# 2026-08-02 基线：与服务器登录响应 protocolCodecConfig 同步（schema 热
+# 更新真实载体是登录响应 data，不是 10115）；服务器下发的 5 个协议当前
+# 版本如下，10053_7/10075_7 未下发维持旧值。运行时若再变，
+# schemacodec.update_schema_config 会热更新并持久化完整定义。
 _DEFAULT_PROTOCOL_CODEC_CONFIG = {
     "10053_7": "26695a937138721cdec2878bf9ca16ada04535f16cd1d83d115c95548c558a38",
-    "10089_7": "da3d29a428cf043dbd86724edac7f25c2e9c185ca986812c01003aaf2fce8548",
-    "10073_7": "a5e098a48a2f406aaeac90ff7c7ff5f1832b098507b0e60c7cb0a014c9f5c127",
+    "10089_7": "488198aea6cc35d50f84b2cc327c1d68f7f26edf40fc83ae9d45a057a743a6a0",
+    "10070_7": "f2e8a14f3f0f55e8e1326e294bea539126ad7d5523347798e82a65a694397a37",
+    "10073_7": "3f49d88dc3db0b07726b827708b7b1681e3f2ef517e330927d7eacfbf97b9bf4",
     "10075_7": "9c69c9b2566b7700b2aa699aa7662dbbca482eab73c3a15be047ed8e6df1e323",
-    "301_2": "0ea525bf9283b3d65a008cbb340a093d994d7c2862fdf34bebbbadfc92bcc075",
-    "302_2": "5de34be7725f7feca1bcdb09876abcaa804bc9d414837c9b7c040e9c30899927",
+    "301_2": "05af08d70e640b244d96da4e9e9f29aeddac6c102685fe6aa5c762d2dc7ce64e",
+    "302_2": "adaa3c1a10f096647c089fa5221e3c65d9d2bb6a63d1dc54a2583290b6bc86a1",
 }
 
 # 服务器 10115 PROT_DECODE_CONFIG 推送的更新写这个缓存文件，

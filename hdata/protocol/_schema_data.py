@@ -1,6 +1,9 @@
-"""二进制 schema 协议配置（逆向自大厅前端 JS 的 H3 常量，原样移植）。
+"""二进制 schema 协议配置（从前端 bundle H3 常量移植 + 服务器登录响应热更新基线）。
 
-来源：egret/js/assets-*.js，key 格式 "{protocolId}_{serviceTypeId}"，7=大厅。
+键为 "{protocolId}_{serviceTypeId}"。2026-08-02 起内置基线与服务器
+登录响应 protocolCodecConfig 同步（10089_7/10070_7/10073_7/301_2/302_2
+为服务器下发版本）；运行时热更新见 schemacodec.update_schema_config，
+持久化在 .cache/protocol_schemas.json。
 """
 
 SCHEMA_CONFIG = {
@@ -921,7 +924,7 @@ SCHEMA_CONFIG = {
   }
  },
  "10089_7": {
-  "version": "da3d29a428cf043dbd86724edac7f25c2e9c185ca986812c01003aaf2fce8548",
+  "version": "488198aea6cc35d50f84b2cc327c1d68f7f26edf40fc83ae9d45a057a743a6a0",
   "root": "Root",
   "state": 1,
   "schemas": {
@@ -987,6 +990,11 @@ SCHEMA_CONFIG = {
      "bit": 1
     },
     {
+     "name": "allGameTopSort",
+     "type": 1,
+     "strategy": 0
+    },
+    {
      "name": "topSort",
      "type": 1,
      "strategy": 0
@@ -1026,7 +1034,7 @@ SCHEMA_CONFIG = {
   }
  },
  "10073_7": {
-  "version": "a5e098a48a2f406aaeac90ff7c7ff5f1832b098507b0e60c7cb0a014c9f5c127",
+  "version": "3f49d88dc3db0b07726b827708b7b1681e3f2ef517e330927d7eacfbf97b9bf4",
   "root": "Root",
   "state": 1,
   "schemas": {
@@ -1045,8 +1053,8 @@ SCHEMA_CONFIG = {
     {
      "name": "tableBetLimitMap",
      "type": 7,
-     "keyType": 2,
-     "valueSchema": "TableBetLimitCache"
+     "valueSchema": "TableBetLimitCache",
+     "keyType": 2
     }
    ],
    "TableBetLimitCache": [
@@ -1062,7 +1070,7 @@ SCHEMA_CONFIG = {
     {
      "name": "sideBetPointLimit",
      "type": 6,
-     "elemSchema": "LimitRedInfo"
+     "elemSchema": "GameLimitPointGroupDTO"
     },
     {
      "name": "playerTableBetLimit",
@@ -1088,8 +1096,8 @@ SCHEMA_CONFIG = {
     {
      "name": "betPointMap",
      "type": 7,
-     "keyType": 2,
-     "elemSchema": "BetPointSimpleDTO"
+     "elemSchema": "BetPointSimpleDTO",
+     "keyType": 2
     },
     {
      "name": "min",
@@ -1103,7 +1111,7 @@ SCHEMA_CONFIG = {
     },
     {
      "name": "playRate",
-     "type": 1,
+     "type": 4,
      "strategy": 0
     },
     {
@@ -1177,63 +1185,6 @@ SCHEMA_CONFIG = {
      "type": 1,
      "strategy": 2
     }
-   ],
-   "BetPointLimit": [
-    {
-     "name": "betPointGroup",
-     "type": 4,
-     "strategy": 2
-    },
-    {
-     "name": "groupId",
-     "type": 1,
-     "strategy": 2
-    },
-    {
-     "name": "betPointMap",
-     "type": 7,
-     "strategy": 0,
-     "keyType": 0,
-     "keyStrategy": 2,
-     "valueSchema": "BetPointSimpleDTO"
-    },
-    {
-     "name": "min",
-     "type": 1,
-     "strategy": 0
-    },
-    {
-     "name": "max",
-     "type": 1,
-     "strategy": 2
-    },
-    {
-     "name": "playRate",
-     "type": 4,
-     "strategy": 2
-    },
-    {
-     "name": "dynamicFlag",
-     "type": 2,
-     "strategy": 1,
-     "bit": 1
-    },
-    {
-     "name": "dynamicBetPoint",
-     "type": 6,
-     "strategy": 0,
-     "elemSchema": "DynamicBetPoint"
-    },
-    {
-     "name": "lightPlayRate",
-     "type": 4,
-     "strategy": 2
-    },
-    {
-     "name": "lightMaxPay",
-     "type": 4,
-     "strategy": 2
-    }
    ]
   }
  },
@@ -1246,100 +1197,41 @@ SCHEMA_CONFIG = {
     {
      "name": "versionMap",
      "type": 7,
-     "strategy": None,
-     "bit": None,
-     "schema": None,
      "elemSchema": "versionMap",
-     "elemType": None,
-     "valueSchema": None,
-     "valueType": None,
-     "keyType": 2,
-     "keyStrategy": None,
-     "keyBit": None,
-     "defaultValue": None
+     "keyType": 2
     }
    ],
    "versionMap": [
     {
      "name": "tableInfoVersion",
      "type": 3,
-     "strategy": 0,
-     "bit": None,
-     "schema": None,
-     "elemSchema": None,
-     "elemType": None,
-     "valueSchema": None,
-     "valueType": None,
-     "keyType": None,
-     "keyStrategy": None,
-     "keyBit": None,
-     "defaultValue": None
+     "strategy": 0
     },
     {
      "name": "roadPaperVersion",
      "type": 3,
-     "strategy": 0,
-     "bit": None,
-     "schema": None,
-     "elemSchema": None,
-     "elemType": None,
-     "valueSchema": None,
-     "valueType": None,
-     "keyType": None,
-     "keyStrategy": None,
-     "keyBit": None,
-     "defaultValue": None
+     "strategy": 0
     },
     {
      "name": "bootReportVersion",
      "type": 3,
-     "strategy": 0,
-     "bit": None,
-     "schema": None,
-     "elemSchema": None,
-     "elemType": None,
-     "valueSchema": None,
-     "valueType": None,
-     "keyType": None,
-     "keyStrategy": None,
-     "keyBit": None,
-     "defaultValue": None
+     "strategy": 0
     },
     {
      "name": "betPointLimitVersion",
      "type": 3,
-     "strategy": 0,
-     "bit": None,
-     "schema": None,
-     "elemSchema": None,
-     "elemType": None,
-     "valueSchema": None,
-     "valueType": None,
-     "keyType": None,
-     "keyStrategy": None,
-     "keyBit": None,
-     "defaultValue": None
+     "strategy": 0
     },
     {
      "name": "bootNumberLimitListVersion",
      "type": 3,
-     "strategy": 0,
-     "bit": None,
-     "schema": None,
-     "elemSchema": None,
-     "elemType": None,
-     "valueSchema": None,
-     "valueType": None,
-     "keyType": None,
-     "keyStrategy": None,
-     "keyBit": None,
-     "defaultValue": None
+     "strategy": 0
     }
    ]
   }
  },
  "301_2": {
-  "version": "0ea525bf9283b3d65a008cbb340a093d994d7c2862fdf34bebbbadfc92bcc075",
+  "version": "05af08d70e640b244d96da4e9e9f29aeddac6c102685fe6aa5c762d2dc7ce64e",
   "root": "Root",
   "state": 1,
   "schemas": {
@@ -1348,17 +1240,17 @@ SCHEMA_CONFIG = {
      "name": "gameTableMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "GameTableCacheOptDTO",
      "keyType": 2,
-     "keyStrategy": 0,
-     "valueSchema": "GameTableCacheOptDTO"
+     "keyStrategy": 0
     },
     {
      "name": "bootNumberLimitMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "BootNumberLimitCache",
      "keyType": 2,
-     "keyStrategy": 0,
-     "valueSchema": "BootNumberLimitCache"
+     "keyStrategy": 0
     }
    ],
    "GameTableCacheOptDTO": [
@@ -1376,9 +1268,9 @@ SCHEMA_CONFIG = {
      "name": "contextLanguageMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "ContextLanguageRespDTO",
      "keyType": 1,
-     "keyStrategy": 0,
-     "valueSchema": "ContextLanguageRespDTO"
+     "keyStrategy": 0
     },
     {
      "name": "gameStatus",
@@ -1415,14 +1307,14 @@ SCHEMA_CONFIG = {
     {
      "name": "totalBetCountDown",
      "type": 3,
-     "strategy": 0
+     "strategy": 2
     },
     {
      "name": "roadPaper",
      "type": 7,
      "strategy": 0,
-     "keyStrategy": 2,
-     "keyType": 1
+     "keyType": 1,
+     "keyStrategy": 2
     },
     {
      "name": "bootReport",
@@ -1469,9 +1361,9 @@ SCHEMA_CONFIG = {
      "name": "winPoints",
      "type": 7,
      "strategy": 0,
+     "valueType": 4,
      "keyType": 2,
-     "keyStrategy": 0,
-     "valueType": 4
+     "keyStrategy": 0
     },
     {
      "name": "index",
@@ -1522,6 +1414,12 @@ SCHEMA_CONFIG = {
      "type": 1,
      "strategy": 1,
      "bit": 2
+    },
+    {
+     "name": "betPointNotAppears",
+     "type": 5,
+     "strategy": 0,
+     "schema": "BetPointNotAppearCache"
     }
    ],
    "BootNumberLimitCache": [
@@ -1660,9 +1558,9 @@ SCHEMA_CONFIG = {
      "name": "betPointMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "BetPointSimpleDTO",
      "keyType": 2,
-     "keyStrategy": 0,
-     "valueSchema": "BetPointSimpleDTO"
+     "keyStrategy": 0
     },
     {
      "name": "min",
@@ -1790,8 +1688,7 @@ SCHEMA_CONFIG = {
     {
      "name": "cardNumber",
      "type": 1,
-     "strategy": 1,
-     "bit": 6
+     "strategy": 0
     }
    ],
    "CardResultInfo": [
@@ -1805,6 +1702,26 @@ SCHEMA_CONFIG = {
      "name": "result",
      "type": 4,
      "strategy": 2
+    }
+   ],
+   "BetPointNotAppearCache": [
+    {
+     "name": "items",
+     "type": 6,
+     "strategy": 0,
+     "elemSchema": "BetPointNotAppearDetailCache"
+    }
+   ],
+   "BetPointNotAppearDetailCache": [
+    {
+     "name": "betPointId",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "count",
+     "type": 1,
+     "strategy": 0
     }
    ],
    "GoodRoadPointCache": [
@@ -1848,7 +1765,7 @@ SCHEMA_CONFIG = {
   }
  },
  "302_2": {
-  "version": "5de34be7725f7feca1bcdb09876abcaa804bc9d414837c9b7c040e9c30899927",
+  "version": "adaa3c1a10f096647c089fa5221e3c65d9d2bb6a63d1dc54a2583290b6bc86a1",
   "root": "Root",
   "state": 1,
   "schemas": {
@@ -1869,9 +1786,9 @@ SCHEMA_CONFIG = {
      "name": "bootNumberLimitMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "BootNumberLimitCache",
      "keyType": 2,
-     "keyStrategy": 0,
-     "valueSchema": "BootNumberLimitCache"
+     "keyStrategy": 0
     }
    ],
    "GoodRoadOptTableInfo": [
@@ -1914,7 +1831,7 @@ SCHEMA_CONFIG = {
     {
      "name": "totalBetCountDown",
      "type": 3,
-     "strategy": 0
+     "strategy": 2
     },
     {
      "name": "serverTime",
@@ -1961,6 +1878,7 @@ SCHEMA_CONFIG = {
      "name": "winPoints",
      "type": 7,
      "strategy": 0,
+     "valueType": 4,
      "keyType": 2,
      "keyStrategy": 0
     },
@@ -1997,9 +1915,9 @@ SCHEMA_CONFIG = {
      "name": "contextLanguageMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "ContextLanguageRespDTO",
      "keyType": 1,
-     "keyStrategy": 0,
-     "valueSchema": "ContextLanguageRespDTO"
+     "keyStrategy": 0
     },
     {
      "name": "isPausedCountDown",
@@ -2017,7 +1935,7 @@ SCHEMA_CONFIG = {
     {
      "name": "gameTypeId",
      "type": 3,
-     "strategy": 0
+     "strategy": 2
     },
     {
      "name": "list",
@@ -2149,9 +2067,9 @@ SCHEMA_CONFIG = {
      "name": "betPointMap",
      "type": 7,
      "strategy": 0,
+     "valueSchema": "BetPointSimpleDTO",
      "keyType": 2,
-     "keyStrategy": 0,
-     "valueSchema": "BetPointSimpleDTO"
+     "keyStrategy": 0
     },
     {
      "name": "min",
@@ -2289,6 +2207,201 @@ SCHEMA_CONFIG = {
     {
      "name": "num",
      "type": 1,
+     "strategy": 0
+    }
+   ]
+  }
+ },
+ "10070_7": {
+  "version": "f2e8a14f3f0f55e8e1326e294bea539126ad7d5523347798e82a65a694397a37",
+  "root": "Root",
+  "state": 1,
+  "schemas": {
+   "Root": [
+    {
+     "name": "tableInfoCacheMap",
+     "type": 7,
+     "strategy": 0,
+     "valueSchema": "GameTable",
+     "keyType": 1
+    },
+    {
+     "name": "noticeFlag",
+     "type": 2,
+     "strategy": 1,
+     "bit": 1,
+     "defaultValue": "0"
+    }
+   ],
+   "GameTable": [
+    {
+     "name": "tableId",
+     "type": 1,
+     "strategy": 0
+    },
+    {
+     "name": "physicsTableNo",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "gameCasinoId",
+     "type": 1,
+     "strategy": 1,
+     "bit": 4
+    },
+    {
+     "name": "tableOpen",
+     "type": 2,
+     "strategy": 1,
+     "bit": 1,
+     "defaultValue": "1"
+    },
+    {
+     "name": "gameTypeId",
+     "type": 1,
+     "strategy": 2
+    },
+    {
+     "name": "seatLimit",
+     "type": 1,
+     "strategy": 0
+    },
+    {
+     "name": "tableColour",
+     "type": 1,
+     "strategy": 1,
+     "bit": 3
+    },
+    {
+     "name": "tableCurrentLanguage",
+     "type": 1,
+     "strategy": 1,
+     "bit": 4
+    },
+    {
+     "name": "greenScreenSign",
+     "type": 1,
+     "strategy": 1,
+     "bit": 4,
+     "defaultValue": "0"
+    },
+    {
+     "name": "dealCardMode",
+     "type": 1,
+     "strategy": 1,
+     "bit": 2
+    },
+    {
+     "name": "tableLockBetPointId",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "dealerPic",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "videoUrl",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "dealerPicInstant",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "dealerPicTable",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "virtualPictureUrl",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "phonePicTable",
+     "type": 4,
+     "strategy": 0
+    },
+    {
+     "name": "roadPaperVersion",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "bootReportVersion",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "betPointLimitVersion",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "bootNumberLimitListVersion",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "oneselfBalanceLimit",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "shareBalanceLimit",
+     "type": 3,
+     "strategy": 0
+    },
+    {
+     "name": "index",
+     "type": 1,
+     "strategy": 0
+    },
+    {
+     "name": "isTopShow",
+     "type": 1,
+     "strategy": 1,
+     "bit": 2
+    },
+    {
+     "name": "topSort",
+     "type": 1,
+     "strategy": 0
+    },
+    {
+     "name": "isAllGameTopShow",
+     "type": 1,
+     "strategy": 1,
+     "bit": 2
+    },
+    {
+     "name": "allGameTopSort",
+     "type": 1,
+     "strategy": 0
+    },
+    {
+     "name": "tableNameLanguageMap",
+     "type": 7,
+     "strategy": 0,
+     "valueSchema": "TableLanguageContent",
+     "keyType": 1,
+     "keyStrategy": 2
+    }
+   ],
+   "TableLanguageContent": [
+    {
+     "name": "languageCode",
+     "type": 4,
+     "strategy": 2
+    },
+    {
+     "name": "content",
+     "type": 4,
      "strategy": 0
     }
    ]

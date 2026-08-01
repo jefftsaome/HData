@@ -866,6 +866,7 @@ class _WSConnection:
             if pid == FS_LOGIN:
                 info = extract_param(frame) or {}
                 if info.get("status") == 1:
+                    self._apply_login_payload(info)
                     # jti 单连接消费：本连接登录成功即标记该 token 已消费，
                     # 下一条新连接建连前 _refresh_cb 会强制刷新（见节流策略注释）。
                     self._session["_token_consumed"] = True
@@ -874,6 +875,44 @@ class _WSConnection:
             if pid == 10026:
                 raise LoginError("WS 登录被踢: token 失效")
         raise LoginError("WS 登录超时")
+
+    def _apply_login_payload(self, info: dict):
+        """处理登录响应 data 内层载荷（schema 热更新真实载体）。
+
+        登录响应 data 是 JSON 字符串，内层含：
+        - protocolCodecConfig: {proto_key: {version/root/state/schemas}}
+          服务器下发的**当前完整 schema 定义**——官方客户端
+          onLoginResp → syncProtocolConfig 热替换解码器的数据源。
+          2026-08-02 实锤：schema 热更新不靠 10115 WS 推送，靠这里。
+          漏掉它=永远用旧 schema 解新编码=逐字节错位（10089 大厅
+          231 桌解成 246 假元素一半丢 tableId 的事故）。
+        - totalTable: 平台当前桌台总数（记日志便于核对大厅完整性）。
+        失败只告警不抛错，绝不能让登录主流程崩掉。
+        """
+        try:
+            from hdata.protocol.codec import update_protocol_codec_config
+            from hdata.protocol.schemacodec import update_schema_config
+            data = info.get("data")
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                return
+            account = (self._session or {}).get("account", "?")
+            total = data.get("totalTable")
+            if total is not None:
+                self._session["total_table"] = total
+                logger.info(f"[{account}] 登录响应：平台总桌数 {total}")
+            cfg = data.get("protocolCodecConfig")
+            if not isinstance(cfg, dict) or not cfg:
+                return
+            updated = [k for k, v in cfg.items()
+                       if update_schema_config(str(k), v)]
+            update_protocol_codec_config(cfg)
+            if updated:
+                logger.warning(
+                    f"[{account}] 登录响应 schema 热更新: {updated}")
+        except Exception as e:  # noqa: BLE001 — 解析未知形态只告警
+            logger.warning(f"登录响应 protocolCodecConfig 处理失败（忽略）: {e!r}")
 
     async def send(self, msg: dict):
         await self._ws.send(encode_frame(msg))
@@ -898,6 +937,7 @@ class _WSConnection:
         """
         try:
             from hdata.protocol.codec import update_protocol_codec_config
+            from hdata.protocol.schemacodec import update_schema_config
             info = extract_param(frame)
             data = info.get("param") or info.get("data")
             if isinstance(data, str):
@@ -907,13 +947,20 @@ class _WSConnection:
             cfg = data.get("protocolCodecConfig")
             if not isinstance(cfg, dict):
                 return
+            # 完整 schema 定义热更新解码器（含 schemas 时；登录响应同款）
+            updated = [k for k, v in cfg.items()
+                       if isinstance(v, dict)
+                       and update_schema_config(str(k), v)]
             changes = update_protocol_codec_config(cfg)
             account = (self._session or {}).get("account", "?")
+            if updated:
+                logger.warning(
+                    "[%s] 10115 schema 定义热更新: %s", account, updated)
             if changes:
                 logger.warning(
                     "[%s] 10115 schema 指纹热更新: %s", account,
                     {k: {"old": v[0], "new": v[1]} for k, v in changes.items()})
-            else:
+            if not updated and not changes:
                 logger.debug("[%s] 10115 schema 配置与本地一致", account)
         except Exception as e:  # noqa: BLE001 — 解析未知形态只告警
             logger.warning("10115 schema 配置解析失败（忽略）: %r", e)

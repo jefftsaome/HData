@@ -25,6 +25,7 @@ schema 配置见 `_schema_data.py`（从前端 H3 常量原样移植）。
 from __future__ import annotations
 
 import base64
+import json
 import struct
 
 from hdata.protocol._schema_data import SCHEMA_CONFIG
@@ -377,6 +378,92 @@ def _read_schema(schema: _Schema, bits: _BitReader, body: _ByteReader,
 # ── 对外接口 ───────────────────────────────────────────
 
 _ROOTS: dict[str, _Schema] = {}
+
+# ── 服务器 schema 热更新（登录响应/10115 protocolCodecConfig） ──
+#
+# 官方客户端 syncProtocolConfig 的对应物：服务器在**登录响应 data
+# 的 protocolCodecConfig**（或 10115 推送）里下发协议的**完整 schema
+# 定义**（含 version/root/schemas），客户端热替换解码器并持久化
+# （localStorage saveConfig），重启后仍用新版、并按新版哈希上报，
+# 服务器据此版本编码下发。
+#
+# 历史教训：此前只热更新版本哈希（codec.update_protocol_codec_config），
+# 解码仍用 7-14 bundle 内置旧 schema。2026-07 下旬服务器给 10089_7
+# 的 HallGameTable 插入 allGameTopSort 字段后，旧解码器逐元素错位：
+# 231 张真桌解出 246 个假元素、一半丢 tableId/gameTypeId，且 body/
+# bits 各剩约一半（2026-08-02 用官方解码器仲裁+新版 schema 实测
+# body 0 剩余、231 桌与 hallDetails/totalTable 完全吻合破案）。
+
+_SCHEMA_OVERRIDE_CACHE: "Path | None" = None
+
+
+def _override_cache_path():
+    global _SCHEMA_OVERRIDE_CACHE
+    if _SCHEMA_OVERRIDE_CACHE is None:
+        from hdata.paths import cache_dir
+        _SCHEMA_OVERRIDE_CACHE = cache_dir() / "protocol_schemas.json"
+    return _SCHEMA_OVERRIDE_CACHE
+
+
+def _load_schema_overrides():
+    """启动时加载持久化的服务器 schema 覆盖（对齐官方 localStorage）。"""
+    try:
+        p = _override_cache_path()
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for key, cfg in data.items():
+                    if isinstance(cfg, dict) and cfg.get("schemas"):
+                        SCHEMA_CONFIG[key] = cfg
+    except Exception:  # noqa: BLE001 — 覆盖损坏不阻塞启动，回退内置
+        pass
+
+
+def update_schema_config(protocol_key: str, entry: dict) -> bool:
+    """用服务器下发的完整 schema 定义热更新解码器。
+
+    Args:
+        protocol_key: "{protocolId}_{serviceTypeId}"，如 "10089_7"
+        entry: {"version": str, "root": str, "state": 1,
+                "schemas": {...}}（服务器原样格式，字段含 null 兼容）
+
+    Returns:
+        是否有实质变更（version 不同才更新并持久化）
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("state", 1) == 0:
+        return False
+    schemas = entry.get("schemas")
+    version = entry.get("version")
+    if not isinstance(schemas, dict) or not version:
+        return False
+    old = SCHEMA_CONFIG.get(protocol_key)
+    if old and old.get("version") == version:
+        return False
+    SCHEMA_CONFIG[protocol_key] = {
+        "version": version,
+        "root": entry.get("root") or "Root",
+        "state": 1,
+        "schemas": schemas,
+    }
+    _ROOTS.pop(protocol_key, None)
+    try:
+        p = _override_cache_path()
+        data = {}
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        data[protocol_key] = SCHEMA_CONFIG[protocol_key]
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                     encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+_load_schema_overrides()
 
 
 def _root(protocol_key: str) -> _Schema:
