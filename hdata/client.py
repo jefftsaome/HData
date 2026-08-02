@@ -2049,7 +2049,7 @@ class MultiplaySession:
     LoginError。
     """
 
-    def __init__(self, session: dict, group_id: int = 21,
+    def __init__(self, session: dict, group_id: int = 32,
                  on_before_connect=None):
         self._session = session
         self._group_id = group_id
