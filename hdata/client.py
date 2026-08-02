@@ -2084,6 +2084,21 @@ class MultiplaySession:
         self._closed = True
         await self._conn.__aexit__(*exc)
 
+    async def resubscribe(self):
+        """在同一连接上重发 301 订阅（预防性重订阅）。
+
+        背景（2026-08-02 实测）：服务器对多台订阅会话有固定 ~8 分钟
+        TTL，到期**静默停推数据帧**（无 4/6/11 控制帧、心跳照走），
+        官方客户端在浏览器里表现为"多台模式自动退出"。官方客户端只有
+        重连后才重发 301，但协议本身允许同连接重复订阅——在 TTL 到期
+        前主动重发 301，若服务器重置订阅时钟即可实现零缺口续订。
+        """
+        await self._conn.send(build_message(
+            _QS_INTER_MULTIPLE,
+            {"groupId": self._group_id, "sort": 0, "gameTypeIds": []},
+            player_id=self._conn._player_id, game_type_id=_IT_MULTIPLAY,
+            service_type_id=_OT_MULTIPLE))
+
     async def subscribe_lobby(self):
         """在同一连接上追加大厅订阅（10027），接收 10052 桌台增量
         （在线人数/桌状态/路纸摘要），用于补充多台帧缺失的桌台元数据。"""
