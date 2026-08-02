@@ -2049,6 +2049,13 @@ class MultiplaySession:
     LoginError。
     """
 
+    # 桌台数据帧协议（判活只看这些——pid=3 心跳/10005 等控制帧活着
+    # 不代表数据流活着，2026-08-02 断供事故：服务器切了订阅但连接
+    # 心跳照走，任何"有帧即活"的看门狗都会失效）
+    _DATA_PIDS = frozenset({103, 104, 106, 107, 160, 161})
+    # 服务器控制协议（$9 枚举）：4 强制重连 / 6 多台重连 / 11 服务器限流
+    _CONTROL_PIDS = frozenset({4, 5, 6, 10, 11})
+
     def __init__(self, session: dict, group_id: int = 32,
                  on_before_connect=None):
         self._session = session
@@ -2056,6 +2063,13 @@ class MultiplaySession:
         self._conn = _WSConnection(session,
                                    on_before_connect=on_before_connect)
         self._closed = False
+        self._last_data = 0.0     # monotonic：最近数据帧时刻（判活依据）
+
+    @property
+    def last_data(self) -> float:
+        """最近一条桌台数据帧（103/104/106/107/160/161）的 monotonic
+        时刻；0 表示尚未收到。心跳等非数据帧不计。"""
+        return self._last_data
 
     async def __aenter__(self) -> "MultiplaySession":
         await self._conn.__aenter__()
@@ -2113,6 +2127,18 @@ class MultiplaySession:
                     except Exception:
                         pass
             if not isinstance(payload, dict):
+                # 控制帧（4/6/11 等）即使无 dict 载荷也要上抛：
+                # RECONNECT_MULTI=6 是服务器要求多台重订阅的信号，
+                # 官方客户端收到即重连重发 301；忽略=订阅被静默切断
+                if pid in self._CONTROL_PIDS:
+                    yield {"type": "control", "protocol_id": pid,
+                           "table_id": None, "data": {}}
+                continue
+            if pid in self._DATA_PIDS:
+                self._last_data = time.monotonic()
+            if pid in self._CONTROL_PIDS:
+                yield {"type": "control", "protocol_id": pid,
+                       "table_id": None, "data": payload}
                 continue
             tid = payload.get("tableId")
             yield {
