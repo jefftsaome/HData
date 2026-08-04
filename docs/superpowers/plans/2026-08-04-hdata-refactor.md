@@ -298,13 +298,14 @@ git commit -m "refactor(capture): 内嵌 212 行提取 JS 外置为独立资产�
 - Test: `tests/test_headers.py`、`tests/test_sign_table.py`
 
 **Interfaces:**
-- Consumes: `session: dict`(键: `signatures`/`uuidToBase64`/`token`/`domain`/`cookies`)
+- Consumes: `session: dict`(键: `signatures`/`uuidToBase64`/`token`/`domain`/`cookies`/`account`)
 - Produces:
-  - `headers.build_api_headers(session: dict, url: str, *, enable_wasm: bool = True) -> dict` — 返回结构含 `X-API-TOKEN/X-API-UUID/X-API-XXX/X-API-CLIENT/X-API-SITE/X-API-VERSION/Content-Type/Referer/User-Agent/Cookie`
+  - `headers.resolve_api_xxx(session: dict, url: str, *, enable_wasm: bool = True) -> str` — 共享的 X-API-XXX 签名链(wasm → 手动签名表 → uuidToBase64 解密);`enable_wasm=False` 时跳过 wasm 层
+  - `headers.build_api_headers(session: dict, url: str, *, enable_wasm: bool = True) -> dict` — session.py 版完整头构造(含 `_device_uuid_for`/`_ua_for` 私有助手,搬入 headers.py)
   - `sign_table.decrypt_sign_table(uuid_b64: str) -> dict`
   - `TokenManager._decrypt_sign_table` 改为委托别名(保留下划线签名,不动 `session.py:369` 调用)
 
-**行为差异(必须用参数保留,不得顺手合并):** `session.py` 版签名链是 3 层(wasm→手动表→uuidToBase64);`token_manager.py` 版只有 2 层(无 wasm)。Task 4 只做机械抽取:`session` 调 `enable_wasm=True`,`token_manager` 调 `enable_wasm=False`。wasm 差异是否合并留给 Task 10 决策。
+**行为差异(必须用参数保留,不得顺手合并):** 两个 `_api_headers` 的差异**不止 wasm 一层**——session.py 版签名链 3 层(wasm→手动表→解密),token_manager.py 版 2 层(无 wasm);且两版的 **X-API-UUID / User-Agent 计算不同**(token_manager 版用 `self.account` 兜底、UA 多一层 `get_ua("")` 回退)。Task 4 只抽共享签名链 `resolve_api_xxx`:session 调 `enable_wasm=True`,token_manager 调 `enable_wasm=False`;**各调用方保留自己的 uuid/UA 逻辑不变**。wasm 差异是否合并留给 Task 10 决策。
 
 - [ ] **Step 1: 写特征测试(先红)**
 
@@ -376,7 +377,18 @@ Expected:`ModuleNotFoundError`(模块不存在)。
 
 - [ ] **Step 3: 抽取实现**
 
-`hdata/auth/headers.py`:把 `session.py:335-388` `_api_headers` 全文搬入并改签名 `def build_api_headers(session, url, *, enable_wasm=True)`,`enable_wasm` 包住 wasm 分支(`session.py:344-351`);`_device_uuid_for`/`_ua_for` 一并搬入为私有助手。`session.py` 中替换为 `from hdata.auth.headers import build_api_headers` 并在 `_api_headers = build_api_headers` 保留旧名(兼容内部调用)。
+`hdata/auth/headers.py`:
+1. 把 `session.py:335-388` `_api_headers` 全文搬入,改名 `build_api_headers(session, url, *, enable_wasm=True)`,`enable_wasm` 包住 wasm 分支(`session.py:344-351`);`_device_uuid_for`/`_ua_for`(session.py:302-332)一并搬入为私有助手。
+2. 抽出共享签名链 `resolve_api_xxx(session, url, *, enable_wasm=True) -> str`:内容是 wasm 分支 + 手动签名表 + uuidToBase64 解密三层,`enable_wasm=False` 时跳过 wasm 分支;`build_api_headers` 内部调用它。
+
+`session.py` 中 `_api_headers` 改为:
+```python
+from hdata.auth.headers import build_api_headers
+
+def _api_headers(session: dict, url: str) -> dict:
+    return build_api_headers(session, url, enable_wasm=True)
+```
+(保留旧名兼容内部调用。)
 
 `hdata/auth/sign_table.py`:把 `TokenManager._decrypt_sign_table` 方法体搬入为 `decrypt_sign_table(uuid_b64) -> dict`。`token_manager.py` 中:
 
@@ -389,7 +401,7 @@ class TokenManager:
         return decrypt_sign_table(uuid_b64)
 ```
 
-`token_manager.py:705` `_api_headers` 改为:保留原 2 层逻辑但改调 `build_api_headers(..., enable_wasm=False)`;若其内部用了 `_decrypt_sign_table`,改调 `decrypt_sign_table`。**该文件本次除"换调用点"外不做任何逻辑改动。**
+`token_manager.py:704` `_api_headers` 改为:**保留其原有的 uuid/UA 计算与返回 dict 组装逻辑**,仅把其中的签名链两段(手动表 + `_decrypt_sign_table` 解密,见 706-723 行)替换为 `xxx = resolve_api_xxx(session, url, enable_wasm=False)`(从 headers 导入)。**该文件本次除"换签名链调用点"外不做任何逻辑改动,尤其不得改动 uuid/UA 计算。**
 
 - [ ] **Step 4: 验证**
 
@@ -404,74 +416,92 @@ Expected:新测试绿;`test_http_captcha_login`(32)与 `test_token_lifecycle`(5)
 
 ```bash
 git add hdata/auth/headers.py hdata/auth/sign_table.py hdata/auth/session.py hdata/auth/token_manager.py tests/test_headers.py tests/test_sign_table.py
-git commit -m "refactor(auth): 抽取 build_api_headers/decrypt_sign_table 为叶子模块,enable_wasm 参数保留两调用方行为差异"
+git commit -m "refactor(auth): 抽 resolve_api_xxx/decrypt_sign_table 为叶子模块,enable_wasm 参数保留两调用方行为差异"
 ```
 
-**验收:** `Select-String -Path ... -Pattern "def _api_headers"` 0 处(只剩别名赋值);`TokenManager._decrypt_sign_table` 为一行委托;全套绿。
+**验收:** `Select-String -Path ... -Pattern "def _api_headers"` 0 处(只剩 session.py 的薄包装);`TokenManager._decrypt_sign_table` 为一行委托;token_manager 的 uuid/UA 计算未被改动;全套绿。
 
 ---
 
 ## Task 5: 收敛域名解析
 
+**pre-flight 修正(2026-08-04):** 三个"域名解析"实现各有**独特兜底,不能直接一行委托**,否则改变行为:
+- `session.get_real_domain`(session.py:199-231)已是规范实现:`resolve_domain(validate=True)` → HDATA_DOMAIN → 抛 DomainError。**保持不动**,作唯一权威入口。
+- `token_manager._resolve_domain`(token_manager.py:597-607):当前先 `DomainCache().get()` 再 `resolve_domain()` 再 env,**重复了 domain.py 内部已做的缓存访问**,且无 validate 探活、失败返回 None 而非抛错。收敛为:`return resolve_domain() or os.getenv("HDATA_DOMAIN", None)`,删除重复的 DomainCache 手动访问,行为完全一致(domain.py 内部已做 cache.get)。**不得**改用它版本(会引入 validate 探活差异)。
+- `http_login._get_domain`(http_login.py:85-95):`resolve_domain(validate=True)` → 失败时**独特的 curl 重定向兜底**。这是踩坑换来的存活逻辑,保留原样,不委托。只在确认其 `_resolve_domain(validate=True)` 调用与 domain.resolve_domain 等价后,把别名收敛到 `from hdata.auth.domain import resolve_domain as _resolve_domain`(若已是则不动)。
+
 **Files:**
-- Modify: `hdata/auth/domain.py`(唯一实现,已有 `resolve_domain`)
-- Modify: `hdata/auth/http_login.py:85-95` `_get_domain`、`hdata/auth/token_manager.py:600-610` `_resolve_domain`、`hdata/auth/session.py:199-231` `get_real_domain`(改为委托)
+- Modify: `hdata/auth/token_manager.py:597-607` `_resolve_domain`(去重复缓存访问)
+- Modify: `hdata/auth/http_login.py`(仅核对别名,不委托)
+- Verify: `hdata/auth/session.py:199`(确认已是规范,不动)
 
 **Interfaces:**
-- Consumes: `domain.resolve_domain(url=None) -> str`(既有)
-- Produces: 各模块保留原函数名,内部一行委托:`return resolve_domain(...)`
+- Consumes: `domain.resolve_domain(entry_url="", *, validate=False) -> str | None`(既有)
+- Produces: `TokenManager._resolve_domain(self) -> str | None` 语义不变;`session.get_real_domain` 不变
 
-- [ ] **Step 1: 写委托并保留兜底语义**
-
-`http_login.py`:
+- [ ] **Step 1: 收敛 token_manager._resolve_domain**
 
 ```python
-def _get_domain(url: str = "") -> str:
-    return resolve_domain(url or "https://leyu.me")
+async def _resolve_domain(self) -> str | None:
+    """解析乐鱼域名(委托 domain.resolve_domain,失败回退 env)。"""
+    from hdata.auth.domain import resolve_domain
+
+    return resolve_domain() or os.getenv("HDATA_DOMAIN", None)
 ```
 
-`token_manager._resolve_domain` 与 `session.get_real_domain` 同理改为一行委托。**注意**:若原实现含 `HDATA_DOMAIN` 覆盖逻辑,确认 `resolve_domain` 已支持(否则在 `domain.py` 补 `HDATA_DOMAIN` 分支并加注释,行为不变)。
+删除原来对 `DomainCache` 的手动 `cache.get()`(domain.py:155/164 内部已做)。若 `DomainCache` 因此在 token_manager.py 无其他用途,一并移除该 import。
 
-- [ ] **Step 2: 验证**
+- [ ] **Step 2: 核对 http_login 别名**
+
+`http_login.py:87` 的 `_resolve_domain(validate=True)` 若来自 `from hdata.auth.domain import resolve_domain as _resolve_domain`,保持;若不是,收敛为该别名。**不改变函数体、不委托。**
+
+- [ ] **Step 3: 验证**
 
 ```powershell
-& .venv\Scripts\python.exe -m pytest tests/test_http_captcha_login.py tests/test_token_lifecycle.py -q
+& .venv\Scripts\python.exe -m pytest tests/test_http_captcha_login.py tests/test_token_lifecycle.py tests/test_login_trace.py -q
 & .venv\Scripts\python.exe -m pytest -q
 & .venv\Scripts\python.exe -c "import hdata.auth; print('smoke ok')"
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add hdata/auth/domain.py hdata/auth/http_login.py hdata/auth/token_manager.py hdata/auth/session.py
-git commit -m "refactor(auth): 域名解析收敛为 domain.resolve_domain 唯一实现,其余改委托"
+git add hdata/auth/token_manager.py hdata/auth/http_login.py
+git commit -m "refactor(auth): 域名解析去重复缓存访问;http_login 独特重定向兜底保留"
 ```
 
-**验收:** `Select-String ... "def _get_domain|def _resolve_domain|def get_real_domain"` 每处函数体 ≤3 行;全套绿。
+**验收:** `token_manager._resolve_domain` 无 `DomainCache` 手动访问;`http_login._get_domain` 的 curl 重定向兜底原样保留;`session.get_real_domain` 未改动;全套绿。
 
 ---
 
 ## Task 6: 拆除 auth 循环依赖(懒 import → 模块级)
 
+**pre-flight 修正(2026-08-04,AST 实测):** 原计划行号已过时。当前 auth 包内函数级 `from hdata.auth.*` import 实测清单:
+- **可安全提升为模块级的叶子依赖**(目标模块不反向 import 本模块): `session.py:278`(`params.build_auth_snapshot`)、`token_manager.py:111/501/760`(`captcha_solver.*`)、`token_manager.py:500`(`captcha.fetch_captcha`)、`token_manager.py:502`(`geetest_signer.generate_w`)、`token_manager.py:599`(`domain.resolve_domain`)、`token_manager.py:702/703/711`(`api_sign.get_uuid` / `fingerprint.get_ua`)、`headers.py:39`(`fingerprint.get_ua`)
+- **必须保留函数内 import 的真环(编排回调)**: `session.py:868`(`token_manager.TokenManager`) ↔ `token_manager.py:152/:363`(`session.*`) 是唯一双向真环
+- **单向编排(HTTP 登录降级 / 浏览器登录降级),保留函数内 import 并补注释**: `session.py:725`(`http_login.login`)、`session.py:823`(`browser_login.GameBrowserLogin`)、`token_manager.py:383`(`browser_login.GameBrowserLogin`)
+- 其余函数级 import(`browser_login.py` 的 playwright/stdlib、`http_login.py:304` datetime、`token_manager.py` 的 stdlib/curl/playwright)为非 hdata.auth 依赖,不动
+
 **Files:**
-- Modify: `hdata/auth/token_manager.py`、`hdata/auth/session.py`、`hdata/auth/http_login.py`、`hdata/auth/browser_login.py`
+- Modify: `hdata/auth/session.py`、`hdata/auth/token_manager.py`、`hdata/auth/headers.py`
 - Test: `tests/test_import_smoke.py`
 
 **Interfaces:**
 - Consumes: Task 4/5 产出的叶子模块
 - Produces: 无(纯 import 结构调整)
 
-**目标:** 凡是在 Task 4/5 之后只依赖叶子模块(`headers`/`sign_table`/`domain`/`api_sign`/`fingerprint`/`params`)的函数体懒 import,一律提升为模块级 import。**编排类循环**(`session._get_login_inner` 懒加载 `http_login`/`browser_login` 做降级;`token_manager` 懒加载 `session`)属于"编排回调",本轮不动,只在原处补注释:`# 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案`。
-
 - [ ] **Step 1: 逐个提升懒 import**
 
-对 `token_manager.py:114/:155/:366/:386/:503-505/:602/:731-740`、`session.py:278/:310/:324/:345/:366/:948`、`http_login.py:50`、`browser_login.py:49` 中属于叶子依赖的,提到模块级并删掉函数内 `import`。每改一处立刻跑:
+只提升上述"可安全提升"清单;每提升一处立刻跑:
 
 ```powershell
 & .venv\Scripts\python.exe -c "import hdata.auth, hdata.client; print('ok')"
 ```
 
-若出现 `ImportError`,回退该处(说明仍是环),标注为编排回环。
+若出现 `ImportError`,回退该处(说明仍有隐藏环),标注为编排回环。
+
+对真环与单向编排处(`session.py:725/:823/:868`、`token_manager.py:152/:363/:383`)补注释:
+`# 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案`。
 
 - [ ] **Step 2: 写导入顺序冒烟测试**
 
@@ -505,11 +535,11 @@ def test_import_auth_internals_direct():
 & .venv\Scripts\python.exe -m pytest -q
 ```
 ```bash
-git add -A
+git add hdata/auth/session.py hdata/auth/token_manager.py hdata/auth/headers.py tests/test_import_smoke.py
 git commit -m "refactor(auth): 叶子依赖懒 import 提升为模块级,编排回环标注留 P4;新增导入顺序冒烟测试"
 ```
 
-**验收:** 全部 3 个冒烟测试过;`Select-String -Path ... -Pattern "from hdata.auth import"` 仅剩编排回环注释处;全套绿。
+**验收:** 全部 3 个冒烟测试过;函数体内 `from hdata.auth.*` 仅剩上述 6 处编排回环(均带注释);全套绿。
 
 **P2 checkpoint:** 全绿 + smoke ok。auth 包循环由"地雷区"变为"仅剩已标注的编排回环"。
 
@@ -613,29 +643,91 @@ git commit -m "refactor(client): 拆分 2241 行门面为 transport/tables/gatew
 
 ---
 
-## Task 9: 拆分 TokenManager(666 行)
+## Task 9: 拆分 TokenManager(632 行)
+
+**pre-flight 修正(2026-08-04):** 用户选择**激进拆分到 <250 行**。方案:整类实现搬到 `login_orchestrator.py` 的 `LoginOrchestrator`,`TokenManager` 变薄为门面(仅构造 + public 方法委托 + 静态 `_decrypt_sign_table` 保留)。外部引用面(必须保留在 `TokenManager` 名上):构造签名 `(account="default", solver=None, user="", pwd="")`;方法 `get_token/diagnose/health/manual_capture/inject_tokens/import_token_file`;静态 `_decrypt_sign_table`(session.py:870、scripts/full_login.py:209、tests/test_sign_table.py:20 引用)。`_login_via_http` 迁入 `captcha_client.py` 作为模块级 `http_login_with_captcha(account, user, pwd, solver)`,为 P4 收敛 http_login 铺路。
 
 **Files:**
-- Create: `hdata/auth/captcha_client.py`(验证码求解封装)、`hdata/auth/login_orchestrator.py`(登录编排壳,可选)
-- Modify: `hdata/auth/token_manager.py`
+- Create: `hdata/auth/login_orchestrator.py`(`LoginOrchestrator`,持有原 TokenManager 全部状态与方法)
+- Create: `hdata/auth/captcha_client.py`(`http_login_with_captcha`)
+- Modify: `hdata/auth/token_manager.py`(TokenManager 变薄门面)
+- Test: `tests/test_token_lifecycle.py`、`tests/test_http_captcha_login.py`、`tests/test_browser_login_fallback.py`(既有)
 
 **Interfaces:**
-- Consumes: Task 4 叶子模块
-- Produces: `TokenManager` 瘦身为 token 生命周期 + 委托;验证码逻辑移入 `captcha_client.py`
+- Consumes: Task 4 叶子模块(`headers/sign_table/domain/params/captcha_solver/captcha/fingerprint`)
+- Produces:
+  - `LoginOrchestrator(account="default", solver=None, user="", pwd="")` — 原 TokenManager 全部实例方法原样迁移
+  - `captcha_client.http_login_with_captcha(account, user, pwd, solver) -> dict | None` — 原 `_login_via_http` 方法体,`self.account` → 参数 `account`,`await self._resolve_domain()` → `resolve_domain() or os.getenv("HDATA_DOMAIN", None)`(等价)
+  - `TokenManager` — 门面,内部持 `self._orch = LoginOrchestrator(...)`,public 方法一行委托
 
-**迁移纪律:** 只搬家。`get_token` 的 L0-L4 降级链逻辑逐行搬入 `login_orchestrator`(若做),`TokenManager` 保留 public 方法签名并委托。
+**迁移纪律:** 只搬家,行为不变。`_login_via_http` 方法体(原 499-599)逐行搬入 captcha_client,仅两处替换(self→参数)。其余全部方法(含 get_token L0-L4 链、diagnose、health、浏览器刷新三件套、缓存管理)原样搬入 LoginOrchestrator。CLI 的 `main()` 保持用 `TokenManager`。
 
-- [ ] **Step 1-3: 搬验证码 + 搬降级链 + 瘦身(与 Task 8 同节奏)**
+- [ ] **Step 1: 创建 captcha_client.py**
+
+把 `_login_via_http` 方法体(原 token_manager.py:499-599)搬为模块级函数 `http_login_with_captcha`,签名 `async def http_login_with_captcha(account: str, user: str, pwd: str, solver) -> dict | None`。imports:`curl_cffi`、`hashlib/urllib.parse/re`、`fetch_captcha`、`CaptchaChallenge`、`generate_w`、`get_impersonate`、`resolve_domain`、`logger`、`json/time`。函数内 `self.account` → `account`;`await self._resolve_domain()` → `resolve_domain() or os.getenv("HDATA_DOMAIN", None)`。
+
+- [ ] **Step 2: 创建 login_orchestrator.py**
+
+新建 `LoginOrchestrator` 类,构造签名 `(account="default", solver=None, user="", pwd="")`,body 为原 TokenManager `__init__` 原样。把原 TokenManager 全部方法(除 `__init__`、`_login_via_http`、静态 `_decrypt_sign_table`)原样搬入,`self._login_via_http(...)` 调用点改为 `from hdata.auth.captcha_client import http_login_with_captcha; await http_login_with_captcha(self.account, user, pwd, solver)`(get_token L3a 分支,原 token_manager.py:201)。保持 `# 编排回环` 注释。
+
+- [ ] **Step 3: TokenManager 变薄门面**
+
+`token_manager.py` 中 `class TokenManager` 替换为:
+
+```python
+class TokenManager:
+    """多账号 Token 管理器门面 — 委托给 LoginOrchestrator。"""
+
+    def __init__(self, account: str = "default",
+                 solver=None, user: str = "", pwd: str = ""):
+        self._orch = LoginOrchestrator(account, solver=solver, user=user, pwd=pwd)
+
+    async def get_token(self, user: str = "", pwd: str = "") -> str:
+        return await self._orch.get_token(user, pwd)
+
+    def diagnose(self) -> dict:
+        return self._orch.diagnose()
+
+    def health(self) -> dict:
+        return self._orch.health()
+
+    async def manual_capture(self, entry_url: str = "https://leyu.me") -> str | None:
+        return await self._orch.manual_capture(entry_url)
+
+    def inject_tokens(self, game_token: str = "", game_player_id: int = 0,
+                      game_backend: str = "", game_exp: int = 0,
+                      source: str = "inject") -> dict:
+        return self._orch.inject_tokens(game_token, game_player_id,
+                                        game_backend, game_exp, source)
+
+    def import_token_file(self, file_path: str) -> dict:
+        return self._orch.import_token_file(file_path)
+
+    @staticmethod
+    def _decrypt_sign_table(b64: str) -> dict[str, str]:
+        return decrypt_sign_table(b64)
+```
+
+`main()` CLI 不动(仍用 TokenManager)。
+
+- [ ] **Step 4: 验证**
 
 ```powershell
-& .venv\Scripts\python.exe -m pytest tests/test_http_captcha_login.py tests/test_token_lifecycle.py tests/test_browser_login_fallback.py -q
+& .venv\Scripts\python.exe -m pytest tests/test_http_captcha_login.py tests/test_token_lifecycle.py tests/test_browser_login_fallback.py tests/test_sign_table.py -q
 & .venv\Scripts\python.exe -m pytest -q
-```
-```bash
-git commit -m "refactor(auth): TokenManager 拆分验证码求解与登录编排,降级链行为不变"
+& .venv\Scripts\python.exe -c "import hdata.auth; from hdata.auth.token_manager import TokenManager; print(TokenManager._decrypt_sign_table is not None); print('smoke ok')"
 ```
 
-**验收:** `TokenManager` < 250 行;全套绿。
+Expected:相关测试全过;全套绿(仅已知预存在失败);TokenManager 门面可用。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add hdata/auth/login_orchestrator.py hdata/auth/captcha_client.py hdata/auth/token_manager.py
+git commit -m "refactor(auth): TokenManager 变薄门面,实现迁 LoginOrchestrator;HTTP 验证码登录迁 captcha_client(行为不变)"
+```
+
+**验收:** `TokenManager` 类 < 250 行(应为 ~100 行门面);`_login_via_http` 不再存在于 token_manager.py;`LoginOrchestrator` 持有全部原逻辑;全套绿。
 
 **P3 checkpoint:** 全绿 + smoke ok。两大 God 文件已拆,私有穿透已标注。
 
@@ -643,79 +735,168 @@ git commit -m "refactor(auth): TokenManager 拆分验证码求解与登录编排
 
 # P4 — 收敛重复实现(风险 ★★★★,最高,需灰度)
 
-## Task 10: 收敛登录流水线 + 域名 + 请求头
+## Task 10: 收敛登录流水线(降级版 → 完整版)
+
+**pre-flight 修正(2026-08-04,Task 9 后结构已变):** 降级版现为 `captcha_client.http_login_with_captcha(account, user, pwd, solver)`,完整版为 `http_login.login(user, pwd, *, geepass_token, jfbym_token, max_retries, proxy)`。**用户决策:收敛到完整流水线**——`http_login_with_captcha` 从 solver 提取平台名与 token,委托 `http_login.login`,返回含 `uuid` 的完整 dict。
+
+**solver→token 映射(已验证接口):** `JfbymSolver` 与 `GeepassSolver` 均持有 `self._token`(captcha_solver.py:202/377),`info().name` 返回 `"jfbym"`/`"geepass"`。映射规则:`name == "geepass"` → `geepass_token=solver._token`;否则 → `jfbym_token=solver._token`。
 
 **Files:**
-- Modify: `hdata/auth/http_login.py`、`hdata/auth/token_manager.py`、`hdata/auth/session.py`
+- Modify: `hdata/auth/captcha_client.py`(`http_login_with_captcha` 改为委托完整流水线)
+- Modify: `hdata/auth/login_orchestrator.py`(L3a 调用点适配,若返回 dict 多 `uuid` 键无害)
+- Test: `tests/test_http_captcha_login.py`(既有)
 
-**方法:** 每个差异独立合并。以 `http_login.py:510-714` 为基准,把 `token_manager.py:495-598 _login_via_http` 逐段 diff:
-- 逐行列出差异(如 `_login_via_http` 缺 kaptchcate 预注册、缺 login_trace 埋点、缺域名切换)。
-- 每个差异**单独决策**:是"有意降级"还是"漏补丁"。有意降级 → 加显式注释;漏补丁 → 补回并加对应测试。
+**Interfaces:**
+- Consumes: `http_login.login(user, pwd, *, geepass_token="", jfbym_token="", max_retries=3, proxy="") -> Optional[dict]`(完整版,返回 `{token, uuid, domain, lot_number}`)
+- Produces: `http_login_with_captcha(account, user, pwd, solver) -> dict | None` — 行为升级为完整流水线(含 kaptchcate 预注册、重试、域名失效切换、login_trace 埋点、user_ip/X-API-FINGER、uuid)
 
-- [ ] **Step 1: 产出两套流水线 diff 清单**
+**行为差异决策(L3a 链路获得的新能力,均为完整版既有成熟逻辑,非新增代码):**
+- D1 重试循环(max_retries=3): 完整版有 → 采纳
+- D2 kaptchcate 预注册: 完整版有 → 采纳
+- D3 域名 API 级失效自愈切换: 完整版有 → 采纳
+- D4 login_trace 埋点: 完整版有 → 采纳
+- D5 user_ip 计算 X-API-FINGER: 完整版有 → 采纳
+- D6 返回含 uuid: 完整版有 → 采纳(L3a 的 `cache = session.copy()` 多存 uuid 键,`_save` 本就支持该字段)
+- 上述均为"降级版缺的成熟补丁",收敛后 L3a 获得与 http_login 一致的能力;无反向行为损失。
+
+- [ ] **Step 1: 重写 http_login_with_captcha**
+
+`hdata/auth/captcha_client.py` 中 `http_login_with_captcha` 改为:
+
+```python
+async def http_login_with_captcha(account: str, user: str, pwd: str, solver) -> dict | None:
+    """纯 HTTP 验证码登录 — 委托 http_login 完整流水线。
+
+    从 solver 提取平台与 token 后调用 http_login.login(含 kaptchcate
+    预注册/重试/域名失效切换/埋点/uuid)。返回完整 dict。
+    """
+    from hdata.auth.http_login import login as _login
+
+    if solver is None:
+        return None
+    name = solver.info().name
+    kwargs = (
+        {"geepass_token": solver._token}
+        if name == "geepass"
+        else {"jfbym_token": solver._token}
+    )
+    return await _login(user, pwd, **kwargs)
+```
+
+若 `http_login.login` 的 `login_trace.bind(account=user, proxy=...)` 埋点上下文导致 L3a 调用方日志语义变化,确认无副作用后保留。删除 captcha_client 中不再使用的 imports(fetch_captcha/CaptchaChallenge/generate_w/get_impersonate/resolve_domain/json/os/time),保留 `get_logger` 或确认无引用后一并清理。
+
+- [ ] **Step 2: 适配 L3a 调用点**
+
+`login_orchestrator.py` get_token L3a 分支(现调用 `http_login_with_captcha(self.account, _user, _pwd, self._solver)`):返回 dict 现含 `uuid`,`cache = session.copy()` 直接继承,无需改动;确认 `_refresh_game_via_api(cache)` 对多出的 uuid 键无副作用(应为无)。
+
+- [ ] **Step 3: 验证**
 
 ```powershell
-& .venv\Scripts\python.exe -c "from hdata.auth.token_manager import TokenManager; import inspect; print(inspect.getsource(TokenManager._login_via_http))" > _tm_login.txt
-& .venv\Scripts\python.exe -c "import inspect; from hdata.auth import http_login; print(inspect.getsource(http_login.login))" > _hl_login.txt
+& .venv\Scripts\python.exe -m pytest tests/test_http_captcha_login.py tests/test_token_lifecycle.py tests/test_browser_login_fallback.py tests/test_import_smoke.py -q
+& .venv\Scripts\python.exe -m pytest -q
+& .venv\Scripts\python.exe -c "import hdata.auth; from hdata.auth.captcha_client import http_login_with_captcha; print('smoke ok')"
 ```
-人工核对两份文本,把每个差异记为 `D<n>`(有意/漏补丁/未知)。
 
-- [ ] **Step 2: 合并**
+Expected:相关测试全过;全套绿(仅已知预存在失败);smoke ok。
 
-`token_manager._login_via_http` 改为调用 `http_login` 的公共流水线(按 `D<n>` 清单补齐差异),删除复制体。未知差异 `D?` 一律**保留不动**,记 TODO。
+- [ ] **Step 4: Commit**
+
+```bash
+git add hdata/auth/captcha_client.py hdata/auth/login_orchestrator.py
+git commit -m "refactor(auth): 验证码登录收敛到 http_login 完整流水线(solver→token 委托),D1-D6 差异全部采纳"
+```
+
+**验收:** `http_login_with_captcha` 委托完整流水线,无重复流水线代码;`captcha_client.py` 无遗留未用 import;全套绿。
+
+## Task 11: 弃用并删除 WSSource(生产未使用)
+
+**pre-flight 修正(2026-08-04):** 经用户确认 + runlog 实证:`_customer_0804/runlog.txt` 显示生产 craw-bot(streak9)走 `hdata.client`(GameClient 门面)→ `_WSConnection` 链路,全程无 `WSSource`/`WSClient`/`CDPSource` 日志。**用户决策:弃用并删除 WSSource 相关文件**,保留 `_WSConnection`(生产在用)。`CDPSource` 保留不动(不在本次弃用范围)。
+
+**Files:**
+- Delete: `hdata/capture/direct_client.py`(`WSClient`,仅被 leyu_ws 使用)、`hdata/sources/leyu_ws.py`(`WSSource`)
+- Modify: `hdata/sources/__init__.py`(去 WSSource import/__all__)
+- Modify: `pyproject.toml`(删 `ws_source` entry-point,保留 `cdp_source`)
+- Modify: `tests/test_sources.py`(删 TestWSSource 类 + 顶部 WSSource import)
+- Modify: `tests/test_import_smoke.py`(两个 import 顺序测试原本用 `hdata.sources.leyu_ws`,改用具代表性的存活模块)
+
+**Interfaces:**
+- Consumes: 无
+- Produces: 无(`WSSource`/`WSClient` 移出 hdata)
+
+- [ ] **Step 1: 删文件 + 改引用**
+
+1. 删除 `hdata/capture/direct_client.py`、`hdata/sources/leyu_ws.py`。
+2. `hdata/sources/__init__.py`:删 `from .leyu_ws import WSSource`,`__all__` 只留 `["CDPSource"]`。
+3. `pyproject.toml` `[project.entry-points."data_sources"]` 删 `ws_source` 行,保留 `cdp_source`。
+4. `tests/test_sources.py`:删第 2 行 WSSource import、`class TestWSSource`(25-36 行)。
+5. `tests/test_import_smoke.py`:原 `test_import_in_leaf_first_order`/`test_import_in_source_first_order` 用 `hdata.sources.leyu_ws`,改为用 `hdata.sources`(包级)与 `hdata.client` 两种顺序,仍验证 import 顺序无环。
+
+- [ ] **Step 2: 验证**
+
+```powershell
+& .venv\Scripts\python.exe -m pytest tests/test_sources.py tests/test_import_smoke.py tests/test_monitor_tables.py tests/test_characterization_client.py -q
+& .venv\Scripts\python.exe -m pytest -q
+& .venv\Scripts\python.exe -c "import hdata.client; from hdata.sources import CDPSource; print('smoke ok')"
+```
+
+Expected:相关测试全过;全套绿(仅已知预存在失败);smoke ok。若出现因删 leyu_ws 导致的 ModuleNotFoundError,是漏改的引用,修复后重跑。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add hdata/capture/direct_client.py hdata/sources/leyu_ws.py hdata/sources/__init__.py pyproject.toml tests/test_sources.py tests/test_import_smoke.py
+git commit -m "refactor(sources): 弃用并删除生产未使用的 WSSource/WSClient(生产走 _WSConnection 链路),保留 CDPSource"
+```
+
+**验收:** `WSSource`/`WSClient`/`leyu_ws`/`direct_client` 全仓 0 引用;`hdata.sources` 仅导出 CDPSource;全套绿。
+
+## Task 12: 收敛零散重复
+
+**pre-flight 修正(2026-08-04,实现者 BLOCKED 复核确认):** 三处"时区偏移"**语义不等价,不合并**:
+- `http_login.py:302` `_local_tz_offset` 用 `datetime.now().astimezone().utcoffset()`(动态,DST 正确)
+- `_shared.py:111` / `codec.py:246` 用 `-time.timezone // 60 if time.daylight == 0 else -time.altzone // 60`(静态,取 altzone 当 DST"可能",非"实际")
+- DST 时区在标准时两者不等 → 合并即行为改变。**标注为"有意保留的差异"**,不改。
+- 只收敛两处安全项:参数提取(byte-equivalent)与 WS URL 唯一实现确认。
+
+**Files:**
+- Modify: `hdata/auth/browser_login.py:586-600`(删复制体,改调 `params.extract_params_from_url`)
+- Verify: `hdata/auth/session.py` `build_ws_config`(确认 WS URL 唯一实现)
+- No change: 时区偏移 3 处(语义不等,保留差异)
+
+- [ ] **Step 1: browser_login 删复制体**
+
+`browser_login.py:586-600` `_extract_params_ttl_from_url` 与 `params.extract_params_from_url`(params.py:159-181)逐行等价(含空 url 处理)。保留方法名(3 处调用 :377/:398/:480),改为薄委托:
+
+```python
+@staticmethod
+def _extract_params_ttl_from_url(url: str) -> tuple[str, str]:
+    """从 URL 提取 params/ttl(委托 params.extract_params_from_url)。"""
+    from hdata.auth.params import extract_params_from_url
+
+    return extract_params_from_url(url)
+```
+
+若 `unquote` 因此不再被 browser_login 使用,一并清理 import。
+
+- [ ] **Step 2: 确认 WS URL 唯一实现**
+
+`Select-String -Path hdata\**\*.py -Pattern "wss://wsproxy"` 应仅命中 session.py(或其调用的辅助)。leyu_ws.py 已删,无重复。无需改动。
 
 - [ ] **Step 3: 验证 + Commit**
 
 ```powershell
-& .venv\Scripts\python.exe -m pytest tests/test_http_captcha_login.py tests/test_token_lifecycle.py -q
+& .venv\Scripts\python.exe -m pytest tests/test_browser_login_fallback.py tests/test_roadpaper.py -q
 & .venv\Scripts\python.exe -m pytest -q
+& .venv\Scripts\python.exe -c "import hdata.auth, hdata.client; print('smoke ok')"
 ```
 ```bash
-git commit -m "refactor(auth): 登录流水线收敛到 http_login 单一实现,逐差异决策 D1..Dn"
+git add hdata/auth/browser_login.py
+git commit -m "refactor: 收敛参数提取复制体(时区偏移三处语义不等,保留差异不合并)"
 ```
 
-**验收:** `_login_via_http` 不再存在;差异清单随 commit message 提交;全套绿。
+**验收:** `_extract_params_ttl_from_url` 为薄委托;`wss://wsproxy` 仅 session.py 1 处;全套绿。
 
-## Task 11: 收敛 WS 客户端
-
-**Files:**
-- Modify: `hdata/capture/direct_client.py`、`hdata/client/transport.py`
-
-**方法:** `transport._WSConnection` 与 `capture/direct_client.WSClient` 做同样 diff-merge。两者都是 `websockets.connect + encode_frame/decode_frame + 心跳`。把公共收发核心抽为一个私有函数供两处调用;心跳/看门狗差异(时间窗口不同)保留为参数。
-
-- [ ] **Step 1-3: diff → 抽公共核心 → 验证**
-
-```powershell
-& .venv\Scripts\python.exe -m pytest tests/test_sources.py tests/test_monitor_tables.py tests/test_characterization_client.py -q
-& .venv\Scripts\python.exe -m pytest -q
-```
-```bash
-git commit -m "refactor(ws): 两套 WS 客户端抽公共收发核心,心跳窗口参数化"
-```
-
-**验收:** `transport.py` 与 `direct_client.py` 各自 ≤150 行收发相关;全套绿。
-
-## Task 12: 收敛零散重复
-
-**Files:**
-- Modify: `hdata/auth/http_login.py:302-308`、`hdata/protocol/codec.py:246`、`hdata/client.py:206`(时区偏移 3 处合一)
-- Modify: `hdata/auth/browser_login.py:587-600` → 复用 `params.extract_params_from_url`
-- Modify: `hdata/auth/session.py:621-672` / `hdata/sources/leyu_ws.py:192-228`(WS URL 拼接归一,抽 `build_ws_url`)
-
-- [ ] **Step 1: 抽 `hdata/auth/params.py::local_tz_offset()`**,三处改为调用(逐字节相同才合并)。
-- [ ] **Step 2: browser_login 删复制体**,改调 `extract_params_from_url`。
-- [ ] **Step 3: 抽 `build_ws_url(...)`**(含 `WS_STATIC_KEY_SUFFIX`),两处改调。
-- [ ] **Step 4: 验证 + Commit**
-
-```powershell
-& .venv\Scripts\python.exe -m pytest -q
-& .venv\Scripts\python.exe -c "import hdata.auth, hdata.client, hdata.sources.leyu_ws; print('smoke ok')"
-```
-```bash
-git commit -m "refactor: 收敛时区偏移/参数提取/WS URL 拼接三组重复实现"
-```
-
-**验收:** `Select-String ... "-time.timezone // 60"` 1 处;`"wss://wsproxy"` 拼接仅 1 处;全套绿。
+**P4 checkpoint:** 全绿 + smoke ok。重复实现收敛完成(可合并项已合并,不可合并项已记录差异)。
 
 **P4 checkpoint:** 全绿 + smoke ok。重复实现收敛完成,差异决策记录在 commit history。
 
@@ -725,10 +906,31 @@ git commit -m "refactor: 收敛时区偏移/参数提取/WS URL 拼接三组重�
 
 ## Task 13: ruff/mypy/coverage 配置 + CI
 
-**Files:**
-- Modify: `pyproject.toml`、Create: `.github/workflows/ci.yml`、`.mypy.ini`(或并入 pyproject)
+**pre-flight 修正(2026-08-04):**
+1. **发现 Task 8 引入的真实 bug**:`hdata/client/transport.py:207/209/210` 在 `_WSConnection._login` 中 `raise LoginError(...)` 但**从未 import `LoginError`**——这是 Task 8 拆分时漏掉的 import。测试全绿是因为这些路径只在真实 WS 登录被拒/被踢时触发(集成测试打不到)。**必须先补 import**(`from hdata.auth.session import LoginError` 或从现有 `build_ws_config` import 行合并),否则登录被拒时是 NameError 而非 LoginError。
+2. **uv 环境**:venv 无 pip,ruff 用 `uv pip install --python .venv\Scripts\python.exe ruff` 安装(已装 0.16.1)。
+3. **lint 规模实测**:357 个错误,89 个可自动修复(unsorted-imports/quoted-annotation 等无行为影响),268 个需人工/noqa。计划 `select = ["E","F","W","I","UP","B","SIM"]` 且 `--fix` 仅修 89 个自动项,不追求 0 error(否则 268 个手动项会让本任务失控)。
+4. F821 的 4 处中 2 处是真实误报(schemacodec.py:397 字符串注解 `"Path | None"` 引用了从未 import 的 Path——是注解字符串,延迟求值,实际运行不取用它?——**需实现者确认**:若 `_override_cache_path` 返回类型注解导致运行时求值会 NameError;若仅注释引用则无害)。**只修 transport.py 的 LoginError,其他误报记 noqa 或确认后忽略。**
 
-- [ ] **Step 1: pyproject 加配置**
+**Files:**
+- Fix: `hdata/client/transport.py`(补 LoginError import,真实 bug)
+- Modify: `pyproject.toml`(ruff/coverage 配置;ruff 加入 `[dependency-groups].dev`)
+- Create: `.github/workflows/ci.yml`
+- Verify: `hdata/protocol/schemacodec.py:397`(Path 注解确认)
+
+- [ ] **Step 1: 修 transport.py LoginError 真实 bug**
+
+`transport.py` 顶部 `from hdata.auth.session import build_ws_config` 处补 `LoginError`:
+```python
+from hdata.auth.session import LoginError, build_ws_config
+```
+确认无其他引用问题。
+
+- [ ] **Step 2: 确认 schemacodec Path 注解**
+
+`schemacodec.py:397` `_SCHEMA_OVERRIDE_CACHE: "Path | None" = None`。因模块有 `from __future__ import annotations`(schemacodec.py:25),字符串注解**不会**在运行时求值,F821 是误报。确认后不动,或在配置里 `extend-ignore = ["F821"]` 处理(若 E/F 全开)。
+
+- [ ] **Step 3: pyproject 配置**
 
 ```toml
 [tool.ruff]
@@ -742,16 +944,16 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 source = ["hdata"]
 omit = ["hdata/protocol/_schema_data.py"]
 ```
+`[dependency-groups].dev` 加 `"ruff>=0.16.1"`。
 
-- [ ] **Step 2: 一次性降噪**
+- [ ] **Step 4: 一次性降噪(仅自动项)**
 
 ```powershell
-& .venv\Scripts\python.exe -m pip install ruff mypy
 & .venv\Scripts\python.exe -m ruff check hdata tests --fix
 ```
-(仅修自动可修项;手动项以 `# noqa` 标注并附原因。)
+Expected:修掉 ~89 个自动项。**不追求 0 error**——剩余手动项记录在 ledger,不以 noqa 硬塞(否则语义噪声)。若 `--fix` 引入行为变化,回退并手动处理。
 
-- [ ] **Step 3: CI**
+- [ ] **Step 5: CI**
 
 `.github/workflows/ci.yml`:
 
@@ -768,32 +970,38 @@ jobs:
       - run: uv run pytest -q
 ```
 
-- [ ] **Step 4: 验证 + Commit**
+- [ ] **Step 6: 验证 + Commit**
 
 ```powershell
-& .venv\Scripts\python.exe -m ruff check hdata tests
+& .venv\Scripts\python.exe -m pytest tests/test_characterization_client.py tests/test_monitor_tables.py -q
 & .venv\Scripts\python.exe -m pytest -q
+& .venv\Scripts\python.exe -m ruff check hdata tests  # 记录剩余数量,不要求 0
 ```
 ```bash
-git commit -m "chore: 接入 ruff/mypy/coverage 配置与 CI,存量错误一次性降噪"
+git add hdata/client/transport.py pyproject.toml .github/workflows/ci.yml
+git commit -m "fix(client): 补 _WSConnection 缺失的 LoginError import(Task 8 拆分遗留真实 bug);chore: 接入 ruff/coverage 配置与 CI"
 ```
+
+**验收:** `LoginError` 在 transport.py 有 import;全套绿;ruff 自动修复后无回归;剩余 lint 项记录在 ledger。
 
 **验收:** `ruff check` 0 error;全套绿;`.github/workflows/ci.yml` 已提交。
 
 ## Task 14: 清理 git 垃圾与残留目录
 
+**pre-flight 修正(2026-08-04,实测核实):**
+1. `data/` 目录内容实为 **streak 爬虫运行时数据库**(`streak.db` 1.36GB、`proxy_test.db`、`streak_hunter.log` 等),已被 .gitignore 忽略,**非 git 垃圾**,删除会破坏 streak 数据。**不删。**
+2. `probes/` 目录磁盘上为空(仅 git 跟踪 `profile_sqlite_types.py` 一个文件)。
+3. 两个 wasm 副本 hash 相同(`4CDA85DA...`),保留 `hdata/auth` 那份,删 `scripts/wasm_api_sign_bg.wasm`。
+4. git 跟踪垃圾确认:`.reasonix/`(2 文件,AI 研究残留)、`scripts/wasm_api_sign_bg.wasm`(重复副本)。
+5. `viewer/` 磁盘上为空目录(git 不跟踪空目录,无需处理)。
+
 **Files:**
-- Modify: `.gitignore`
-- Delete(git 跟踪): `.reasonix/`、`hdata/auth/wasm_api_sign_bg.wasm` 的重复副本、`scripts/wasm_api_sign_bg.wasm`(仅当源码树与 auth 内同名文件 hash 一致时,保留 `hdata/auth` 那份)
-- Delete(磁盘残留): `data/`(数百 MB Chrome profile)、`dist_pyd/`、`viewer/`(空目录)、`probes/` 一次性脚本(保留 `probes/profile_sqlite_types.py` 迁移到 `scripts/` 再删)
+- Modify: `.gitignore`(补 `dist_pyd/`、`probes/`、`.reasonix/`)
+- Delete(git 跟踪): `.reasonix/`(2 文件)、`scripts/wasm_api_sign_bg.wasm`(重复副本,hash 已核一致)
+- Move(git 跟踪): `probes/profile_sqlite_types.py` → `scripts/`(迁移后再删 probes 跟踪)
+- No change: `data/`(运行时数据库,保留)
 
-- [ ] **Step 1: 核对 wasm 副本 hash**
-
-```powershell
-Get-FileHash hdata/auth/wasm_api_sign_bg.wasm, scripts/wasm_api_sign_bg.wasm | Select-Object Path, Hash
-```
-
-- [ ] **Step 2: .gitignore 补规则**
+- [ ] **Step 1: .gitignore 补规则**
 
 ```gitignore
 dist_pyd/
@@ -801,22 +1009,33 @@ probes/
 .reasonix/
 ```
 
-- [ ] **Step 3: 删除并验证**
+- [ ] **Step 2: 迁移 probes/profile_sqlite_types.py 到 scripts/**
+
+```powershell
+git mv probes/profile_sqlite_types.py scripts/profile_sqlite_types.py
+```
+
+- [ ] **Step 3: 删除 git 跟踪垃圾**
 
 ```powershell
 git rm -r --cached .reasonix
-git rm scripts/wasm_api_sign_bg.wasm   # 仅当 hash 相同
+git rm scripts/wasm_api_sign_bg.wasm
 git status --short
+```
+
+- [ ] **Step 4: 验证**
+
+```powershell
 & .venv\Scripts\python.exe -m pytest -q
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "chore: 清理 git 跟踪垃圾与工作区残留(profile/dist_pyd/一次性脚本)"
+git commit -m "chore: 清理 git 跟踪垃圾(.reasonix/重复 wasm);probes 探测脚本迁 scripts;data 运行时库保留"
 ```
 
-**验收:** `git status` 干净;`git ls-files` 无 `.wasm` 重复、无 `.reasonix`;全套绿。
+**验收:** `git status` 干净;`git ls-files` 无 `.wasm` 重复、无 `.reasonix`、无 `probes/`;全套绿。
 
 **P5 checkpoint:** 全绿;CI 就绪。
 
