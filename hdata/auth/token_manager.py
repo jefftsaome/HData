@@ -595,16 +595,10 @@ class TokenManager:
         return None
 
     async def _resolve_domain(self) -> str | None:
-        """解析乐鱼域名。"""
-        from hdata.auth.domain import resolve_domain, DomainCache
-        cache = DomainCache()
-        cached = cache.get()
-        if cached:
-            return cached
-        domain = resolve_domain()
-        if domain:
-            return domain
-        return os.getenv("HDATA_DOMAIN", None)
+        """解析乐鱼域名(委托 domain.resolve_domain,失败回退 env)。"""
+        from hdata.auth.domain import resolve_domain
+
+        return resolve_domain() or os.getenv("HDATA_DOMAIN", None)
 
     # ── 缓存管理 ──────────────────────────────────────────
 
