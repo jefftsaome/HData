@@ -9,10 +9,14 @@ def test_baseline_loaded_nonempty():
 
 
 def test_scalars_survive_round_trip():
+    import importlib
     import json
     from pathlib import Path
 
+    from hdata.protocol import _schema_data
+
+    pristine = importlib.reload(_schema_data)
     blob = json.loads(
         Path("hdata/protocol/schema_data.json").read_text(encoding="utf-8")
     )
-    assert blob == SCHEMA_CONFIG
+    assert blob == pristine.SCHEMA_CONFIG
