@@ -38,7 +38,6 @@ import json
 import sys
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from hdata.auth.params import (
     build_auth_snapshot,
@@ -585,19 +584,10 @@ class GameBrowserLogin:
 
     @staticmethod
     def _extract_params_ttl_from_url(url: str) -> tuple[str, str]:
-        """从 URL 提取 params/ttl，保留 '+'，仅做 %xx 解码。"""
-        parsed = urlparse(url)
-        params = ""
-        ttl = ""
-        for part in parsed.query.split("&"):
-            if "=" not in part:
-                continue
-            k, v = part.split("=", 1)
-            if k == "params":
-                params = unquote(v)  # 不用 parse_qs，避免 '+' 变空格
-            elif k == "ttl":
-                ttl = unquote(v)
-        return params, ttl
+        """从 URL 提取 params/ttl（委托 params.extract_params_from_url）。"""
+        from hdata.auth.params import extract_params_from_url
+
+        return extract_params_from_url(url)
 
     def _decrypt_and_save(self) -> dict | None:
         """解密 params 并保存到缓存。"""
