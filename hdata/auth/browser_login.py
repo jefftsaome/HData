@@ -125,6 +125,51 @@ class GameBrowserLogin:
             summary={"got_params": bool(result)}, source="browser_login")
         return result
 
+    async def _launch_context(self, p, *, channel: str | None = None):
+        """启动持久化 context 并返回干净新页所在 context。
+
+        channel="chromium" 用完整 Chromium（headless=new）；默认走
+        chrome-headless-shell。某些客户机（杀软注入/精简系统组件）上
+        headless shell 能起进程但 new_page 报
+        "Target.createTarget: Failed to open a new tab"（2026-08-04
+        streak9 exe 客户现场），完整 Chromium 可绕过。
+        """
+        kwargs = dict(
+            user_data_dir=str(self._profile_dir),
+            headless=self._headless,
+            # 种子站域名/证书由平台动态轮换，入口常出现证书与域名
+            # 不匹配（ERR_CERT_AUTHORITY_INVALID）；登录流程靠后续
+            # 重定向发现真实域名，必须容忍入口证书异常才能走下去
+            ignore_https_errors=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
+            viewport={"width": 1280, "height": 800},
+            locale="zh-CN",
+        )
+        if channel:
+            kwargs["channel"] = channel
+        context = await p.chromium.launch_persistent_context(**kwargs)
+        try:
+            await self._fresh_page(context)
+        except Exception:
+            await context.close()
+            raise
+        return context
+
+    @staticmethod
+    def _wipe_profile(profile_dir: Path) -> None:
+        """清空持久化 profile（首次崩溃留下的损坏 profile 会导致每次
+        launch 恢复残留标签页后 new_page 必失败）。"""
+        import shutil
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            profile_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning("清空 profile 失败（{}）: {}", profile_dir, e)
+
     async def _run_inner(self) -> dict | None:
         """run() 的实现体（留底事件由外层包装）。"""
         from playwright.async_api import async_playwright
@@ -132,22 +177,27 @@ class GameBrowserLogin:
         self._profile_dir.mkdir(parents=True, exist_ok=True)
 
         async with async_playwright() as p:
-            # 使用持久化 context 保留登录态
-            context = await p.chromium.launch_persistent_context(
-                user_data_dir=str(self._profile_dir),
-                headless=self._headless,
-                # 种子站域名/证书由平台动态轮换，入口常出现证书与域名
-                # 不匹配（ERR_CERT_AUTHORITY_INVALID）；登录流程靠后续
-                # 重定向发现真实域名，必须容忍入口证书异常才能走下去
-                ignore_https_errors=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-                viewport={"width": 1280, "height": 800},
-                locale="zh-CN",
-            )
+            # 三级容错：默认 headless shell → 清损坏 profile 重试 →
+            # 完整 Chromium（杀软/精简系统上 headless shell 起不了标签页）
+            context = None
+            last_exc: Exception | None = None
+            for attempt, (wipe, channel) in enumerate(
+                    [(False, None), (True, None), (True, "chromium")], 1):
+                try:
+                    if wipe:
+                        self._wipe_profile(self._profile_dir)
+                    context = await self._launch_context(p, channel=channel)
+                    if attempt > 1:
+                        logger.info("[{}] 浏览器登录第 {} 级容错成功"
+                                    "（channel={}）", self._tag(), attempt,
+                                    channel or "headless-shell")
+                    break
+                except Exception as e:
+                    last_exc = e
+                    logger.warning("[{}] 浏览器启动第 {} 级失败: {}",
+                                   self._tag(), attempt, str(e)[:160])
+            if context is None:
+                raise last_exc  # type: ignore[misc]
 
             page = await self._fresh_page(context)
 
