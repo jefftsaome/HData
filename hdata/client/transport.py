@@ -9,7 +9,7 @@ from typing import Any
 
 from htools.utils.logger import get_logger
 
-from hdata.auth.session import build_ws_config
+from hdata.auth.session import LoginError, build_ws_config
 from hdata.protocol.codec import (
     DEVICE_TYPE_PC,
     FS_LOGIN,
@@ -101,7 +101,7 @@ class _WSConnection:
     def device_id(self) -> str:
         return self._device_id
 
-    async def __aenter__(self) -> "_WSConnection":
+    async def __aenter__(self) -> _WSConnection:
         import websockets
         if self._on_before_connect:
             # 刷新/重登全部失败时**不沿用旧 token 建连**——旧 token 建连
@@ -305,7 +305,7 @@ class _WSConnection:
             try:
                 frame = await asyncio.wait_for(
                     self.recv(), timeout=max(0.1, end - time.time()))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return None
             if frame and predicate(frame):
                 return frame
@@ -331,7 +331,7 @@ class _WSConnection:
             try:
                 frame = await asyncio.wait_for(
                     self.recv(), timeout=max(0.1, min(3.0, end - time.time())))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if time.time() - last_new > 3:
                     break
                 continue
@@ -400,7 +400,7 @@ class _WSConnection:
                 try:
                     frame = await asyncio.wait_for(
                         self.recv(), timeout=max(0.1, end - time.time()))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
                 if not frame or frame.get("protocolId") != _QS_TABLE_LIST_ALL:
                     continue
@@ -435,7 +435,7 @@ class _WSConnection:
                 try:
                     frame = await asyncio.wait_for(
                         self.recv(), timeout=max(0.1, min(3.0, end - time.time())))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if time.time() - last_new > 3:
                         break
                     continue
