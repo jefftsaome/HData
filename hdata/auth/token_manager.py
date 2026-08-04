@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import time
@@ -40,6 +39,8 @@ from htools.utils.logger import get_logger
 
 from hdata.paths import cache_dir as _cache_dir
 from hdata.auth.fingerprint import get_impersonate
+from hdata.auth.headers import resolve_api_xxx
+from hdata.auth.sign_table import decrypt_sign_table
 
 logger = get_logger(__name__)
 
@@ -49,9 +50,6 @@ logger = get_logger(__name__)
 
 CACHE_DIR = _cache_dir()
 PROFILE_ROOT = CACHE_DIR / "browser_profiles"
-
-AES_KEY = b"ZFRYCMdFYGf0i5HgO0oWvFV0terUABU0"
-AES_IV = b"CbE3P3t1lY34Ns8F"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -693,34 +691,14 @@ class TokenManager:
 
     @staticmethod
     def _decrypt_sign_table(b64: str) -> dict[str, str]:
-        """AES-CBC 解密签名表。"""
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        ct = base64.b64decode(b64)
-        cipher = Cipher(algorithms.AES(AES_KEY), modes.CBC(AES_IV))
-        decryptor = cipher.decryptor()
-        padded = decryptor.update(ct) + decryptor.finalize()
-        return json.loads(padded[: -padded[-1]])
+        """AES-CBC 解密签名表。委托给 sign_table 叶子模块。"""
+        return decrypt_sign_table(b64)
 
     def _api_headers(self, session: dict, url: str) -> dict:
         """构造乐鱼 API 请求头（含 X-API-XXX 签名）。"""
-        # 手动注入签名优先
-        manual_sigs = session.get("signatures", {})
-        xxx = ""
-        for k in sorted(manual_sigs.keys(), key=lambda x: -len(x)):
-            if k in url:
-                xxx = manual_sigs[k]
-                break
-
-        # 兜底：从 uuidToBase64 解密签名表
-        if not xxx:
-            uuid_b64 = session.get("uuidToBase64", "")
-            if uuid_b64:
-                try:
-                    st = self._decrypt_sign_table(uuid_b64)
-                    xxx = next((v for k, v in sorted(st.items(),
-                                key=lambda x: -len(x[0])) if k in url), "")
-                except Exception:
-                    pass
+        # 签名链（手动注入签名 → uuidToBase64 解密）抽到 headers.resolve_api_xxx，
+        # enable_wasm=False 保留本版原无 wasm 层的行为差异
+        xxx = resolve_api_xxx(session, url, enable_wasm=False)
 
         account = session.get("account", "") or self.account
         uuid_val = session.get("uuid", "")
