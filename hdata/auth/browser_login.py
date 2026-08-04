@@ -125,7 +125,8 @@ class GameBrowserLogin:
             summary={"got_params": bool(result)}, source="browser_login")
         return result
 
-    async def _launch_context(self, p, *, channel: str | None = None):
+    async def _launch_context(self, p, *, channel: str | None = None,
+                              headless: bool | None = None):
         """启动持久化 context 并返回干净新页所在 context。
 
         channel="chromium" 用完整 Chromium（headless=new）；默认走
@@ -133,10 +134,11 @@ class GameBrowserLogin:
         headless shell 能起进程但 new_page 报
         "Target.createTarget: Failed to open a new tab"（2026-08-04
         streak9 exe 客户现场），完整 Chromium 可绕过。
+        headless=None 时用 self._headless。
         """
         kwargs = dict(
             user_data_dir=str(self._profile_dir),
-            headless=self._headless,
+            headless=self._headless if headless is None else headless,
             # 种子站域名/证书由平台动态轮换，入口常出现证书与域名
             # 不匹配（ERR_CERT_AUTHORITY_INVALID）；登录流程靠后续
             # 重定向发现真实域名，必须容忍入口证书异常才能走下去
@@ -155,7 +157,10 @@ class GameBrowserLogin:
         try:
             await self._fresh_page(context)
         except Exception:
-            await context.close()
+            try:
+                await context.close()
+            except Exception:
+                pass            # 浏览器已死的场景不再掩盖原始异常
             raise
         return context
 
@@ -177,20 +182,35 @@ class GameBrowserLogin:
         self._profile_dir.mkdir(parents=True, exist_ok=True)
 
         async with async_playwright() as p:
-            # 三级容错：默认 headless shell → 清损坏 profile 重试 →
+            # 容错链：默认 headless shell → 清损坏 profile 重试 →
             # 完整 Chromium（杀软/精简系统上 headless shell 起不了标签页）
+            # → 第 4 级（HDATA_ALLOW_HEADFUL=1 时启用）：可见浏览器，
+            # 无头路径全死的机器上由用户手动完成登录（2026-08-04 客户现场：
+            # 无头三级全败，进程起得来但开不了标签/中途崩）。
+            attempts: list[tuple[bool, str | None, bool | None]] = [
+                (False, None, None), (True, None, None),
+                (True, "chromium", None)]
+            import os as _os
+            if self._headless and _os.environ.get(
+                    "HDATA_ALLOW_HEADFUL", "").strip() in ("1", "true", "yes"):
+                attempts.append((True, "chromium", False))
             context = None
+            eff_headless = self._headless
             last_exc: Exception | None = None
-            for attempt, (wipe, channel) in enumerate(
-                    [(False, None), (True, None), (True, "chromium")], 1):
+            for attempt, (wipe, channel, headless) in enumerate(attempts, 1):
                 try:
                     if wipe:
                         self._wipe_profile(self._profile_dir)
-                    context = await self._launch_context(p, channel=channel)
+                    context = await self._launch_context(
+                        p, channel=channel, headless=headless)
+                    eff_headless = self._headless if headless is None \
+                        else headless
                     if attempt > 1:
                         logger.info("[{}] 浏览器登录第 {} 级容错成功"
-                                    "（channel={}）", self._tag(), attempt,
-                                    channel or "headless-shell")
+                                    "（channel={}, headless={}）",
+                                    self._tag(), attempt,
+                                    channel or "headless-shell",
+                                    eff_headless)
                     break
                 except Exception as e:
                     last_exc = e
@@ -198,6 +218,7 @@ class GameBrowserLogin:
                                    self._tag(), attempt, str(e)[:160])
             if context is None:
                 raise last_exc  # type: ignore[misc]
+            self._eff_headless = eff_headless
 
             page = await self._fresh_page(context)
 
@@ -234,11 +255,12 @@ class GameBrowserLogin:
             except Exception as _e:
                 logger.warning("hall 直达失败（不影响登录兜底）: {}", _e)
 
-            if self._headless:
+            if eff_headless:
                 # 自动模式：等待自动跳转到游戏或超时
                 result = await self._wait_for_params(context=context, timeout=60)
             else:
-                logger.info("Login mode — please complete the login in the browser.")
+                logger.info("可见浏览器已打开——请在浏览器窗口中完成登录"
+                            "（等待最长 10 分钟）。")
                 result = await self._wait_for_params(context=context, timeout=600)
 
             # ── 捕获 Session 数据（cookies / X-API-TOKEN / uuid 等）──
@@ -249,12 +271,18 @@ class GameBrowserLogin:
             return result
 
     async def _fresh_page(self, context):
-        """关闭持久化 profile 恢复的残留标签页，返回一个干净新页。
+        """返回一个干净新页，并清理持久化 profile 恢复的残留标签页。
 
         平台每次轮换域名，profile 恢复的可能是旧域名（如 lyvip464.com）
         页面——在旧页面上登录/探测都会失败或拿到错域名的凭证。
+
+        顺序必须先 new_page 再关旧页：部分环境（可见模式/杀软注入）
+        关掉最后一个标签会连带杀掉整个浏览器，先关后开必现
+        "Target page, context or browser has been closed"
+        （2026-08-04 streak9 exe 客户现场实锤）。
         """
         stale = list(context.pages)
+        page = await context.new_page()
         for sp in stale:
             try:
                 await sp.close()
@@ -263,7 +291,7 @@ class GameBrowserLogin:
         if stale:
             logger.info("[{}] 关闭残留标签页 {} 个（持久化 profile 恢复的旧页面）",
                         self._tag(), len(stale))
-        return await context.new_page()
+        return page
 
     async def _enrich_with_session(self, context, result: dict) -> dict:
         """捕获浏览器 session 数据，合并到 result 中。"""
@@ -425,7 +453,7 @@ class GameBrowserLogin:
             if time.time() - last_beat >= WAIT_HEARTBEAT_S:
                 last_beat = time.time()
                 waited = time.time() - started
-                if self._headless:
+                if getattr(self, "_eff_headless", self._headless):
                     logger.info("[{}] 等待浏览器自动跳转…"
                                 "（已等待 {:.0f}s/{}s）",
                                 self._tag(), waited, timeout)
