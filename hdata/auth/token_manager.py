@@ -38,9 +38,14 @@ from hdata.auth.params import (
 from htools.utils.logger import get_logger
 
 from hdata.paths import cache_dir as _cache_dir
-from hdata.auth.fingerprint import get_impersonate
+from hdata.auth.fingerprint import get_impersonate, get_ua
 from hdata.auth.headers import resolve_api_xxx
 from hdata.auth.sign_table import decrypt_sign_table
+from hdata.auth.api_sign import get_uuid
+from hdata.auth.captcha import fetch_captcha
+from hdata.auth.captcha_solver import CaptchaChallenge, JfbymSolver
+from hdata.auth.domain import resolve_domain
+from hdata.auth.geetest_signer import generate_w
 
 logger = get_logger(__name__)
 
@@ -108,7 +113,6 @@ class TokenManager:
 
         # CaptchaSolver — 默认用 JfbymSolver（从环境变量读 token）
         if solver is None:
-            from hdata.auth.captcha_solver import JfbymSolver
             jfbym_token = os.getenv("JFBYM_TOKEN", "")
             solver = JfbymSolver(api_token=jfbym_token) if jfbym_token else None
         self._solver = solver
@@ -149,6 +153,7 @@ class TokenManager:
 
         async with self._lock:
             # 优先使用 session.py 的降级逻辑（L0 缓存 → L1 API）
+            # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
             from hdata.auth.session import get_game_session, SessionError
 
             try:
@@ -360,6 +365,7 @@ class TokenManager:
 
     async def _refresh_game_via_api(self, session: dict) -> str | None:
         """调用 venue/launch API 获取游戏 JWT。委托给 session.py。"""
+        # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
         from hdata.auth.session import refresh_game_token
 
         try:
@@ -380,6 +386,7 @@ class TokenManager:
     async def _refresh_via_playwright(self, entry_url: str, headless: bool = True) -> dict | None:
         """使用 Playwright 持久化 profile 刷新 game token。"""
         try:
+            # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
             from hdata.auth.browser_login import GameBrowserLogin
         except Exception:
             return None
@@ -497,9 +504,6 @@ class TokenManager:
         注意: verify 依赖坐标精度，当前 jfbym 坐标约 ±20px 偏移。
         如果 verify 持续返回 result=fail，可尝试 Capsolver 等替代打码平台。
         """
-        from hdata.auth.captcha import fetch_captcha
-        from hdata.auth.captcha_solver import CaptchaChallenge
-        from hdata.auth.geetest_signer import generate_w
         from curl_cffi import requests as cr
         import hashlib, urllib.parse, re
 
@@ -596,8 +600,6 @@ class TokenManager:
 
     async def _resolve_domain(self) -> str | None:
         """解析乐鱼域名(委托 domain.resolve_domain,失败回退 env)。"""
-        from hdata.auth.domain import resolve_domain
-
         return resolve_domain() or os.getenv("HDATA_DOMAIN", None)
 
     # ── 缓存管理 ──────────────────────────────────────────
@@ -699,17 +701,12 @@ class TokenManager:
         ua_val = ""
         if account:
             try:
-                from hdata.auth.api_sign import get_uuid
-                from hdata.auth.fingerprint import get_ua
-
                 uuid_val = get_uuid(account) or uuid_val
                 ua_val = get_ua(account)
             except Exception:
                 pass
         if not ua_val:
             try:
-                from hdata.auth.fingerprint import get_ua
-
                 ua_val = get_ua("")
             except Exception:
                 ua_val = (
@@ -756,8 +753,6 @@ async def main():
     p.add_argument("--inject-game-exp", type=int, help="注入 game_exp（Unix 时间戳）")
     p.add_argument("--inject-source", default="inject", help="注入来源标记")
     args = p.parse_args()
-
-    from hdata.auth.captcha_solver import JfbymSolver
 
     solver = JfbymSolver(api_token=args.jfbym_token) if args.jfbym_token else None
     tm = TokenManager(account=args.account, 

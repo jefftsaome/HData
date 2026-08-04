@@ -28,6 +28,7 @@ from curl_cffi import requests
 
 from hdata.auth.domain import resolve_domain, DomainCache
 from hdata.auth.params import (
+    build_auth_snapshot,
     decode_jwt,
     decrypt_params,
     extract_params_from_url,
@@ -275,8 +276,6 @@ def save_session(account: str, data: dict) -> dict:
     Returns:
         写入的缓存 dict
     """
-    from hdata.auth.params import build_auth_snapshot
-
     token = data.get("game_token") or data.get("token", "")
     player_id = data.get("game_player_id") or data.get("playerId", 0)
     backend = data.get("game_backend") or data.get("backendDomainUrl", "")
@@ -722,6 +721,7 @@ async def _get_login_inner(account: str, password: str = "",
         http_session = None
         for attempt in (1, 2):
             try:
+                # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
                 from hdata.auth.http_login import login as http_login
                 logger.info(f"[{account}] get_login: trying HTTP login with captcha"
                             + ("（超时自动重试）" if attempt == 2 else ""))
@@ -820,6 +820,7 @@ async def _get_login_inner(account: str, password: str = "",
         domain = ""
     logger.info(f"[{account}] get_login: launching browser, domain={domain or '(will auto-detect)'}")
 
+    # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
     from hdata.auth.browser_login import GameBrowserLogin
 
     profile_dir = CACHE_DIR / "browser_profiles" / account
@@ -865,6 +866,7 @@ async def _get_login_inner(account: str, password: str = "",
     # 解密 uuidToBase64 → signatures
     if result.get("uuidToBase64") and not result.get("signatures"):
         try:
+            # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
             from hdata.auth.token_manager import TokenManager
             st = TokenManager._decrypt_sign_table(result["uuidToBase64"])
             result["signatures"] = st

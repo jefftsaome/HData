@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 
 from hdata.auth import api_sign
+from hdata.auth.fingerprint import get_ua
 from hdata.auth.sign_table import decrypt_sign_table
 
 
@@ -36,8 +37,6 @@ def _ua_for(session: dict) -> str:
     """User-Agent 取值：按账号取指纹画像 UA（与 TLS impersonate 版本一致），
     无账号上下文时给默认最新版 Windows Chrome UA。"""
     try:
-        from hdata.auth.fingerprint import get_ua
-
         return get_ua(session.get("account", ""))
     except Exception:
         return (
