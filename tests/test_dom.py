@@ -141,3 +141,9 @@ class TestMakeFingerprint:
         dyn2 = {"round_id": "R2", "status": "结算中", "cards": None,
                 "bets": None, "boot_stats": None, "countdown_seconds": None}
         assert make_fingerprint(dyn1, None) != make_fingerprint(dyn2, None)
+
+
+def test_dynamic_extract_js_loaded_from_file():
+    from hdata.capture.dom_extractor import DYNAMIC_EXTRACT_JS
+
+    assert len(DYNAMIC_EXTRACT_JS) > 10000

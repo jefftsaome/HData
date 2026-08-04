@@ -37,6 +37,7 @@ include = ["hdata*"]
 [tool.setuptools.package-data]
 "hdata.auth" = ["*.cjs", "*.wasm"]
 "hdata.protocol" = ["*.json"]
+"hdata.capture" = ["js/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
