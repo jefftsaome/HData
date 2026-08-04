@@ -446,12 +446,12 @@ class GameClient:
             except Exception as e:
                 if attempt == 1:
                     logger.warning(f"[{account}] 建连前刷新失败"
-                                   f"（{type(e).__name__}），"
+                                   f"（{e}），"
                                    f"{_REFRESH_RETRY_DELAY_S:.0f}s 后重试")
                     await asyncio.sleep(_REFRESH_RETRY_DELAY_S)
                 else:
                     logger.warning(f"[{account}] 建连前刷新重试仍失败"
-                                   f"（{type(e).__name__}）")
+                                   f"（{e}）")
         # 站点会话整体失效 → 用会话所属账号完整重新登录
         password = session.get("_password") or (
             self._password if account == self._account else "")
