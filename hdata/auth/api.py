@@ -25,8 +25,8 @@
 import asyncio
 import os
 
-from hdata.auth.session import get_login as _get_login
 from hdata.auth.session import LoginError, get_game_session
+from hdata.auth.session import get_login as _get_login
 
 
 async def get_login(

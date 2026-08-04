@@ -1,8 +1,13 @@
 """测试 DOM 提取与解析模块"""
 
 from hdata.capture.dom_parser import (
-    baccarat_value, parse_number, parse_cards, parse_bets,
-    parse_dynamic, detect_result, make_fingerprint,
+    baccarat_value,
+    detect_result,
+    make_fingerprint,
+    parse_bets,
+    parse_cards,
+    parse_dynamic,
+    parse_number,
 )
 
 

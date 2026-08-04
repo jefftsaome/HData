@@ -37,7 +37,7 @@
 """
 from importlib import import_module
 
-from .session import get_login, LoginError, get_game_session
+from .session import LoginError, get_game_session, get_login
 
 _LEGACY_EXPORTS = {
     "TokenManager": (".token_manager", "TokenManager"),

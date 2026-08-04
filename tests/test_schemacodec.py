@@ -43,7 +43,7 @@ class TestByteReader:
             assert r.read_signed_varint() == want
 
     def test_string_raw(self):
-        data = "经典百家乐".encode("utf-8")
+        data = "经典百家乐".encode()
         r = _ByteReader(bytes([len(data)]) + data)
         assert r.read_string_raw() == "经典百家乐"
 

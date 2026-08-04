@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+
 def _gateway_request(method: str, url: str, payload: dict | None,
                      session: dict, timestamp: int = 0) -> dict:
     """game-http gateway 请求（内部）。
@@ -15,9 +16,10 @@ def _gateway_request(method: str, url: str, payload: dict | None,
     import base64 as _b64
     import hashlib as _hash
     import hmac as _hmac
+
     from curl_cffi import requests
-    from hdata.protocol.codec import (
-        GATEWAY_KEY, gateway_decrypt, gateway_encrypt)
+
+    from hdata.protocol.codec import GATEWAY_KEY, gateway_decrypt, gateway_encrypt
 
     keyid = "probinpjms7rfm26"  # release keyid（大厅 bundle 硬编码）
     headers = {

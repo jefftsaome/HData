@@ -1,4 +1,5 @@
 from htools.types import TickSide
+
 from hdata.adapters.leyu_adapter import LeyuAdapter
 
 

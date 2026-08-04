@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -28,11 +27,13 @@ import re
 import sys
 import time
 import urllib.parse
-from typing import Optional
+from collections.abc import Mapping
 
 from curl_cffi import requests as cr
 from loguru import logger
 
+from hdata.auth import login_trace
+from hdata.auth.api_sign import common_headers
 from hdata.auth.captcha import fetch_captcha as _fetch_captcha
 from hdata.auth.captcha_solver import (
     CaptchaChallenge,
@@ -42,12 +43,10 @@ from hdata.auth.captcha_solver import (
     GeepassSolver,
     JfbymSolver,
 )
-from hdata.auth.domain import resolve_domain as _resolve_domain, DomainCache
+from hdata.auth.domain import DomainCache
+from hdata.auth.domain import resolve_domain as _resolve_domain
+from hdata.auth.fingerprint import get_finger_profile, get_impersonate, get_ua, leyu_finger
 from hdata.auth.geetest_signer import generate_w
-from hdata.auth.api_sign import common_headers
-from hdata.auth.fingerprint import (
-    leyu_finger, get_finger_profile, get_ua, get_impersonate)
-from hdata.auth import login_trace
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 
@@ -379,7 +378,7 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
     return ""
 
 
-def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: str = "", proxy: str = "", tag: str = "") -> Optional[str]:
+def _do_login(domain: str, user: str, pwd_md5: str, lot_number: str, user_ip: str = "", proxy: str = "", tag: str = "") -> str | None:
     """调用 login API 获取 X-API-TOKEN。"""
     login_url = f"{domain}/site/api/v1/user/login"
     login_body = {
@@ -516,7 +515,7 @@ async def login(
     jfbym_token: str = "",
     max_retries: int = 3,
     proxy: str = "",
-) -> Optional[dict]:
+) -> dict | None:
     """纯 HTTP 乐鱼登录。
 
     打码平台 token 的解析方式:
@@ -556,7 +555,7 @@ async def _login_inner(
     jfbym_token: str = "",
     max_retries: int = 3,
     proxy: str = "",
-) -> Optional[dict]:
+) -> dict | None:
     """login() 的实现体（账号上下文由外层绑定）。"""
     tag = f"[{user}] "
     pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
@@ -715,7 +714,7 @@ async def _login_inner(
 
 
 # 保持向后兼容的同步版本
-def login_sync(user: str, pwd: str, **kwargs) -> Optional[dict]:
+def login_sync(user: str, pwd: str, **kwargs) -> dict | None:
     """login() 的同步包装器。"""
     return asyncio.run(login(user, pwd, **kwargs))
 

@@ -30,6 +30,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from htools.utils.logger import get_logger
+
 from hdata.auth.captcha_solver import JfbymSolver
 from hdata.auth.login_orchestrator import (
     LoginOrchestrator,
@@ -37,7 +39,6 @@ from hdata.auth.login_orchestrator import (
 )
 from hdata.auth.params import decode_jwt as _decode_jwt
 from hdata.auth.sign_table import decrypt_sign_table
-from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -139,9 +140,9 @@ async def main():
     args = p.parse_args()
 
     solver = JfbymSolver(api_token=args.jfbym_token) if args.jfbym_token else None
-    tm = TokenManager(account=args.account, 
+    tm = TokenManager(account=args.account,
                       solver=solver,
-                      user=args.user or "", 
+                      user=args.user or "",
                       pwd=args.pwd or "")
 
     if args.import_token_file:
@@ -188,7 +189,7 @@ async def main():
             for issue in d["issues"]:
                 print(f"    - {issue}")
         if d["fixes"]:
-            print(f"\n  🔧 修复建议:")
+            print("\n  🔧 修复建议:")
             for fix in d["fixes"]:
                 print(f"    → {fix}")
         return 0 if not d["issues"] else 1
@@ -199,7 +200,6 @@ async def main():
         return 0
 
     try:
-        import sys
         token = await tm.get_token(user=args.user or "", pwd=args.pwd or "")
         if token:
             print(f"✅ [{args.account}] {token[:80]}...")

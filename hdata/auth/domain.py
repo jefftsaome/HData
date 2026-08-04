@@ -21,9 +21,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from hdata.paths import cache_dir as _cache_dir
 

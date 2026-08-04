@@ -111,7 +111,7 @@ class _KickConn(_FakeConn):
     async def recv(self):
         try:
             return await asyncio.wait_for(self.frames.get(), timeout=0.5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
 
 

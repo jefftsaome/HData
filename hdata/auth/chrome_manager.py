@@ -210,7 +210,7 @@ class ChromeManager:
             writer.close()
             await writer.wait_closed()
             return True
-        except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+        except (TimeoutError, ConnectionRefusedError, OSError):
             return False
 
     async def _fetch_ws_url(self) -> str:
@@ -221,15 +221,14 @@ class ChromeManager:
         """
         import aiohttp
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"http://127.0.0.1:{self._cdp_port}/json/version",
-                    timeout=aiohttp.ClientTimeout(total=3),
-                ) as resp:
-                    data = await resp.json()
-                    url = data.get("webSocketDebuggerUrl", "")
-                    if url:
-                        return url
+            async with aiohttp.ClientSession() as session, session.get(
+                f"http://127.0.0.1:{self._cdp_port}/json/version",
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                data = await resp.json()
+                url = data.get("webSocketDebuggerUrl", "")
+                if url:
+                    return url
         except Exception as e:
             logger.warning("Failed to fetch CDP WS URL: {}", e)
         # 兜底：拼接标准路径（部分 Chrome 版本可用）
@@ -278,7 +277,7 @@ class ChromeManager:
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._process.kill()
                 await self._process.wait()
             self._process = None

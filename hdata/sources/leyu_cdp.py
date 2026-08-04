@@ -2,16 +2,22 @@
 
 import asyncio
 import time
-from typing import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
 
 from htools.interfaces import DataSource, SourceStatus
 from htools.types import MarketTick, SourceStatusEvent
 from htools.utils.logger import get_logger, setup_logging
+
 from hdata.adapters.leyu_adapter import LeyuAdapter
 from hdata.auth.chrome_manager import ChromeManager
 from hdata.capture.cdp_bridge import CDPSession
 from hdata.capture.dom_extractor import DOMExtractor
-from hdata.capture.dom_parser import parse_dynamic, detect_result, make_fingerprint, parse_canvas_roads
+from hdata.capture.dom_parser import (
+    detect_result,
+    make_fingerprint,
+    parse_canvas_roads,
+    parse_dynamic,
+)
 
 logger = get_logger(__name__)
 
@@ -162,20 +168,20 @@ class CDPSource(DataSource):
 
         # 解析 CDP URL（attach 模式下通过 json/version 获取完整 WS URL）
         if self._chrome.is_attached:
-            import aiohttp
             from urllib.parse import urlparse
+
+            import aiohttp
             parsed = urlparse(self._chrome.cdp_url)
             port = parsed.port or 9222
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"http://127.0.0.1:{port}/json/version",
-                        timeout=aiohttp.ClientTimeout(total=3),
-                    ) as resp:
-                        data = await resp.json()
-                        ws_url = data.get("webSocketDebuggerUrl", "")
-                        if ws_url:
-                            self._chrome._attached_url = ws_url
+                async with aiohttp.ClientSession() as session, session.get(
+                    f"http://127.0.0.1:{port}/json/version",
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as resp:
+                    data = await resp.json()
+                    ws_url = data.get("webSocketDebuggerUrl", "")
+                    if ws_url:
+                        self._chrome._attached_url = ws_url
             except Exception:
                 pass
 

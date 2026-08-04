@@ -118,7 +118,7 @@ class ProxyPool:
     @classmethod
     def from_file(cls, path: str | Path,
                   cap_per_proxy: int = DEFAULT_CAP_PER_PROXY
-                  ) -> "ProxyPool":
+                  ) -> ProxyPool:
         """从 JSON 文件加载代理列表。
 
         支持三种元素形式:

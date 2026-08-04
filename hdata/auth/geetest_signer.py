@@ -8,7 +8,6 @@ import hashlib
 import json
 import random
 import re
-import urllib.parse
 from pathlib import Path
 
 from Crypto.Cipher import AES, PKCS1_v1_5

@@ -8,9 +8,11 @@
     uv run pytest tests/test_integration.py -v
 """
 
-import os
 import asyncio
+import os
+
 import pytest
+
 from hdata.capture.cdp_bridge import CDPSession
 
 # 默认 CDP 端口
@@ -27,7 +29,7 @@ async def _can_connect(port: int) -> bool:
         writer.close()
         await writer.wait_closed()
         return True
-    except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+    except (TimeoutError, ConnectionRefusedError, OSError):
         return False
 
 
@@ -35,15 +37,14 @@ async def _resolve_ws_url(port: int) -> str:
     """从 Chrome HTTP 接口获取真实 CDP WebSocket URL。"""
     import aiohttp
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"http://{CDP_HOST}:{port}/json/version",
-                timeout=aiohttp.ClientTimeout(total=3),
-            ) as resp:
-                data = await resp.json()
-                url = data.get("webSocketDebuggerUrl", "")
-                if url:
-                    return url
+        async with aiohttp.ClientSession() as session, session.get(
+            f"http://{CDP_HOST}:{port}/json/version",
+            timeout=aiohttp.ClientTimeout(total=3),
+        ) as resp:
+            data = await resp.json()
+            url = data.get("webSocketDebuggerUrl", "")
+            if url:
+                return url
     except Exception:
         pass
     return f"ws://{CDP_HOST}:{port}/devtools/browser"
@@ -194,7 +195,7 @@ class TestParseAndDetect:
 
     @pytest.mark.asyncio
     async def test_detect_result(self, game_data):
-        from hdata.capture.dom_parser import parse_dynamic, detect_result
+        from hdata.capture.dom_parser import detect_result, parse_dynamic
         raw, _ = game_data
         dyn = parse_dynamic(raw)
         result = detect_result(dyn)
@@ -216,8 +217,13 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_adapter_produces_tick(self, game_data):
-        from hdata.capture.dom_parser import parse_dynamic, detect_result, decode_cards, parse_canvas_roads
         from hdata.adapters.leyu_adapter import LeyuAdapter
+        from hdata.capture.dom_parser import (
+            decode_cards,
+            detect_result,
+            parse_canvas_roads,
+            parse_dynamic,
+        )
 
         raw, ext = game_data
         dyn = parse_dynamic(raw)
@@ -233,7 +239,7 @@ class TestFullPipeline:
         if cr:
             print(f"\n  [调试] canvasRoad: {len(cr.get('sequence',[]))} 笔, raw_seq={cr['sequence']}")
         else:
-            print(f"\n  [调试] canvasRoad: null")
+            print("\n  [调试] canvasRoad: null")
 
         tick = LeyuAdapter().create_tick(
             result=result or "N",

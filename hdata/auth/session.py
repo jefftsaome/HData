@@ -17,16 +17,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import asyncio
 import hashlib
 import json
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from curl_cffi import requests
+from htools.utils.logger import get_logger
 
-from hdata.auth.domain import resolve_domain, DomainCache
+from hdata.auth import login_trace
+from hdata.auth.domain import resolve_domain
+from hdata.auth.fingerprint import get_impersonate
+from hdata.auth.headers import build_api_headers
 from hdata.auth.params import (
     build_auth_snapshot,
     decode_jwt,
@@ -34,12 +38,7 @@ from hdata.auth.params import (
     extract_params_from_url,
     validate_game_token,
 )
-from hdata.auth import login_trace
-from hdata.auth.headers import build_api_headers
-from htools.utils.logger import get_logger
-
 from hdata.paths import cache_dir as _cache_dir
-from hdata.auth.fingerprint import get_impersonate
 
 logger = get_logger(__name__)
 

@@ -4,7 +4,6 @@ import pytest
 
 from hdata.auth.geetest_signer import build_e_obj, serialize_e_obj
 
-
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 LOAD_DATA = {
     "lot_number": "0123456789abcdef0123456789abcdef",

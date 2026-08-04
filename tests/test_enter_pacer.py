@@ -18,8 +18,6 @@ import random
 import re
 import time
 
-import pytest
-
 import hdata.client as hc
 
 

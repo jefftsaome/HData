@@ -14,13 +14,12 @@
 
 from __future__ import annotations
 
-from hdata.auth.fingerprint import get_impersonate
-
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-import re
 
+from hdata.auth.fingerprint import get_impersonate
 
 # ═══════════════════════════════════════════════════════════
 # 数据类型
@@ -224,8 +223,8 @@ class JfbymSolver(CaptchaSolver):
         """jfbym 31111 一键识别 — 传背景图 + 3 张参考字图，返回坐标。"""
         import asyncio
         import base64
-        import json
         import time
+
         from curl_cffi import requests as cr
 
         t0 = time.time()
@@ -384,6 +383,7 @@ class GeepassSolver(CaptchaSolver):
         """geepass 30104 识别 — 返回边界框，自动转为中心坐标。"""
         import base64
         import time
+
         from curl_cffi import requests as cr
 
         t0 = time.time()

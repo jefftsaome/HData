@@ -1,6 +1,5 @@
 """乐鱼原始数据 → MarketTick 适配器（语义隔离边界）"""
 
-import time
 from htools.types import MarketTick, TickSide
 from htools.utils.time import now_ms
 

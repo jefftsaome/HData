@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """deviceId 按账号持久化 + 10115 PROT_DECODE_CONFIG 热更新的单元测试。"""
 
 import json
@@ -7,7 +6,6 @@ import pytest
 
 from hdata.auth import session as session_mod
 from hdata.protocol import codec as codec_mod
-
 
 # ── get_persistent_device_id ────────────────────────────────────────────────
 

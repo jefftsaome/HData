@@ -40,12 +40,12 @@ from htools.utils.logger import get_logger
 
 from hdata.auth.session import (
     LoginError,
+)
+from hdata.auth.session import (
     get_login as _session_login,
 )
 
 from ._shared import (
-    GOOD_ROAD_NAMES,
-    TableInfo,
     _FORCE_101_GAME_TYPES,
     _GAME_TYPE_NAMES,
     _HEARTBEAT_INTERVAL,
@@ -69,21 +69,23 @@ from ._shared import (
     _SHARD_CONNECT_RETRIES,
     _SHARD_RETRY_BACKOFF_S,
     _YT_ALL_GAME,
+    GOOD_ROAD_NAMES,
+    TableInfo,
     build_hall_switch_msg,
     road_streak,
     round_result_token,
 )
-from .transport import _WSConnection, _extract_lobby_tables
 from .gateway import _gateway_request, _json_loads
 from .tables import (
     MultiplaySession,
     MultiTableSession,
     TableMonitor,
     TableSession,
-    _EnterPacer,
     _classify_event,
+    _EnterPacer,
     _table_info_from_snapshot,
 )
+from .transport import _extract_lobby_tables, _WSConnection
 
 logger = get_logger("hdata.client")
 
@@ -276,7 +278,7 @@ class GameClient:
 
     async def enter_table(self, table_id: int,
                           game_type_id: int = 2001,
-                          road_init: str = "") -> "TableSession":
+                          road_init: str = "") -> TableSession:
         """进入指定桌台，返回 TableSession（异步上下文管理器）。
 
         Args:
@@ -411,7 +413,7 @@ class GameClient:
     # ── 5. 多桌监控（单连接） ─────────────────────────
 
     async def enter_tables(self, tables: list[dict],
-                           kick_policy: str = "stay") -> "MultiTableSession":
+                           kick_policy: str = "stay") -> MultiTableSession:
         """同时进入多张桌台监控（共享一条 WS 连接）。
 
         实测确认：同一账号在**一条连接**上可同时进多桌（服务端按连接
@@ -451,7 +453,7 @@ class GameClient:
                              connect_interval_s: float = 0,
                              readd_interval_s: float = 18.0,
                              readd_jitter_s: float = 5.0
-                             ) -> "TableMonitor":
+                             ) -> TableMonitor:
         """创建持续桌台监控（人为主动控制退出，无自动超时）。
 
         账号策略（自动兼容两种模式）:

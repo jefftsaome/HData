@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -218,11 +217,10 @@ async def test_http_login_retry_fails_then_falls_to_browser(monkeypatch):
     import hdata.auth.browser_login as bl_mod
     monkeypatch.setattr(bl_mod, "GameBrowserLogin", _FakeBot)
 
-    with _LogCapture() as cap:
-        with pytest.raises(sess.LoginError):
-            await sess.get_login(
-                "lds008", password="pwd", force_refresh=True,
-                geepass_token="gp", entry_url="https://leyu.me")
+    with _LogCapture() as cap, pytest.raises(sess.LoginError):
+        await sess.get_login(
+            "lds008", password="pwd", force_refresh=True,
+            geepass_token="gp", entry_url="https://leyu.me")
 
     assert calls == ["lds008", "lds008"]
     text = cap.text()

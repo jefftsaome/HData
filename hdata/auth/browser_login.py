@@ -34,19 +34,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import time
 from pathlib import Path
 
+from htools.utils.logger import get_logger
+
+from hdata.auth import login_trace
 from hdata.auth.params import (
     build_auth_snapshot,
     decode_jwt,
     decrypt_params,
     save_auth_cache,
 )
-from hdata.auth import login_trace
-from htools.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -62,6 +62,7 @@ CHROME_PROFILE_DIR = _PROJ_ROOT / ".chrome_profile"
 AUTH_CACHE_PATH = _PROJ_ROOT / ".auth_cache.json"
 # 缓存目录（用户 home 下，跨平台，与包安装位置解耦）
 from hdata.paths import cache_dir as _cache_dir
+
 CACHE_DIR = _cache_dir()
 # 等待人工登录时的日志心跳间隔（秒）
 WAIT_HEARTBEAT_S = 30

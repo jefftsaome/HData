@@ -176,7 +176,7 @@ class _Schema:
         self.body_fields = [f for f in fields if not f.scalar_bit_field]
 
 
-def _compile(config: dict) -> "_Schema":
+def _compile(config: dict) -> _Schema:
     schemas: dict[str, _Schema] = {}
 
     def resolve(name: str) -> _Schema:

@@ -7,7 +7,7 @@ import asyncio
 import random
 import time
 from collections import deque
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 from htools.utils.logger import get_logger
 
@@ -22,8 +22,6 @@ from hdata.protocol.roadpaper import decode_bead_plate
 from hdata.protocol.schemacodec import schema_decode
 
 from ._shared import (
-    GOOD_ROAD_NAMES,
-    TableInfo,
     _FORCE_101_GAME_TYPES,
     _GAME_TYPE_NAMES,
     _HT_SEAT,
@@ -37,6 +35,8 @@ from ._shared import (
     _SHARD_CONNECT_INTERVAL_S,
     _SHARD_CONNECT_RETRIES,
     _SHARD_RETRY_BACKOFF_S,
+    GOOD_ROAD_NAMES,
+    TableInfo,
     build_hall_switch_msg,
     round_result_token,
 )
@@ -68,7 +68,7 @@ class TableSession:
         self._road_accum: list = list(road_init)
         self._last_round_id = 0       # 已入路的最大 roundId（107去重）
 
-    async def __aenter__(self) -> "TableSession":
+    async def __aenter__(self) -> TableSession:
         await self._conn.__aenter__()
         await self._enter()
         return self
@@ -109,7 +109,7 @@ class TableSession:
             try:
                 f = await asyncio.wait_for(
                     self._conn.recv(), timeout=max(0.1, end - time.time()))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             if not f:
                 continue
@@ -388,7 +388,7 @@ class MultiTableSession:
         分片重进）；空分片保持连接等待新分配，不终止迭代。
     """
 
-    def __init__(self, conn: "_WSConnection", tables: list[dict],
+    def __init__(self, conn: _WSConnection, tables: list[dict],
                  kick_policy: str = "stay",
                  readd_interval_s: float = 18.0,
                  readd_jitter_s: float = 5.0,
@@ -429,7 +429,7 @@ class MultiTableSession:
         # NOTE: 跨对象私有访问,待 P4 收敛
         return str(self._conn._session.get("account", "?"))
 
-    async def __aenter__(self) -> "MultiTableSession":
+    async def __aenter__(self) -> MultiTableSession:
         await self._conn.__aenter__()
         self._sync_expect_traffic()   # 分片重建换新连接后默认 True，需按桌数纠正
         self._pacer.start()
@@ -677,7 +677,7 @@ class TableMonitor:
 
     # ── 生命周期 ──
 
-    async def __aenter__(self) -> "TableMonitor":
+    async def __aenter__(self) -> TableMonitor:
         """分片建连：**按代理出口分组限速**（防 WAF 连接风暴）。
 
         实测平台对同 IP 的 WS 新建连有速率/并发限制（密集建连会
@@ -885,7 +885,7 @@ class TableMonitor:
             while not self._closed:
                 try:
                     ev = await asyncio.wait_for(queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # 全部分片都结束且队列排空才收尾；单片结束不影响其他片
                     if self._closed or (remaining <= 0 and queue.empty()):
                         break
@@ -934,7 +934,7 @@ class MultiplaySession:
         时刻；0 表示尚未收到。心跳等非数据帧不计。"""
         return self._last_data
 
-    async def __aenter__(self) -> "MultiplaySession":
+    async def __aenter__(self) -> MultiplaySession:
         await self._conn.__aenter__()
         await self._conn.send(build_message(
             _QS_INTER_MULTIPLE,
@@ -1046,7 +1046,7 @@ def _classify_event(protocol_id: int) -> str:
         10052: "lobby",    # 大厅快照
     }.get(protocol_id, "other")
 def _table_info_from_snapshot(table_id: str, t: dict,
-                              meta: dict | None = None) -> Optional[TableInfo]:
+                              meta: dict | None = None) -> TableInfo | None:
     """从 10052 快照构造 TableInfo；meta（10053）提供桌名与官方玩法名。"""
     gt = t.get("gameTypeId")
     if not gt:

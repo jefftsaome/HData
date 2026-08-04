@@ -1,7 +1,9 @@
-import json
 import gzip
+import json
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from hdata.protocol.decoder import decode_frame, AES_KEY
+
+from hdata.protocol.decoder import AES_KEY, decode_frame
 
 
 def _encrypt_payload(data: dict) -> bytes:

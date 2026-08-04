@@ -9,8 +9,12 @@ import base64
 import json
 import time
 
-from hdata.auth.session import (_REFRESH_JITTER_HI, _REFRESH_JITTER_LO,
-                                _refresh_jitter_point, token_refresh_due)
+from hdata.auth.session import (
+    _REFRESH_JITTER_HI,
+    _REFRESH_JITTER_LO,
+    _refresh_jitter_point,
+    token_refresh_due,
+)
 
 
 def _jwt(iat: int, exp: int) -> str:

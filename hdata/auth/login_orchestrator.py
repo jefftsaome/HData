@@ -12,21 +12,25 @@ import os
 import time
 from pathlib import Path
 
-from hdata.auth.params import (
-    decode_jwt as _decode_jwt,
-    validate_game_token as _validate_game_token,
-    token_remaining_hours as _token_remaining_hours,
-)
 from htools.utils.logger import get_logger
 
-from hdata.paths import cache_dir as _cache_dir
-from hdata.auth.captcha_client import http_login_with_captcha
-from hdata.auth.fingerprint import get_ua
-from hdata.auth.headers import resolve_api_xxx
-from hdata.auth.sign_table import decrypt_sign_table
 from hdata.auth.api_sign import get_uuid
+from hdata.auth.captcha_client import http_login_with_captcha
 from hdata.auth.captcha_solver import JfbymSolver
 from hdata.auth.domain import resolve_domain
+from hdata.auth.fingerprint import get_ua
+from hdata.auth.headers import resolve_api_xxx
+from hdata.auth.params import (
+    decode_jwt as _decode_jwt,
+)
+from hdata.auth.params import (
+    token_remaining_hours as _token_remaining_hours,
+)
+from hdata.auth.params import (
+    validate_game_token as _validate_game_token,
+)
+from hdata.auth.sign_table import decrypt_sign_table
+from hdata.paths import cache_dir as _cache_dir
 
 logger = get_logger(__name__)
 
@@ -125,7 +129,7 @@ class LoginOrchestrator:
         async with self._lock:
             # 优先使用 session.py 的降级逻辑（L0 缓存 → L1 API）
             # 编排回环:保持函数内导入以避免 import 死锁,见 P4 拆 orchestrator 方案
-            from hdata.auth.session import get_game_session, SessionError
+            from hdata.auth.session import SessionError, get_game_session
 
             try:
                 session = await get_game_session(self.account)
@@ -158,11 +162,11 @@ class LoginOrchestrator:
                         self._save(cache)
                         logger.info(f"[{self.account}] L2 成功: headless 自动刷新")
                         return token
-                chain.append(("L2 浏览器刷新", 
+                chain.append(("L2 浏览器刷新",
                               "Playwright 自动跳转",
                               "无 params URL 截获 — browser profile 无有效 session"))
             except Exception as e:
-                chain.append(("L2 浏览器刷新", 
+                chain.append(("L2 浏览器刷新",
                               "Playwright",
                               f"不可用: {str(e)[:100]}"))
 
@@ -183,23 +187,23 @@ class LoginOrchestrator:
                             self._save(cache)
                             logger.info(f"[{self.account}] L3a 成功: 纯 HTTP 登录")
                             return token
-                        chain.append(("L3a 纯HTTP登录", 
+                        chain.append(("L3a 纯HTTP登录",
                                       "venue/launch",
                                       "纯 HTTP 登录成功但 game JWT 获取失败"))
                     else:
-                        chain.append(("L3a 纯HTTP登录", 
+                        chain.append(("L3a 纯HTTP登录",
                                       "verify/validate/login",
                                       "verify 失败 — 坐标精度不足"))
                 except Exception as e:
-                    chain.append(("L3a 纯HTTP登录", 
-                                  "http_login", 
+                    chain.append(("L3a 纯HTTP登录",
+                                  "http_login",
                                   str(e)[:100]))
             else:
-                chain.append(("L3a 纯HTTP登录", 
+                chain.append(("L3a 纯HTTP登录",
                               "检查凭据",
                               "跳过 — 缺 user/pwd/solver"))
 
-            chain.append(("L3b 浏览器登录", 
+            chain.append(("L3b 浏览器登录",
                           "已移除",
                           "browser-act 相关链路已移除，请使用 --manual-capture 人工辅助登录"))
             raise TokenUnavailableError(self.account, chain)
