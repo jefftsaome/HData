@@ -1,7 +1,8 @@
-# PROJECT.md — 项目总览（Kimi 记忆锚点）
+# PROJECT.md — 项目总览（跨会话记忆锚点）
 
-> 更新时间：2026-07-28。本文件是跨会话记忆摘要，细节以各仓库内 docs 为准。
+> 更新时间：2026-08-05。本文件是跨会话记忆摘要，细节以各仓库内 docs 为准。
 > 本 workspace（D:\my-code-repo\myown\）下有三个仓库，依赖关系：**HSys → HData → htools**。
+> HData 维护约定见 `HData/AGENTS.md`；结构见 `HData/docs/ARCHITECTURE.md`；术语见 `HData/docs/GLOSSARY.md`；事故库见 `HData/docs/INCIDENTS.md`。
 
 ## 〇、仓库拓扑
 
@@ -46,9 +47,19 @@
 
 - 工作目录 `D:\my-code-repo\myown\`（含 htools / HSys / HData 三仓库）；只有 HData 是 git 仓库（jefftsaome/HData，main 分支），HData 改动要 commit+push；HSys/htools 非 git 仓库（HSys 已补 .gitignore）
 - 采集进程由用户自己重启，助手只改源码并记 `HSys/crawl-bot/待生效改动.md`
-- 测试基线：hdata 226、crawl-bot 75、server 122
-- 文档在 HData/docs/（中文命名，含《数据样本》《平台边界试探》等）
+- 测试基线：hdata **285 passed + 11 skipped + 1 xfailed**（crawl-bot 75、server 122）
+- 文档在 HData/docs/（中文命名，含《ARCHITECTURE》《GLOSSARY》《INCIDENTS》）
 - 用户风格：中文大白话、结论带实测数字、不用看不懂的术语
+
+## 五·补充、2026-08-05 HData 大重构已完成
+
+对 hdata 做了 5 阶段"堆叠屎山"重构（分支 refactor/2026-08-04，18 提交，已并/待并入 main）：
+- 外置数据：schema 2402 行 dict → `schema_data.json`；212 行 JS → 资产文件
+- 破循环：auth 循环从 12 模块咬合降为 6 处已标注编排回环；抽 `headers.py`/`sign_table.py` 叶子
+- 拆 God：`client.py` 2241 行 → `client/` 包；`TokenManager` 632→59 行门面
+- 收敛：验证码登录并入完整流水线；删除生产未用的 `WSSource`/`WSClient`（runlog 实证）；修 `LoginError` 未 import 真实 bug
+- 门禁：ruff 配置 + CI + 特征测试网（30 例）；清 git 垃圾
+- 新增 `hdata/__init__.py` 聚合导出公共 API（GameClient / get_login 等），见 `HData/docs/ARCHITECTURE.md` 第五节
 
 ## 六、待办/悬而未决
 
