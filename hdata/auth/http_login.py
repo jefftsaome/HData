@@ -42,7 +42,7 @@ from hdata.auth.captcha_solver import (
     GeepassSolver,
     JfbymSolver,
 )
-from hdata.auth.domain import resolve_domain as _resolve_domain
+from hdata.auth.domain import resolve_domain as _resolve_domain, DomainCache
 from hdata.auth.geetest_signer import generate_w
 from hdata.auth.api_sign import common_headers
 from hdata.auth.fingerprint import (
@@ -50,6 +50,10 @@ from hdata.auth.fingerprint import (
 from hdata.auth import login_trace
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
+
+
+class ApiDeadError(RuntimeError):
+    """站点 API 返回非 JSON（域名失效/WAF 拦截页），需换域名重试。"""
 
 
 class VerifyError(RuntimeError):
@@ -261,7 +265,21 @@ def _kaptchcate(domain: str, proxy: str = "", tag: str = "", account: str = "") 
             timeout=15,
             proxies=_px(proxy),
         )
-        body = resp.json()
+        body = None
+        try:
+            body = resp.json()
+        except Exception:
+            # 服务器返回非 JSON（WAF 拦截页/域名失效 HTML 页），记录现场便于诊断
+            preview = (resp.text or "")[:200].replace("\n", " ")
+            logger.warning("{}kaptchcate: 非 JSON 响应 http={} body={!r}",
+                           tag, resp.status_code, preview)
+            login_trace.emit(
+                "kaptchcate", method="POST", url=url, status=resp.status_code,
+                elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
+                summary={"error": "invalid_json", "http": resp.status_code,
+                         "body": preview}, source="http_login")
+            raise ApiDeadError(
+                f"{domain} API 返回非 JSON（http={resp.status_code}），域名已失效")
         ok = isinstance(body, Mapping) and body.get("status_code") == 6022
         logger.debug("{}kaptchcate: {}",
                      tag, "success" if ok else f"unexpected {body.get('status_code')}")
@@ -270,6 +288,8 @@ def _kaptchcate(domain: str, proxy: str = "", tag: str = "", account: str = "") 
             elapsed_ms=int((time.monotonic() - t0) * 1000), ok=ok,
             summary=body, source="http_login")
         return ok
+    except ApiDeadError:
+        raise  # 域名失效必须穿透到 _login_inner 触发域名切换
     except Exception as exc:
         login_trace.emit(
             "kaptchcate", method="POST", url=url,
@@ -324,15 +344,18 @@ def _validate_geecheck(domain: str, lot_number: str, seccode: dict,
 
     try:
         vresp = resp.json()
-    except Exception as exc:
+    except Exception:
+        preview = (resp.text or "")[:200].replace("\n", " ")
         login_trace.emit(
             "validate_geecheck", method="POST", url=validate_url,
             status=resp.status_code,
             elapsed_ms=int((time.monotonic() - t0) * 1000), ok=False,
-            summary={"error": "invalid_json"}, source="http_login")
-        logger.warning("{}validateGeeCheckV2: failed stage=validate exception={}",
-                       tag, type(exc).__name__)
-        return ""
+            summary={"error": "invalid_json", "http": resp.status_code,
+                     "body": preview}, source="http_login")
+        logger.warning("{}validateGeeCheckV2: 非 JSON 响应 http={} body={!r}",
+                       tag, resp.status_code, preview)
+        raise ApiDeadError(
+            f"{domain} API 返回非 JSON（http={resp.status_code}），域名已失效")
     raw_status_code = vresp.get("status_code") if isinstance(vresp, Mapping) else None
     status_code = _safe_status_code(raw_status_code)
 
@@ -559,12 +582,32 @@ async def _login_inner(
 
     logger.info("{}HTTP 登录开始（domain={}）", tag, domain)
 
+    domain_switched = False
+
+    def _switch_domain(cur: str) -> str:
+        """API 级失效（非 JSON 响应）：清缓存重解析，返回新域名或原样。"""
+        DomainCache().invalidate()
+        nd = _resolve_domain(validate=True)
+        return nd if nd and nd != cur else ""
+
     for retry in range(max_retries):
         logger.debug("{}--- 第 {}/{} 次尝试 ---", tag, retry + 1, max_retries)
 
         # 0. 验证码预注册（浏览器每次弹验证码前必调）
         logger.debug("{}[0/6] kaptchcate 预注册...", tag)
-        _kaptchcate(domain, proxy, tag, account=user)  # 失败不阻断，与浏览器容错行为一致
+        try:
+            _kaptchcate(domain, proxy, tag, account=user)  # 失败不阻断，与浏览器容错行为一致
+        except ApiDeadError as exc:
+            if domain_switched:
+                logger.warning("{}{}；已切换过域名仍失效", tag, exc)
+                continue
+            domain_switched = True
+            new_domain = _switch_domain(domain)
+            logger.warning("{}{}，重新解析域名: {}", tag, exc, new_domain or "失败")
+            if not new_domain:
+                continue
+            domain = new_domain
+            continue
 
         # 1. 获取验证码
         logger.debug("{}[1/6] 获取验证码...", tag)
@@ -623,8 +666,20 @@ async def _login_inner(
 
         # 4. Validate（返回 user_ip 用于计算 X-API-FINGER）
         logger.debug("{}[4/6] 校验验证码...", tag)
-        user_ip = _validate_geecheck(
-            domain, load_data["lot_number"], seccode, proxy, tag, account=user)
+        try:
+            user_ip = _validate_geecheck(
+                domain, load_data["lot_number"], seccode, proxy, tag, account=user)
+        except ApiDeadError as exc:
+            if domain_switched:
+                logger.warning("{}{}；已切换过域名仍失效", tag, exc)
+                continue
+            domain_switched = True
+            new_domain = _switch_domain(domain)
+            logger.warning("{}{}，重新解析域名: {}", tag, exc, new_domain or "失败")
+            if not new_domain:
+                continue
+            domain = new_domain
+            continue
         if not user_ip:
             logger.debug("{}validateGeeCheckV2 失败", tag)
             continue
