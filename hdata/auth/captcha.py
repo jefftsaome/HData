@@ -11,10 +11,12 @@ import uuid
 
 from curl_cffi import requests as cr
 from htools.utils.time import now_ms
-from loguru import logger
+from htools.utils.logger import get_logger
 
 from hdata.auth import login_trace
 from hdata.auth.fingerprint import get_impersonate
+
+logger = get_logger(__name__)
 
 BOTION_LOAD = "https://bcaptcha.botion.com/load"
 BOTION_STATIC = "https://static.botion.com"

@@ -17,9 +17,10 @@ import time
 import uuid as _uuid_mod
 from pathlib import Path
 
-from loguru import logger
-
 from hdata.auth.fingerprint import get_ua
+from htools.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 # 签名脚本真源随包分发（hdata/auth/）；项目根 scripts/ 仅为开发期转发入口，

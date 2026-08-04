@@ -30,7 +30,7 @@ import urllib.parse
 from collections.abc import Mapping
 
 from curl_cffi import requests as cr
-from loguru import logger
+from htools.utils.logger import get_logger
 
 from hdata.auth import login_trace
 from hdata.auth.api_sign import common_headers
@@ -47,6 +47,8 @@ from hdata.auth.domain import DomainCache
 from hdata.auth.domain import resolve_domain as _resolve_domain
 from hdata.auth.fingerprint import get_finger_profile, get_impersonate, get_ua, leyu_finger
 from hdata.auth.geetest_signer import generate_w
+
+logger = get_logger(__name__)
 
 CAPTCHA_ID = "eaffad4f65a38a259ae369faf0c2f1a3"
 
