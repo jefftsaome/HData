@@ -59,7 +59,7 @@ from hdata.protocol.codec import (
     encode_frame,
     extract_param,
 )
-from hdata.protocol.roadpaper import decode_road_paper, decode_bead_plate
+from hdata.protocol.roadpaper import decode_bead_plate
 from hdata.protocol.schemacodec import schema_decode
 
 logger = get_logger(__name__)

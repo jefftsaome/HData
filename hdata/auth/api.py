@@ -24,7 +24,6 @@
 
 import asyncio
 import os
-from typing import Optional
 
 from hdata.auth.session import get_login as _get_login
 from hdata.auth.session import LoginError, get_game_session

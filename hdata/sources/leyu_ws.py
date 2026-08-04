@@ -51,9 +51,6 @@ class WSSource(DataSource):
         async for tick in src.start(): ...
     """
 
-    # 乐鱼 AES 密钥（接收方向：AES-CBC, IV=KEY）
-    AES_KEY = b"ED7AA06BD8628B55"
-
     def __init__(
         self,
         table_id: int = 0,

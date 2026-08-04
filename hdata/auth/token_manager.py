@@ -35,7 +35,6 @@ from hdata.auth.params import (
     decrypt_params as _decrypt_params,
     validate_game_token as _validate_game_token,
     token_remaining_hours as _token_remaining_hours,
-    extract_params_from_url as _extract_params_from_url,
 )
 from htools.utils.logger import get_logger
 

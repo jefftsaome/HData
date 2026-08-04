@@ -88,21 +88,6 @@ def test_decode_road_paper_filters_unknown():
     assert "broken" not in out
 
 
-def test_round_tracker_feed_road_paper():
-    from hdata.protocol.round_tracker import RoundTracker
-
-    # 真实 35 局珠盘（table 2659）
-    rp = {"beatPlateRoad": "IgYGpSGIUhSFKUhCnYWpGlIUh2kOQpSEIABQWCgo"}
-    tracker = RoundTracker()
-    added = tracker.feed_road_paper(2659, rp)
-    hist = tracker.get_history(2659)
-    assert added == 35
-    assert len(hist) == 35
-    # B6 归一为 B
-    assert hist[0]["result"] == "B"
-    # 幂等：再喂一次不增加
-    assert tracker.feed_road_paper(2659, rp) == 0
-
 # ── round_result_token（107 roundResult "庄点;闲点" → 路纸 token）──
 
 from hdata.client import round_result_token

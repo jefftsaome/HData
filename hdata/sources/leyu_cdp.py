@@ -239,8 +239,6 @@ class CDPSource(DataSource):
 
             # 倒计时转 int | None
             countdown_raw = raw.get("countdownText", "")
-            print('----'*15)
-            print('countdown_raw:', countdown_raw)
             countdown: int | None = None
             if countdown_raw:
                 try:
