@@ -1,7 +1,7 @@
 # AGENTS.md — 给 AI/新手的交接文件
 
 > 本文件是任何 agent(或新接手人员)接手本仓库**必须先读**的约定。简短、可执行。
-> 配套阅读：`docs/ARCHITECTURE.md`(结构)、`docs/GLOSSARY.md`(术语)、`docs/INCIDENTS.md`(事故库)。
+> 文档索引见 `docs/README.md`;结构见 `docs/ARCHITECTURE.md`;术语见 `docs/GLOSSARY.md`;事故库见 `docs/INCIDENTS.md`;协议研究见 `docs/protocol/`。
 
 ## 这是什么
 
@@ -43,8 +43,8 @@ cd D:\my-code-repo\myown\HData
 
 ## 工作流建议
 
-1. 新任务先读 `docs/ARCHITECTURE.md` 对应层
+1. 新任务先读 `docs/ARCHITECTURE.md` 对应层;文档索引见 `docs/README.md`
 2. 改代码前跑全套确认基线绿
 3. 小步提交，commit message 中文描述式(参考 git log)
 4. 每改一处跑 `import hdata` 冒烟 + 相关测试
-5. 遇到不认识的协议号/机制查 `docs/GLOSSARY.md`；遇事故查 `docs/INCIDENTS.md`
+5. 遇到不认识的协议号/机制查 `docs/GLOSSARY.md`;遇事故查 `docs/INCIDENTS.md`;协议细节查 `docs/protocol/`

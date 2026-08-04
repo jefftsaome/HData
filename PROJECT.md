@@ -2,7 +2,7 @@
 
 > 更新时间：2026-08-05。本文件是跨会话记忆摘要，细节以各仓库内 docs 为准。
 > 本 workspace（D:\my-code-repo\myown\）下有三个仓库，依赖关系：**HSys → HData → htools**。
-> HData 维护约定见 `HData/AGENTS.md`；结构见 `HData/docs/ARCHITECTURE.md`；术语见 `HData/docs/GLOSSARY.md`；事故库见 `HData/docs/INCIDENTS.md`。
+> HData 维护约定见 `HData/AGENTS.md`;结构见 `HData/docs/ARCHITECTURE.md`;术语见 `HData/docs/GLOSSARY.md`;事故库见 `HData/docs/INCIDENTS.md`;文档索引见 `HData/docs/README.md`。
 
 ## 〇、仓库拓扑
 
