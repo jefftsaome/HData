@@ -32,7 +32,7 @@ from hdata.auth.params import (
 from hdata.auth.sign_table import decrypt_sign_table
 from hdata.paths import cache_dir as _cache_dir
 
-logger = get_logger(__name__)
+logger = get_logger("hdata.auth.token_manager")
 
 # ═══════════════════════════════════════════════════════════
 # 常量

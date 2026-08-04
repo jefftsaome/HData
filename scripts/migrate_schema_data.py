@@ -1,4 +1,7 @@
-"""一次性迁移: 将 _schema_data.SCHEMA_CONFIG 落盘为 schema_data.json。"""
+"""DEPRECATED(一次性迁移): 将 _schema_data.SCHEMA_CONFIG 落盘为 schema_data.json。
+
+Deprecated: 一次性迁移脚本，schema_data.json 已随包落盘，无需再运行。
+"""
 import json
 from pathlib import Path
 

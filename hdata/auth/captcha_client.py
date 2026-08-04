@@ -13,6 +13,10 @@ async def http_login_with_captcha(account: str, user: str, pwd: str, solver) -> 
 
     从 solver 提取平台与 token 后调用 http_login.login(含 kaptchcate
     预注册/重试/域名失效切换/埋点/uuid)。返回完整 dict。
+
+    account 参数仅保留以维持接口稳定，委托流水线忽略之（账号实际为 user）。
+    D7: 旧降级路径中按账号 get_impersonate(self.account) 与 Referer:
+    www.leyu.me 的行为已并入批准的收敛流水线，不再在此保留。
     """
     from hdata.auth.http_login import login as _login
 

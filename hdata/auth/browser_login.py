@@ -45,6 +45,7 @@ from hdata.auth.params import (
     build_auth_snapshot,
     decode_jwt,
     decrypt_params,
+    extract_params_from_url,
     save_auth_cache,
 )
 
@@ -586,8 +587,6 @@ class GameBrowserLogin:
     @staticmethod
     def _extract_params_ttl_from_url(url: str) -> tuple[str, str]:
         """从 URL 提取 params/ttl（委托 params.extract_params_from_url）。"""
-        from hdata.auth.params import extract_params_from_url
-
         return extract_params_from_url(url)
 
     def _decrypt_and_save(self) -> dict | None:
