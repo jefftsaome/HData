@@ -820,13 +820,13 @@ async def _get_login_inner(account: str, password: str = "",
                     # 多数几秒内自愈——转浏览器前自动重试 1 次
                     logger.warning(
                         f"[{account}] get_login: HTTP login stage failed "
-                        f"({type(e).__name__}, 阶段={stage})，5s 后重试 1 次"
+                        f"({type(e).__name__}: {e}, 阶段={stage})，5s 后重试 1 次"
                     )
                     await asyncio.sleep(5)
                 else:
                     logger.warning(
                         f"[{account}] get_login: HTTP login retry failed "
-                        f"({type(e).__name__}, 阶段={stage}), fall to browser"
+                        f"({type(e).__name__}: {e}, 阶段={stage}), fall to browser"
                     )
         if http_session and http_session.get("token"):
             # HTTP login 返回的是 session-level 数据，需要补 game 字段

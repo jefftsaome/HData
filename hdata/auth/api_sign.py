@@ -14,8 +14,11 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid as _uuid_mod
 from pathlib import Path
+
+from loguru import logger
 
 from hdata.auth.fingerprint import get_ua
 
@@ -39,16 +42,20 @@ def _find_node() -> str | None:
     """
     env = os.environ.get("HDATA_NODE", "").strip()
     if env and Path(env).exists():
+        logger.debug(f"api_sign: node 来自 HDATA_NODE: {env}")
         return env
     n = shutil.which("node")
     if n:
+        logger.debug(f"api_sign: node 来自 PATH: {n}")
         return n
     if getattr(sys, "frozen", False):
         cand = Path(sys.executable).resolve().parent / "node-runtime" / (
             "node.exe" if os.name == "nt" else "node"
         )
         if cand.exists():
+            logger.debug(f"api_sign: node 来自随包 node-runtime: {cand}")
             return str(cand)
+    logger.warning("api_sign: 未找到 node 运行时（HDATA_NODE / PATH / node-runtime 均无）")
     return None
 
 
@@ -81,6 +88,7 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
         raise SignError(f"签名脚本缺失（已查找包内与项目根）: {_SIGN_JS_PKG} / {_SIGN_JS_DEV}")
 
     p = _normalize_path(path)
+    t0 = time.monotonic()
     try:
         out = subprocess.run(
             [_NODE, str(_SIGN_JS), p, env],
@@ -89,11 +97,20 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise SignError(f"签名超时: {p}") from exc
+        raise SignError(f"签名超时(>{timeout}s): {p} node={_NODE}") from exc
+    except OSError as exc:
+        # node.exe 被杀软/策略拦截（WinError 5/1260 等）会在这里炸
+        raise SignError(f"node 启动失败: {exc} (node={_NODE})") from exc
 
+    dt = time.monotonic() - t0
     sig = (out.stdout or "").strip()
     if out.returncode != 0 or len(sig) != 64:
+        logger.debug(
+            f"api_sign: 签名失败 rc={out.returncode} node={_NODE} "
+            f"script={_SIGN_JS} stdout={out.stdout[:200]!r} stderr={out.stderr[:200]!r}"
+        )
         raise SignError(f"签名失败 rc={out.returncode}: {(out.stderr or '')[:200]}")
+    logger.debug(f"api_sign: {p} 签名成功（{dt:.2f}s, node={_NODE}）")
     return sig
 
 
