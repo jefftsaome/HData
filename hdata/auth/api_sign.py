@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 import uuid as _uuid_mod
 from pathlib import Path
 
@@ -29,7 +31,28 @@ from hdata.paths import cache_dir as _cache_dir
 _UUID_CACHE_DIR = _cache_dir()
 _UUID_CACHE = _UUID_CACHE_DIR / "api_uuid.txt"
 
-_NODE = shutil.which("node")
+def _find_node() -> str | None:
+    """Node 查找链：HDATA_NODE 环境变量 → PATH → 冻结包随附 node-runtime/。
+
+    打包分发（PyInstaller）的目标机器通常没装 Node，签名依赖 node 运行时，
+    因此打包方应把 node.exe 放在 exe 同级 node-runtime/ 目录（或设 HDATA_NODE）。
+    """
+    env = os.environ.get("HDATA_NODE", "").strip()
+    if env and Path(env).exists():
+        return env
+    n = shutil.which("node")
+    if n:
+        return n
+    if getattr(sys, "frozen", False):
+        cand = Path(sys.executable).resolve().parent / "node-runtime" / (
+            "node.exe" if os.name == "nt" else "node"
+        )
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+_NODE = _find_node()
 
 
 class SignError(RuntimeError):
@@ -53,7 +76,7 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
         env: wasm 第二参数，浏览器固定传 "prod"
     """
     if not _NODE:
-        raise SignError("node 不在 PATH 中，无法生成 X-API-XXX 签名")
+        raise SignError("找不到 node 运行时（PATH / HDATA_NODE / 随包 node-runtime 均无），无法生成 X-API-XXX 签名")
     if not _SIGN_JS.exists():
         raise SignError(f"签名脚本缺失（已查找包内与项目根）: {_SIGN_JS_PKG} / {_SIGN_JS_DEV}")
 
