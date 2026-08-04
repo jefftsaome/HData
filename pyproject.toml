@@ -26,7 +26,6 @@ htools = { git = "https://github.com/jefftsaome/HTools.git" }
 
 [project.entry-points."data_sources"]
 cdp_source = "hdata.sources.leyu_cdp:CDPSource"
-ws_source = "hdata.sources.leyu_ws:WSSource"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,5 +1,5 @@
 import pytest
-from hdata.sources import CDPSource, WSSource
+from hdata.sources import CDPSource
 
 
 class TestCDPSource:
@@ -20,17 +20,3 @@ class TestCDPSource:
         assert ss.status == "running"
         assert len(events) == 1
         assert events[0]["status"] == "running"
-
-
-class TestWSSource:
-    @pytest.mark.asyncio
-    async def test_ws_source_id(self):
-        ps = WSSource(table_id=2718)
-        assert ps.id == "ws_source"
-        assert ps.status == "idle"
-
-    @pytest.mark.asyncio
-    async def test_ws_source_select_table(self):
-        ps = WSSource()
-        result = await ps.select_table(2718, 2001)
-        assert result is True
