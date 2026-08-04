@@ -36,6 +36,7 @@ include = ["hdata*"]
 # 否则 git/pip 安装后 api_sign.sign_path() 报"签名脚本缺失"。
 [tool.setuptools.package-data]
 "hdata.auth" = ["*.cjs", "*.wasm"]
+"hdata.protocol" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
