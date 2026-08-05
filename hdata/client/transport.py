@@ -29,6 +29,7 @@ from ._shared import (
     _QS_TABLE_DATA_UPDATE,
     _QS_TABLE_LIST_ALL,
     _QS_TABLE_LIST_LIMIT,
+    _QS_TABLE_ROAD,
     _RECV_SILENCE_S,
     build_hall_switch_msg,
 )
@@ -353,6 +354,46 @@ class _WSConnection:
                 gtm.update(new)
                 last_new = time.time()
         return gtm
+
+    async def fetch_table_road(self, table_ids: list[int],
+                               timeout: float = 10.0) -> dict:
+        """主动拉取指定桌全量路纸（官方 sendReqRoadPaper → 10071 TABLE_ROAD）。
+
+        2026-08-05 逆向官方前端：`sendReqRoadPaper(tableId)` →
+        `sendGetTableListRoad([tableId])` → 发 10071(TABLE_ROAD)，响应带
+        `roadPaperCacheMap`（请求桌的全量路纸缓存）。这是拉路纸的专用协议，
+        比 10053(TABLE_LIST_LIMIT) 更可靠。
+
+        Args:
+            table_ids: 要拉路纸的桌 id 列表。
+            timeout: 等待响应的总超时（秒）。
+
+        Returns:
+            {table_id(str): {"roadPaper": {...}, ...}} —— 收到的全量路纸缓存；
+            未收到返回 {}。
+        """
+        await self.send(build_message(
+            _QS_TABLE_ROAD,
+            {"playerId": self._player_id, "tableIds": list(table_ids)},
+            player_id=self._player_id, game_type_id=2013,
+            service_type_id=OT_HALL))
+        out: dict = {}
+        end = time.time() + timeout
+        while time.time() < end:
+            frame = await self.recv_until(
+                lambda f: f and f.get("protocolId") == _QS_TABLE_ROAD,
+                end - time.time())
+            if not frame:
+                break
+            info = extract_param(frame) or {}
+            data = info.get("param") or info.get("data")
+            if not isinstance(data, dict):
+                continue
+            rcm = data.get("roadPaperCacheMap")
+            if isinstance(rcm, dict):
+                out.update(rcm)
+                break  # 10071 一次返回全部请求桌的路纸缓存
+        return out
 
     async def fetch_table_meta(self, table_ids: list[int] | None = None,
                                page_size: int = 60) -> dict:

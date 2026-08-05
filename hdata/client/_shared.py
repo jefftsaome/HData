@@ -18,6 +18,7 @@ from hdata.protocol.codec import (
 # ── 协议常量（内部使用，不导出） ──
 _QS_TABLE_LIST_ALL = 10089
 _QS_TABLE_LIST_LIMIT = 10053   # 分页桌台元数据（二进制 schema 帧）
+_QS_TABLE_ROAD = 10071         # TABLE_ROAD — 主动拉取指定桌全量路纸（官方 sendReqRoadPaper）
 _QS_GAME_LIST_SWITCH_TAB = 10027  # GAME_LIST_SWITCH_TAB 大厅订阅（官方进大厅第一步）
 _QS_TABLE_DATA_UPDATE = 10052  # TABLE_DATA_UPDATE 桌台增量推送（10027 订阅后下发）
 _YT_ALL_GAME = 41              # Yt.ALL_GAME — 大厅 groupId 全集
