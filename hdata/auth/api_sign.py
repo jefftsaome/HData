@@ -17,8 +17,9 @@ import time
 import uuid as _uuid_mod
 from pathlib import Path
 
-from hdata.auth.fingerprint import get_ua
 from htools.utils.logger import get_logger
+
+from hdata.auth.fingerprint import get_ua
 
 logger = get_logger(__name__)
 
@@ -59,7 +60,18 @@ def _find_node() -> str | None:
     return None
 
 
-_NODE = _find_node()
+_NODE_CACHE: str | None | bool = False   # False=未查找; None=未找到; str=路径
+
+
+def _get_node() -> str | None:
+    """惰性查找 Node：仅首次调用签名时才执行，避免纯 WS 采集进程
+    在 import 时就触发 node 查找/警告（2026-08-06 评估：HTTP 登录才
+    需要签名，纯 WS 采集不依赖 node）。结果缓存，后续直接复用。"""
+    global _NODE_CACHE
+    if _NODE_CACHE is not False:
+        return _NODE_CACHE if _NODE_CACHE is not None else None
+    _NODE_CACHE = _find_node()
+    return _NODE_CACHE if _NODE_CACHE is not None else None
 
 
 class SignError(RuntimeError):
@@ -82,7 +94,7 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
         path: API 路径前缀，如 "/site/api"、"/game/api"、"/act/api"
         env: wasm 第二参数，浏览器固定传 "prod"
     """
-    if not _NODE:
+    if not _get_node():
         raise SignError("找不到 node 运行时（PATH / HDATA_NODE / 随包 node-runtime 均无），无法生成 X-API-XXX 签名")
     if not _SIGN_JS.exists():
         raise SignError(f"签名脚本缺失（已查找包内与项目根）: {_SIGN_JS_PKG} / {_SIGN_JS_DEV}")
@@ -91,26 +103,26 @@ def sign_path(path: str, env: str = "prod", timeout: float = 10.0) -> str:
     t0 = time.monotonic()
     try:
         out = subprocess.run(
-            [_NODE, str(_SIGN_JS), p, env],
+            [_get_node(), str(_SIGN_JS), p, env],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise SignError(f"签名超时(>{timeout}s): {p} node={_NODE}") from exc
+        raise SignError(f"签名超时(>{timeout}s): {p} node={_get_node()}") from exc
     except OSError as exc:
         # node.exe 被杀软/策略拦截（WinError 5/1260 等）会在这里炸
-        raise SignError(f"node 启动失败: {exc} (node={_NODE})") from exc
+        raise SignError(f"node 启动失败: {exc} (node={_get_node()})") from exc
 
     dt = time.monotonic() - t0
     sig = (out.stdout or "").strip()
     if out.returncode != 0 or len(sig) != 64:
         logger.debug(
-            f"api_sign: 签名失败 rc={out.returncode} node={_NODE} "
+            f"api_sign: 签名失败 rc={out.returncode} node={_get_node()} "
             f"script={_SIGN_JS} stdout={out.stdout[:200]!r} stderr={out.stderr[:200]!r}"
         )
         raise SignError(f"签名失败 rc={out.returncode}: {(out.stderr or '')[:200]}")
-    logger.debug(f"api_sign: {p} 签名成功（{dt:.2f}s, node={_NODE}）")
+    logger.debug(f"api_sign: {p} 签名成功（{dt:.2f}s, node={_get_node()}）")
     return sig
 
 

@@ -20,6 +20,7 @@ from hdata.protocol.codec import (
 )
 from hdata.protocol.roadpaper import decode_bead_plate
 from hdata.protocol.schemacodec import schema_decode
+from hdata.time import check_offset, compute_offset, format_diff
 
 from ._shared import (
     _FORCE_101_GAME_TYPES,
@@ -927,6 +928,7 @@ class MultiplaySession:
                                    on_before_connect=on_before_connect)
         self._closed = False
         self._last_data = 0.0     # monotonic：最近数据帧时刻（判活依据）
+        self._clock_checked = False   # 时钟校对是否已告警过（每会话一次）
 
     @property
     def last_data(self) -> float:
@@ -1017,6 +1019,23 @@ class MultiplaySession:
                 continue
             if pid in self._DATA_PIDS:
                 self._last_data = time.monotonic()
+            # 104(新局)帧带服务器时间戳：每会话首条 104 校对一次时钟偏差。
+            # 2026-08-06 事故：客户机比服务器慢 100s+，倒计时换算失真。
+            # 偏差>30s 打 WARNING 报差值；>5min 打 ERROR(可能致严重失真)。
+            if pid == 104 and not self._clock_checked \
+                    and payload.get("serverTime"):
+                self._clock_checked = True
+                diff = compute_offset(payload["serverTime"])
+                sev, _ = check_offset(payload["serverTime"])
+                if sev == "error":
+                    logger.error(
+                        "服务器时间校对失败：本地与服务器偏差过大(%s)，"
+                        "倒计时换算可能严重失真（建议同步本地时钟）",
+                        format_diff(diff))
+                elif sev == "warn":
+                    logger.warning(
+                        "服务器时间校对偏差 %s（建议同步本地时钟）",
+                        format_diff(diff))
             if pid in self._CONTROL_PIDS:
                 yield {"type": "control", "protocol_id": pid,
                        "table_id": None, "data": payload}
