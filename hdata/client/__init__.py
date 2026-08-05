@@ -70,6 +70,7 @@ from ._shared import (
     _SHARD_RETRY_BACKOFF_S,
     _YT_ALL_GAME,
     GOOD_ROAD_NAMES,
+    OT_HALL,
     TableInfo,
     build_hall_switch_msg,
     road_streak,
