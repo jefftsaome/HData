@@ -150,3 +150,57 @@ def decode_road_paper(road_paper: dict) -> dict:
             except Exception:
                 continue
     return out
+
+
+def decode_single_round_road(b64: str, road_type: int = 1) -> dict | None:
+    """解码单局增量路纸（SINGLE_ROAD=161 帧的 beatPlateRoad）。
+
+    与 decode_bead_plate（全量 boot 格式）不同，161 帧是**单局增量**，
+    头部结构为 version/row/column（非 version/n_hi/n_lo）：
+        version = read(8) + 1
+        row     = read(8)
+        column  = read(8)
+        flag    = read(1)
+        MAIN_ROAD(1): flag=1 → result=read(2), pair=read(2)
+                      flag=0 → read(4)（空位）
+        MAIN_ROAD2(111): flag=1 → result(2)+pair(2)+isSeven(2)+isSix(2)+read(3)
+                         flag=0 → read(11)
+
+    Returns:
+        {"version": int(局序号), "row": int, "column": int,
+         "result": "B"/"P"/"T"/"B6"/None(空), "pair": int}
+        解析失败返回 None。
+    """
+    if not b64:
+        return None
+    try:
+        r = BitReader(b64)
+        version = r.read(8) + 1
+        row = r.read(8)
+        column = r.read(8)
+        flag = r.read(1)
+        if road_type == 1:  # MAIN_ROAD / MAIN_ROAD3
+            if flag == 1:
+                result = r.read(2)
+                pair = r.read(2)
+                return {"version": version, "row": row, "column": column,
+                        "result": RESULT_MAP.get(result, "?"), "pair": pair}
+            r.read(4)
+            return {"version": version, "row": row, "column": column,
+                    "result": None, "pair": 0}
+        if road_type == 111:  # MAIN_ROAD2
+            if flag == 1:
+                result = r.read(2)
+                pair = r.read(2)
+                r.read(2)  # isSeven
+                r.read(2)  # isSix
+                r.read(3)
+                return {"version": version, "row": row, "column": column,
+                        "result": RESULT_MAP.get(result, "?"), "pair": pair}
+            r.read(11)
+            return {"version": version, "row": row, "column": column,
+                    "result": None, "pair": 0}
+        return {"version": version, "row": row, "column": column,
+                "result": None, "pair": 0}
+    except Exception:
+        return None
