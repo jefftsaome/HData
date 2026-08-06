@@ -196,7 +196,8 @@ def token_refresh_due(account: str, token: str) -> bool:
 # ── 域名 ──────────────────────────────────────────────
 
 
-def get_real_domain(entry_url: str = "") -> str:
+def get_real_domain(entry_url: str = "",
+                    entry_urls: list[str] | None = None) -> str:
     """从集团入口站获取真实主站域名。
 
     域名是动态资源（可能小时级轮换），因此：
@@ -206,6 +207,9 @@ def get_real_domain(entry_url: str = "") -> str:
 
     Args:
         entry_url: 入口站 URL，如 "https://leyu.me"。为空时使用默认入口。
+        entry_urls: 入口站候选列表（多品牌平台）。任一入口能解析出
+                    真实域名即返回——多入口下只要有一个平台入口存活
+                    即可，避免单入口失效导致整平台不可用。
 
     Returns:
         真实域名 URL，如 "https://www.5qk8bt.vip:3962"
@@ -214,7 +218,8 @@ def get_real_domain(entry_url: str = "") -> str:
         DomainError: 所有入口均无法解析域名
     """
     # 从入口获取（带缓存 + 探活 + 自动重解析）
-    domain = resolve_domain(entry_url, validate=True)
+    domain = resolve_domain(entry_url, validate=True,
+                            entry_urls=entry_urls)
     if domain:
         return domain
 
@@ -622,7 +627,8 @@ async def get_login(account: str, password: str = "",
                     entry_url: str = "", force_refresh: bool = False,
                     captcha_token: str = "", geepass_token: str = "",
                     jfbym_token: str = "",
-                    proxy: str | None = None) -> dict:
+                    proxy: str | None = None,
+                    entry_urls: list[str] | None = None) -> dict:
     """统一登录接口：提供账号密码，返回所有登录参数。
 
     内部自动处理: 缓存 → HTTP 打码登录 → 浏览器辅助登录。
@@ -632,6 +638,9 @@ async def get_login(account: str, password: str = "",
         account: 账号标识
         password: 密码（缓存有效时可为空；force_refresh 时必填）
         entry_url: 入口站 URL，默认 leyu.me
+        entry_urls: 入口站候选列表（平台品牌域名，多品牌共用系统）。
+                    登录链路会尝试其中任一入口解析真实域名；比
+                    entry_url 优先级低，仅当 entry_url 未提供时生效。
         force_refresh: 跳过缓存，强制重新登录
         captcha_token: 兼容旧参数，映射到 jfbym_token
         geepass_token: geepass API token，传入则优先尝试纯 HTTP 登录
@@ -653,7 +662,8 @@ async def get_login(account: str, password: str = "",
     try:
         return await _get_login_inner(
             account, password, entry_url, force_refresh,
-            captcha_token, geepass_token, jfbym_token, proxy)
+            captcha_token, geepass_token, jfbym_token, proxy,
+            entry_urls=entry_urls)
     finally:
         login_trace.pop_context(_lt_tok)
 
@@ -662,7 +672,8 @@ async def _get_login_inner(account: str, password: str = "",
                            entry_url: str = "", force_refresh: bool = False,
                            captcha_token: str = "", geepass_token: str = "",
                            jfbym_token: str = "",
-                           proxy: str | None = None) -> dict:
+                           proxy: str | None = None,
+                           entry_urls: list[str] | None = None) -> dict:
     """get_login 的实现体（留底上下文由外层绑定）。"""
     # ── 1. 读缓存 ──
     if not force_refresh:
@@ -730,6 +741,8 @@ async def _get_login_inner(account: str, password: str = "",
                     geepass_token=geepass_token,
                     jfbym_token=legacy_jfbym_token,
                     proxy=proxy or "",
+                    **({} if not (entry_urls or entry_url) else
+                       {"entry_urls": entry_urls or [entry_url]}),
                 )
                 break
             except Exception as e:

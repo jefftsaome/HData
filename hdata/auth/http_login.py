@@ -83,14 +83,21 @@ def _px(proxy: str) -> dict | None:
     return {"http": proxy, "https": proxy} if proxy else None
 
 
-def _get_domain() -> str:
-    """获取乐鱼真实域名（缓存 + 探活 + 自动重解析）。"""
-    domain = _resolve_domain(validate=True)
+def _get_domain(entry_urls: list[str] | None = None) -> str:
+    """获取真实域名（缓存 + 探活 + 自动重解析）。
+
+    Args:
+        entry_urls: 入口站候选列表（平台品牌域名）。为空时走
+                    resolve_domain 默认入口。多品牌场景传入用户配置
+                    的入口，避免硬编码 leyu.me 单入口。
+    """
+    domain = _resolve_domain(validate=True, entry_urls=entry_urls)
     if domain:
         return domain
 
-    # 兜底：直接从入口站重定向获取
-    resp = cr.get("https://leyu.me", impersonate=get_impersonate(),
+    # 兜底：直接从入口站重定向获取（优先用候选入口，再回退 leyu.me）
+    fallback_entry = (entry_urls[0] if entry_urls else "https://leyu.me")
+    resp = cr.get(fallback_entry, impersonate=get_impersonate(),
                   timeout=10, allow_redirects=True)
     m = re.match(r"https://[^/]+", resp.url)
     return m.group(0) if m else ""
@@ -517,8 +524,9 @@ async def login(
     jfbym_token: str = "",
     max_retries: int = 3,
     proxy: str = "",
+    entry_urls: list[str] | None = None,
 ) -> dict | None:
-    """纯 HTTP 乐鱼登录。
+    """纯 HTTP 登录（leyu 系多品牌平台共用接口）。
 
     打码平台 token 的解析方式:
       - geepass 仅使用 geepass_token 或 GEEPASS_TOKEN。
@@ -536,6 +544,9 @@ async def login(
         proxy: 代理 URL（如 http://user:pass@host:port），
                整条登录链路（验证码/校验/登录/JWT）走同一出口；
                空串走直连（默认，行为与之前一致）
+        entry_urls: 入口站候选列表（平台品牌域名）。多品牌平台共用
+                    同一套系统/API，换入口即换品牌。为空时用
+                    resolve_domain 默认入口（硬编码兜底）。
 
     Returns:
         {"token": ..., "uuid": ..., "domain": ..., "lot_number": ...} 或 None
@@ -545,7 +556,8 @@ async def login(
         return await _login_inner(
             user, pwd, captcha_token,
             geepass_token=geepass_token, jfbym_token=jfbym_token,
-            max_retries=max_retries, proxy=proxy)
+            max_retries=max_retries, proxy=proxy,
+            entry_urls=entry_urls)
 
 
 async def _login_inner(
@@ -557,11 +569,14 @@ async def _login_inner(
     jfbym_token: str = "",
     max_retries: int = 3,
     proxy: str = "",
+    entry_urls: list[str] | None = None,
 ) -> dict | None:
     """login() 的实现体（账号上下文由外层绑定）。"""
     tag = f"[{user}] "
     pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
-    domain = _get_domain()
+    # 向后兼容：entry_urls 为空时走无参调用（保持旧签名可被 monkeypatch
+    # 的 lambda 兼容）；多入口场景才传候选列表
+    domain = _get_domain(entry_urls) if entry_urls else _get_domain()
 
     if not domain:
         logger.error("{}无法解析域名", tag)

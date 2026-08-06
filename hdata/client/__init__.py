@@ -137,6 +137,9 @@ class GameClient:
 
     Args:
         entry_url: 平台入口种子站（由调用者提供，如平台官网域名）
+        entry_urls: 入口站候选列表（多品牌平台域名，共用同一系统/API）。
+                    登录/刷新链路会尝试其中任一入口解析真实域名；任一
+                    入口存活即认为平台在线。优先级低于 entry_url。
         geepass_token: geepass 打码平台 token（纯 HTTP 登录用）
         jfbym_token: jfbym 打码平台 token（纯 HTTP 登录用）
         proxy: 默认代理 URL（可选）。token 绑定登录 IP——传入后
@@ -146,8 +149,10 @@ class GameClient:
 
     def __init__(self, entry_url: str,
                  geepass_token: str = "", jfbym_token: str = "",
-                 proxy: str | None = None):
+                 proxy: str | None = None,
+                 entry_urls: list[str] | None = None):
         self._entry_url = entry_url
+        self._entry_urls = list(entry_urls) if entry_urls else None
         self._geepass_token = geepass_token
         self._jfbym_token = jfbym_token
         self._proxy = proxy
@@ -184,6 +189,7 @@ class GameClient:
             account,
             password,
             entry_url=self._entry_url,
+            entry_urls=self._entry_urls,
             force_refresh=force_refresh,
             geepass_token=self._geepass_token,
             jfbym_token=self._jfbym_token,
@@ -341,7 +347,8 @@ class GameClient:
         logger.warning(f"[{account}] 站点会话失效，完整重登兜底（可能打码）")
         fresh = await _session_login(
             account, password,
-            entry_url=self._entry_url, force_refresh=True,
+            entry_url=self._entry_url, entry_urls=self._entry_urls,
+            force_refresh=True,
             geepass_token=self._geepass_token,
             jfbym_token=self._jfbym_token,
             proxy=session.get("proxy") or None)
@@ -511,7 +518,7 @@ class GameClient:
                 continue
             s = await _session_login(
                 c["account"], c.get("password", ""),
-                entry_url=self._entry_url,
+                entry_url=self._entry_url, entry_urls=self._entry_urls,
                 geepass_token=self._geepass_token,
                 jfbym_token=self._jfbym_token,
                 proxy=c.get("proxy"))          # 每账号独立出口（token 绑 IP）

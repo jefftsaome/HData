@@ -198,14 +198,18 @@ class ProxyPool:
     # ── 分配 ──────────────────────────────────────────
 
     def assign(self, accounts: list[str],
-               preferred_ids: dict[str, str] | None = None
+               preferred_ids: dict[str, str] | None = None,
+               auto_migrate_on_dead: bool = False
                ) -> dict[str, str | None]:
         """粘性均衡分配账号到出口。
 
         - preferred_ids：{account: 出口 id} 显式绑定（config.json 的
           proxy_id）。显式绑定最优先：出口存活即绑定之（不受 cap 限制，
-          超 cap 打 warning）；出口已死则映射 None + warning，
-          **不静默迁移到其他出口**（避免账号在出口间乱跳）；
+          超 cap 打 warning）；出口已死则映射 None + warning，默认
+          **不静默迁移到其他出口**（避免账号在出口间乱跳导致 token
+          失效）。auto_migrate_on_dead=True 时，显式绑定出口死亡会
+          自动分到当前负载最小且未满的存活出口（账号需经新出口重新
+          登录拿新 token，token 绑 IP）；
         - 已有绑定的账号保持不变（粘性，出口仍存活时）；
         - 新账号分给当前绑定数最少且未满预算的存活出口；
         - 总容量不足时多出的账号映射为 None（调用方告警/弃用）。
@@ -225,11 +229,17 @@ class ProxyPool:
                     result[acc] = None
                     continue
                 if url not in self.alive:
-                    logger.warning(f"[ProxyPool] {acc} 绑定的出口 "
-                                   f"'{pid}' 探测已死，不自动迁移，"
-                                   "等代理文件更新 IP 后复活")
-                    result[acc] = None
-                    continue
+                    if not auto_migrate_on_dead:
+                        logger.warning(f"[ProxyPool] {acc} 绑定的出口 "
+                                       f"'{pid}' 探测已死，不自动迁移，"
+                                       "等代理文件更新 IP 后复活")
+                        result[acc] = None
+                        continue
+                    # auto_migrate：落到下面通用"选负载最小存活出口"逻辑
+                    logger.warning(f"[ProxyPool] {acc} 绑定的出口 '{pid}' "
+                                   "探测已死，自动迁移到其他存活出口"
+                                   "（需经新出口重新登录）")
+                    self._bindings.pop(acc, None)
                 self._bindings[acc] = url
                 result[acc] = url
                 if self._load(url) > self._cap:

@@ -133,7 +133,9 @@ def probe_domain(domain: str, timeout: float = 6.0) -> bool:
         return False
 
 
-def resolve_domain(entry_url: str = "", *, validate: bool = False) -> str | None:
+def resolve_domain(entry_url: str = "", *,
+                   validate: bool = False,
+                   entry_urls: list[str] | None = None) -> str | None:
     """从集团入口站获取真实域名。
 
     入口站 HTML 里有 JS 映射表:
@@ -144,8 +146,16 @@ def resolve_domain(entry_url: str = "", *, validate: bool = False) -> str | None
     连接级失败时，应 DomainCache().invalidate() 后重新解析。
 
     Args:
-        entry_url: 入口站 URL，如 "https://leyu.com"。
-                   为空时尝试所有默认入口。
+        entry_url: 入口站 URL，如 "https://leyu.com"。与 entry_urls
+                   二选一：提供 entry_url 时只解析该入口；两个都不
+                   提供时尝试 entry_urls 或默认入口。
+        entry_urls: 入口站候选列表（平台品牌域名，如
+                    ["https://www.leyu.cc", "https://www.lyty.com",
+                     "https://www.leyu.com"]）。**逐个尝试**，只要有一
+                    个能解析出真实域名即返回——多品牌/多入口场景下
+                    任一入口存活即认为平台在线，只有全部入口都解析
+                    失败才返回 None。优先级: entry_url > entry_urls
+                    > DEFAULT_ENTRIES（硬编码仅作最后兜底）。
         validate:  True 时对缓存/解析结果先探活，死了自动重解析。
 
     Returns:
@@ -153,9 +163,16 @@ def resolve_domain(entry_url: str = "", *, validate: bool = False) -> str | None
     """
     cache = DomainCache()
 
-    entries = [entry_url] if entry_url else DEFAULT_ENTRIES
+    if entry_url:
+        entries = [entry_url]
+    elif entry_urls:
+        entries = list(entry_urls)
+    else:
+        entries = DEFAULT_ENTRIES
 
     for url in entries:
+        if not url:
+            continue
         if not url.startswith("http"):
             url = f"https://{url}"
 
